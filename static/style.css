@@ -285,6 +285,8 @@ button, input, textarea {
 
 .result-card.warn { background: var(--warn-bg); border: 2px solid var(--warn-border); }
 .result-card.warn .verdict { color: var(--warn); }
+.result-card.warn .status-pill { background: var(--surface); color: var(--warn); border: 1px solid var(--warn-border); }
+.result-card.warn .warn-msg { color: var(--warn); font-size: 15px; font-weight: 700; margin-top: 10px; word-break: break-word; }
 
 .result-card.neutral { background: var(--surface); border: 1px solid var(--border); }
 
@@ -337,6 +339,7 @@ button, input, textarea {
 }
 .session-stats .stat b { font-size: 18px; }
 .session-stats .stat.ok { color: var(--ok); }
+.session-stats .stat.warn { color: var(--warn); }
 .session-stats .stat.err { color: var(--err); }
 .reset-btn {
   border: 0;
@@ -409,6 +412,7 @@ textarea:focus { outline: none; border-color: var(--primary); }
 }
 .summary span b { font-weight: 800; }
 .summary .ok-n { color: var(--ok); }
+.summary .warn-n { color: var(--warn); }
 .summary .err-n { color: var(--err); }
 
 .batch-row {
@@ -439,6 +443,7 @@ textarea:focus { outline: none; border-color: var(--primary); }
 }
 .batch-row.open .detail { display: block; }
 .batch-row.bad { border-color: var(--err-border); }
+.batch-row.warn { border-color: var(--warn-border); background: var(--warn-bg); }
 
 /* ===== Баланс ===== */
 .balance-box { display: flex; gap: 10px; flex-wrap: wrap; }

@@ -23,6 +23,7 @@ from models import (
     ErrorCategory,
     Organization,
     ScanResult,
+    business_verdict,
 )
 from organizations import registry
 from tokens import FileTokenStore, TokenStore
@@ -144,6 +145,10 @@ class Service:
         )
         result.quantity_in_pack = ci.get("quantityInPack")
         result.raw_api = ci
+
+        # business policy layer: интерпретация фактического статуса ЧЗ.
+        # НЕ влияет на глобальное состояние True API (оно помечается отдельно).
+        result.verdict, result.verdict_message = business_verdict(result.status)
 
     @staticmethod
     def _info_error_category(rec: dict[str, Any]) -> str:

@@ -29,6 +29,54 @@ def status_ru(status: Optional[str]) -> str:
     return STATUS_RU.get(status, status)
 
 
+# ---- Business policy layer: verdict -------------------------------------
+#
+# Разделяет два независимых факта:
+#   1) запрос к True API выполнен успешно (глобальное состояние True API);
+#   2) состояние конкретного КМ допустимо для склада (verdict результата).
+#
+# Verdict — это интерпретация фактического статуса ЧЗ для сотрудника склада.
+# Принцип: явный WHITELIST. Никакого «нет error_category => OK» — статус,
+# которого нет в whitelist, по умолчанию НЕ считается зелёным.
+
+VERTICT_OK = "ok"
+VERTICT_WARNING = "warning"
+VERTICT_ERROR = "error"
+
+# Бизнес-статусы, допустимые для склада (зелёный, OK).
+BUSINESS_OK_STATUSES: frozenset[str] = frozenset({"APPLIED", "INTRODUCED"})
+
+# Бизнес-статусы, требующие внимания (жёлтый, warning).
+BUSINESS_WARNING_STATUSES: frozenset[str] = frozenset({"EMITTED"})
+
+VERDICT_TITLE: dict[str, str] = {
+    VERTICT_OK: "✓ OK",
+    VERTICT_WARNING: "⚠️ ВНИМАНИЕ",
+    VERTICT_ERROR: "✕ ОШИБКА",
+}
+
+
+def business_verdict(status: Optional[str]) -> tuple[str, Optional[str]]:
+    """Возвращает (verdict, verdict_message) для бизнес-статуса ЧЗ.
+
+    - APPLIED / INTRODUCED   -> ok (зелёный)
+    - EMITTED                -> warning (жёлтый)
+    - неизвестный/новый статус -> warning (жёлтый), БЕЗ придумывания смысла
+    - None/пустой            -> error (структура/API разберётся отдельно)
+    """
+    s = (status or "").strip().upper()
+    if s in BUSINESS_OK_STATUSES:
+        return VERTICT_OK, None
+    if s in BUSINESS_WARNING_STATUSES:
+        return VERTICT_WARNING, (
+            "Код эмитирован, но нанесение ещё не зарегистрировано."
+        )
+    if s:
+        # Неизвестный статус True API — не зелёный. Не придумываем смысл.
+        return VERTICT_WARNING, f"Неизвестный статус: {s}"
+    return VERTICT_ERROR, None
+
+
 # Категории ошибок, которые различает приложение. Каждая имеет понятное
 # русское сообщение для пользователя и технический код для логов.
 class ErrorCategory:
@@ -106,6 +154,10 @@ class ScanResult:
     error_category: Optional[str] = None
     error_message: Optional[str] = None
 
+    # business verdict (policy layer): "ok" | "warning" | "error"
+    verdict: str = VERTICT_ERROR
+    verdict_message: Optional[str] = None
+
     # сырые технические данные (не обязательны, для отладки/раскрытия)
     raw_api: Optional[dict[str, Any]] = None
     api_checked: bool = False
@@ -130,6 +182,8 @@ class ScanResult:
             "our_org_name": self.our_org_name,
             "error_category": self.error_category,
             "error_message": self.error_message,
+            "verdict": self.verdict,
+            "verdict_message": self.verdict_message,
             "api_checked": self.api_checked,
         }
         # raw_api не отдаём в обычный REST-ответ (UI его не использует, а там

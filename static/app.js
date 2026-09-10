@@ -81,18 +81,22 @@
   }
   function sfxSuccess() { beep(880, 120); vibrate(50); }
   function sfxError() { beep(220, 160, 0); beep(220, 160, 0.18); vibrate([80, 40, 120]); }
+  function sfxWarning() { beep(660, 90, 0); beep(660, 90, 0.12); vibrate([40, 60, 40]); }
 
   // ===== статистика сессии =====
   function loadStats() {
     try {
-      const s = JSON.parse(sessionStorage.getItem('gis_stats') || '{"total":0,"ok":0,"err":0}');
-      return { total: s.total|0, ok: s.ok|0, err: s.err|0 };
-    } catch (e) { return { total: 0, ok: 0, err: 0 }; }
+      const s = JSON.parse(sessionStorage.getItem('gis_stats') || '{"total":0,"ok":0,"warn":0,"err":0}');
+      return { total: s.total|0, ok: s.ok|0, warn: s.warn|0, err: s.err|0 };
+    } catch (e) { return { total: 0, ok: 0, warn: 0, err: 0 }; }
   }
   function saveStats(st) { sessionStorage.setItem('gis_stats', JSON.stringify(st)); }
-  function bumpStats(ok) {
+  function bumpStats(verdict) {
     const st = loadStats();
-    st.total++; if (ok) st.ok++; else st.err++;
+    st.total++;
+    if (verdict === 'ok') st.ok++;
+    else if (verdict === 'warning') st.warn++;
+    else st.err++;
     saveStats(st); renderStats(st);
   }
   function renderStats(st) {
@@ -101,6 +105,7 @@
     const parts = [
       ['За сессию: ', '<b>' + st.total + '</b>', ''],
       ['✓ ', '<b>' + st.ok + '</b>', 'ok'],
+      ['⚠️ ', '<b>' + st.warn + '</b>', 'warn'],
       ['✕ ', '<b>' + st.err + '</b>', 'err'],
     ];
     parts.forEach(([pre, num, cls]) => {
@@ -111,7 +116,7 @@
     });
     const btn = document.createElement('button');
     btn.className = 'reset-btn'; btn.id = 'reset-stats'; btn.textContent = 'сбросить';
-    btn.addEventListener('click', () => { saveStats({total:0,ok:0,err:0}); renderStats(loadStats()); });
+    btn.addEventListener('click', () => { saveStats({total:0,ok:0,warn:0,err:0}); renderStats(loadStats()); });
     el.appendChild(btn);
   }
 
@@ -346,19 +351,40 @@
     let html;
     if (!d) { return; }
 
-    // глобальная ошибка структуры/нет токена
-    if (d.error_category) {
+    const verdict = d.verdict || 'error';
+
+    // Структурная/API-ошибка: красная карточка.
+    if (verdict === 'error') {
       const isStructure = (d.error_category === 'dm_structure' || d.error_category === 'gtin_checksum');
       const title = isStructure ? 'ОШИБКА' : (d.error_category === 'km_not_found' ? 'КМ НЕ НАЙДЕН' : 'ОШИБКА');
-      const msg = d.error_message || 'Ошибка проверки';
+      const msg = d.error_message || d.verdict_message || 'Ошибка проверки';
       html = '<div class="result-card err">' +
         '<div class="verdict">✕ ' + esc(title) + '</div>' +
         '<div class="err-msg">' + esc(msg) + '</div>' +
         '<div class="retry">Повторите сканирование</div>' +
         buildDetails(d) +
         '</div>';
-      bumpStats(false); sfxError();
+      bumpStats('error'); sfxError();
+    } else if (verdict === 'warning') {
+      // EMITTED / неизвестный статус: жёлтая карточка. Не ошибка.
+      const statusStr = statusRu(d.status);
+      const ours = d.ours === true;
+      const foreign = d.ours === false;
+      const ownerBadge = ours ? '<span class="owner-badge ours">НАШ КМ</span>'
+        : foreign ? '<span class="owner-badge foreign">ЧУЖОЙ КМ</span>' : '';
+      html = '<div class="result-card warn">' +
+        '<div class="verdict">⚠️ ВНИМАНИЕ</div>' +
+        '<div class="product">' + esc(d.product_name || '—') + '</div>' +
+        '<div class="qty">' + (d.quantity_in_pack != null ? esc(fmtNum(d.quantity_in_pack)) + ' шт.' : '') + '</div>' +
+        '<div class="status-pill">' + esc(statusStr || d.status || '') + '</div>' +
+        '<div class="owner">' + esc(d.our_org_name || d.owner_name || '') + '</div>' +
+        ownerBadge +
+        (d.verdict_message ? '<div class="warn-msg">' + esc(d.verdict_message) + '</div>' : '') +
+        buildDetails(d) +
+        '</div>';
+      bumpStats('warning'); sfxWarning();
     } else {
+      // ok
       const statusStr = statusRu(d.status);
       const ours = d.ours === true;
       const foreign = d.ours === false;
@@ -373,7 +399,7 @@
         ownerBadge +
         buildDetails(d) +
         '</div>';
-      bumpStats(true); sfxSuccess();
+      bumpStats('ok'); sfxSuccess();
     }
     S.lastScanAt = new Date();
     scanResult.innerHTML = html +
@@ -500,26 +526,49 @@
   });
 
   function renderBatch(results) {
-    const ok = results.filter((r) => !r.error_category).length;
-    const err = results.length - ok;
+    const ok = results.filter((r) => (r.verdict || 'error') === 'ok').length;
+    const warn = results.filter((r) => (r.verdict || 'error') === 'warning').length;
+    const err = results.length - ok - warn;
     batchSummary.classList.remove('hidden');
     batchSummary.innerHTML =
       '<span>Всего: <b>' + results.length + '</b></span>' +
       '<span class="ok-n">OK: <b>' + ok + '</b></span>' +
+      '<span class="warn-n">Внимание: <b>' + warn + '</b></span>' +
       '<span class="err-n">Ошибок: <b>' + err + '</b></span>';
     batchTable.innerHTML = '';
     results.forEach((r) => {
       const row = document.createElement('div');
-      const isErr = !!r.error_category;
-      row.className = 'batch-row' + (isErr ? ' bad' : '');
-      const pn = isErr ? (r.error_message || 'Ошибка') : (r.product_name || '—');
-      const qty = isErr ? '' : (r.quantity_in_pack != null ? fmtNum(r.quantity_in_pack) + ' шт.' : '');
-      const status = isErr ? '' : statusRu(r.status);
-      const owner = isErr ? '' : (r.ours === true ? 'Наш' : (r.ours === false ? 'Чужой' : ''));
+      const v = r.verdict || 'error';
+      const isWarn = v === 'warning';
+      const isErr = v === 'error';
+      row.className = 'batch-row' + (isErr ? ' bad' : (isWarn ? ' warn' : ''));
+
+      let pn, qty, status, owner;
+      if (isErr) {
+        pn = r.error_message || 'Ошибка';
+        qty = ''; status = ''; owner = '';
+      } else {
+        pn = r.product_name || '—';
+        qty = r.quantity_in_pack != null ? fmtNum(r.quantity_in_pack) + ' шт.' : '';
+        status = statusRu(r.status);
+        owner = r.ours === true ? 'Наш' : (r.ours === false ? 'Чужой' : '');
+      }
+
       let detail;
       if (isErr) {
         detail = '<div class="kv"><div class="k">Ошибка</div><div class="v">' + esc(r.error_message) + '</div></div>' +
           (r.structure_error ? '<div class="kv"><div class="k">Локальная проверка</div><div class="v">' + esc(r.structure_error) + '</div></div>' : '');
+      } else if (isWarn) {
+        detail =
+          '<div class="kv"><div class="k">GTIN</div><div class="v">' + esc(r.gtin) + '</div></div>' +
+          '<div class="kv"><div class="k">Serial</div><div class="v">' + esc(r.serial) + '</div></div>' +
+          '<div class="kv"><div class="k">productName</div><div class="v">' + esc(r.product_name) + '</div></div>' +
+          '<div class="kv"><div class="k">status</div><div class="v">' + esc(r.status) + '</div></div>' +
+          '<div class="kv"><div class="k">statusEx</div><div class="v">' + esc(r.status_ex) + '</div></div>' +
+          '<div class="kv"><div class="k">ownerInn</div><div class="v">' + esc(r.owner_inn) + '</div></div>' +
+          '<div class="kv"><div class="k">ownerName</div><div class="v">' + esc(r.owner_name) + '</div></div>' +
+          '<div class="kv"><div class="k">quantityInPack</div><div class="v">' + esc(r.quantity_in_pack) + '</div></div>' +
+          (r.verdict_message ? '<div class="kv"><div class="k">Пояснение</div><div class="v">' + esc(r.verdict_message) + '</div></div>' : '');
       } else {
         detail =
           '<div class="kv"><div class="k">GTIN</div><div class="v">' + esc(r.gtin) + '</div></div>' +
@@ -540,6 +589,11 @@
       row.addEventListener('click', () => row.classList.toggle('open'));
       batchTable.appendChild(row);
     });
+
+    // сигнал по итогам batch (единый, не на каждую строку)
+    if (err > 0) sfxError();
+    else if (warn > 0) sfxWarning();
+    else if (ok > 0) sfxSuccess();
   }
 
   batchClear.addEventListener('click', () => {
