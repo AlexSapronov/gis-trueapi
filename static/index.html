@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no">
+<title>Честный ЗНАК</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ===== STATUS BAR ===== -->
+<div id="status-bar" class="status-bar pending">
+  <div class="status-inner">
+    <span class="status-dot" id="status-dot"></span>
+    <div class="status-main">
+      <div class="status-title" id="status-title">ПОДКЛЮЧЕНИЕ…</div>
+      <div class="status-sub" id="status-sub">Проверка сервера</div>
+    </div>
+    <div class="status-actions">
+      <button class="icon-btn" id="sound-btn" title="Звук">🔊</button>
+      <button class="icon-btn" id="theme-btn" title="Тема">☾</button>
+    </div>
+  </div>
+  <div class="status-detail" id="status-detail"></div>
+</div>
+
+<!-- ===== TABS ===== -->
+<nav class="tabbar" role="tablist">
+  <button class="tab active" data-tab="scan"><span class="tab-ico">📷</span>Скан</button>
+  <button class="tab" data-tab="batch"><span class="tab-ico">📋</span>Пакет</button>
+  <button class="tab" data-tab="balance"><span class="tab-ico">⚖️</span>Баланс</button>
+</nav>
+
+<!-- ===== СКАН ===== -->
+<section id="tab-scan" class="panel active">
+  <div class="scan-box">
+    <input id="scan-input" type="text" inputmode="none" autocomplete="off" autocapitalize="off"
+           placeholder="Сканируйте код…" autofocus>
+    <div class="scan-hint">Сканер отправит Enter автоматически</div>
+  </div>
+  <div id="scan-result"></div>
+  <div class="session-stats" id="session-stats">
+    <span>За сессию: <b>0</b></span>
+    <span class="stat ok">✓ <b>0</b></span>
+    <span class="stat err">✕ <b>0</b></span>
+    <button class="reset-btn" id="reset-stats" title="Сбросить статистику">сбросить</button>
+  </div>
+</section>
+
+<!-- ===== ПАКЕТ ===== -->
+<section id="tab-batch" class="panel">
+  <textarea id="batch-input" rows="10" placeholder="Коды по одному в строке…"></textarea>
+  <div class="btn-row">
+    <button id="batch-check" class="btn primary">Проверить</button>
+    <button id="batch-clear" class="btn">Очистить</button>
+  </div>
+  <div id="batch-summary" class="summary hidden"></div>
+  <div id="batch-table"></div>
+</section>
+
+<!-- ===== БАЛАНС ===== -->
+<section id="tab-balance" class="panel">
+  <div class="balance-box">
+    <input id="balance-input" type="text" inputmode="numeric" autocomplete="off" placeholder="GTIN (14 цифр)">
+    <button id="balance-check" class="btn primary">Запросить</button>
+  </div>
+  <div id="balance-result"></div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Обновление токена — True API</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; background:#f4f5f7; color:#1b1f23; }
+.wrap { max-width: 640px; margin: 32px auto; padding: 24px; background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.12); }
+h1 { font-size:20px; margin:0 0 16px; }
+label { display:block; margin:16px 0 4px; font-weight:600; font-size:14px; }
+select, input, textarea { width:100%; box-sizing:border-box; padding:10px; font-size:16px; border:1px solid #cfd4da; border-radius:6px; }
+textarea { min-height:160px; font-family:monospace; }
+button { margin-top:20px; padding:12px 20px; font-size:16px; background:#0a6cff; color:#fff; border:0; border-radius:6px; cursor:pointer; }
+#result { margin-top:16px; font-weight:600; }
+.ok { color:#1a7f37; }
+.err { color:#c0392b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Обновление токена True API</h1>
+<form id="f">
+<input type="hidden" name="key" id="admin-key" value="{{ admin_key }}">
+<label for="org">Организация</label>
+<select id="org" name="inn">
+{% for o in organizations %}
+<option value="{{ o.inn }}">{{ o.name }} ({{ o.inn }})</option>
+{% endfor %}
+</select>
+
+<label for="uuid">UUID</label>
+<input id="uuid" name="uuid" autocomplete="off" placeholder="вставьте UUID из 123.ps1">
+
+<label for="signature">SIGNATURE</label>
+<textarea id="signature" name="signature" placeholder="вставьте SIGNATURE из 123.ps1"></textarea>
+
+<button type="submit">Обновить токен</button>
+</form>
+<div id="result"></div>
+</div>
+<script>
+const f = document.getElementById('f');
+const result = document.getElementById('result');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  result.textContent = 'Обновление…';
+  result.className = '';
+  const fd = new FormData(f);
+  const r = await fetch('/admin/token', {
+    method: 'POST',
+    headers: { 'X-Admin-Key': document.getElementById('admin-key').value },
+    body: fd,
+  });
+  const data = await r.json();
+  if (data.ok) {
+    result.textContent = data.message;
+    result.className = 'ok';
+    f.reset();
+  } else {
+    result.textContent = 'Ошибка: ' + data.message;
+    result.className = 'err';
+  }
+});
+</script>
+</body>
+</html>

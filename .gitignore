@@ -1,0 +1,29 @@
+# ===== Secrets / environment =====
+.env
+.env.*
+!.env.example
+
+# ===== Python =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== Runtime data (tokens!) =====
+data/tokens.json
+data/_*
+
+# ===== Logs =====
+*.log
+access.log
+error.log
+
+# ===== OS / editor =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
