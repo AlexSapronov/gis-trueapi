@@ -312,6 +312,29 @@
       (retry ? '<div class="retry">' + esc(retry) + '</div>' : '') + '</div>';
   }
 
+  // Извлекает человекочитаемое сообщение из тела ошибки (в т.ч. Pydantic 422).
+  // Понимает: data.message; строковый data.detail; массив data.detail[] (локи + msg).
+  // Убирает технический префикс "Value error, " если он есть.
+  function apiErrorMessage(data, fallback) {
+    if (!data) return fallback || 'Ошибка запроса';
+    if (data.message) return String(data.message);
+    if (typeof data.detail === 'string') return data.detail;
+    if (Array.isArray(data.detail) && data.detail.length) {
+      const items = data.detail.map((d) => {
+        if (d && d.msg) return String(d.msg);
+        if (typeof d === 'string') return d;
+        return '';
+      }).filter(Boolean);
+      if (items.length) {
+        let msg = items[0];
+        // срезаем технические префиксы FastAPI/Pydantic
+        msg = msg.replace(/^Value error,\s*/i, '');
+        return msg;
+      }
+    }
+    return fallback || 'Ошибка запроса';
+  }
+
   // ===== одиночный скан =====
   let scanning = false; // lock от дубля Enter
 
@@ -421,7 +444,7 @@
       return;
     }
     if (res.kind === 'biz') {
-      const msg = (res.data && res.data.message) || 'Ошибка проверки';
+      const msg = apiErrorMessage(res.data, 'Ошибка проверки');
       showScanError(msg, 'Повторите сканирование');
       focusScan();
       scanning = false;
@@ -469,7 +492,7 @@
     }
     if (res.kind === 'biz') {
       batchSummary.classList.remove('hidden');
-      const msg = (res.data && res.data.message) || 'Ошибка проверки';
+      const msg = apiErrorMessage(res.data, 'Ошибка проверки');
       batchSummary.innerHTML = '<span class="err-n">' + esc(msg) + '</span>';
       return;
     }
@@ -546,7 +569,7 @@
       return;
     }
     if (res.kind === 'biz') {
-      const msg = (res.data && res.data.message) || 'Ошибка запроса';
+      const msg = apiErrorMessage(res.data, 'Ошибка запроса');
       balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">' + esc(msg) + '</div></div>';
       return;
     }
@@ -558,21 +581,43 @@
     d.statuses.forEach((s) => { html += balCard(s, d.total[s], true); });
     html += '</div></div>';
     d.organizations.forEach((o) => {
-      if (o.error) {
+      const orgEntries = o.statuses || {};
+      const orgHasAny = d.statuses.some((s) => orgEntries[s] && (!orgEntries[s].error));
+      // показываем org-level error только если нет ни одного успешного статуса
+      if (o.error && !orgHasAny) {
         html += '<div class="org-block"><h3>' + esc(o.name) + '</h3><div class="err-note">⚠ ' + esc(o.error) + '</div></div>';
         return;
       }
       html += '<div class="org-block"><h3>' + esc(o.name) + '</h3><div class="balance-grid">';
-      d.statuses.forEach((s) => { html += balCard(s, o.statuses[s] || { km_count: 0, quantity_sum: 0 }, false); });
+      d.statuses.forEach((s) => {
+        const e = orgEntries[s] || { complete: false, error: 'Нет данных' };
+        html += balCard(s, e, false);
+      });
       html += '</div></div>';
     });
     balanceResult.innerHTML = html;
   }
   function balCard(status, t, isTotal) {
-    const qtyLine = (status === 'EMITTED') ? '' : '<div class="q">' + fmtNum(t.quantity_sum) + ' шт.</div>';
-    return '<div class="bal-card' + (isTotal ? ' bal-total' : '') + '">' +
-      '<div class="st">' + esc(statusRu(status)) + '</div>' +
-      '<div class="n">' + t.km_count + ' КМ</div>' + qtyLine + '</div>';
+    if (!t) return '';
+    const incomplete = (t.complete === false) || (t.error);
+    let body;
+    if (incomplete) {
+      // данные по статусу неполные/недоступны — не подставляем ноль как реальный
+      const km = (t.km_count != null) ? (fmtNum(t.km_count) + ' КМ') : '—';
+      let note = t.error ? esc(t.error) : 'Данные неполные';
+      if (t.failed_organizations && t.failed_organizations.length) {
+        note = 'Данные по ' + t.failed_organizations.length + ' орг. не получены';
+      }
+      body = '<div class="n">' + km + '</div>' +
+        '<div class="incomplete">⚠️ ' + note + '</div>';
+    } else {
+      const km = (t.km_count != null) ? (fmtNum(t.km_count) + ' КМ') : '0 КМ';
+      const qtyLine = (status === 'EMITTED') ? '' : '<div class="q">' + fmtNum(t.quantity_sum) + ' шт.</div>';
+      body = '<div class="n">' + km + '</div>' + qtyLine;
+    }
+    return '<div class="bal-card' + (isTotal ? ' bal-total' : '') +
+      (incomplete ? ' bal-incomplete' : '') + '">' +
+      '<div class="st">' + esc(statusRu(status)) + '</div>' + body + '</div>';
   }
   balanceCheck.addEventListener('click', doBalance);
   balanceInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doBalance(); } });

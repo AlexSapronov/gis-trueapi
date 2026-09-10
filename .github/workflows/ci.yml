@@ -28,7 +28,7 @@ jobs:
         env:
           GIS_MODE: mock
         run: |
-          pytest -q
+          python -m pytest -q
 
       - name: Check JS syntax
         run: |

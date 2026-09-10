@@ -375,17 +375,21 @@ class Service:
                 "inn": org.inn,
                 "name": org.name,
                 "statuses": {},
-                "error": None,
             }
             token = self.tokens.get(org.inn)
             if not token:
+                # нет токена — организация полностью недоступна; статусы не заполняем,
+                # помечаем на уровне организации. Такая организация НЕ тянет вниз total.
                 out["error"] = CATEGORY_MESSAGES[ErrorCategory.NO_ORG_TOKEN]
+                out["no_token"] = True
                 return out
-            try:
-                for st in statuses:
-                    # пагинация по lastEmissionDate + sgtin
+
+            for st in statuses:
+                # каждый статус считается независимо: свой результат/ошибка/полнота
+                try:
                     all_items: list[dict[str, Any]] = []
                     after = None
+                    seen_markers: set[tuple] = set()
                     while True:
                         page = await self.client.search(
                             gtin, st, token,
@@ -395,11 +399,26 @@ class Service:
                         )
                         items = page.get("items", []) or []
                         all_items.extend(items)
-                        if page.get("is_last") or not page.get("next"):
+                        if page.get("is_last"):
                             break
-                        after = page["next"]
-                    # quantityInPack нужен только для APPLIED/INTRODUCED.
-                    # Для EMITTED достаточно km_count — info() не вызываем.
+                        nxt = page.get("next")
+                        if not nxt:
+                            # is_last=false, но continuation marker отсутствует =>
+                            # результат неполный, это ошибка пагинации, не успех.
+                            raise TrueApiError(
+                                ErrorCategory.API_SERVER_ERROR,
+                                "Неполная пагинация: отсутствует continuation marker",
+                            )
+                        # защита от зацикливания на одном и том же маркере
+                        marker = (nxt.get("lastEmissionDate"), nxt.get("sgtin") or nxt.get("cis"))
+                        if marker in seen_markers:
+                            raise TrueApiError(
+                                ErrorCategory.API_SERVER_ERROR,
+                                "Повторяющийся continuation marker (зацикливание пагинации)",
+                            )
+                        seen_markers.add(marker)
+                        after = nxt
+
                     qty_sum = 0
                     if st != "EMITTED":
                         cises = [it.get("cis") or it.get("sgtin") for it in all_items if (it.get("cis") or it.get("sgtin"))]
@@ -416,37 +435,67 @@ class Service:
                     out["statuses"][st] = {
                         "km_count": len(all_items),
                         "quantity_sum": qty_sum,
+                        "complete": True,
+                        "error": None,
                     }
-            except TrueApiError as e:
-                out["error"] = e.message or CATEGORY_MESSAGES.get(e.category, str(e))
-            except Exception as e:  # noqa: BLE001
-                out["error"] = CATEGORY_MESSAGES[ErrorCategory.API_ERROR]
+                except TrueApiError as e:
+                    out["statuses"][st] = {
+                        "km_count": None, "quantity_sum": None,
+                        "complete": False,
+                        "error": e.message or CATEGORY_MESSAGES.get(e.category, str(e)),
+                    }
+                except Exception as e:  # noqa: BLE001
+                    out["statuses"][st] = {
+                        "km_count": None, "quantity_sum": None,
+                        "complete": False,
+                        "error": CATEGORY_MESSAGES[ErrorCategory.API_ERROR],
+                    }
             return out
 
         results = await asyncio.gather(*(_org_balance(o) for o in orgs))
 
-        # Состояние True API: контакт состоялся, если хоть одна организация с
-        # токеном успешно обработала (или ЧЗ ответил, даже если кодов нет).
-        # Если организации с токеном есть и ВСЕ упали с API-ошибкой интерпретируем
-        # как ошибку ЧЗ только если в результатах нет ни одного "нет токена" как
-        # единственной причины (нет токена — это НЕ ошибка ЧЗ).
-        any_ok = any(r["error"] is None for r in results)
+        # Состояние True API по последнему событию.
+        # Контакт успешен, если хоть один (токен, статус) вернул complete без ошибки.
+        any_complete = any(
+            any(s.get("complete") and not s.get("error") for s in r["statuses"].values())
+            for r in results
+        )
         any_token = any(self.tokens.has(o.inn) for o in orgs)
-        if any_ok:
+        if any_complete:
             self._mark_trueapi_success()
-        elif any_token and any(r["error"] for r in results):
-            # все организации с токеном дали ошибку — но это может быть и 403
-            # (нет прав), не обязательно сеть. Отмечаем ошибкой API.
+        elif any_token:
             self._mark_trueapi_error(ErrorCategory.API_ERROR)
 
-        total: dict[str, dict[str, int]] = {
-            st: {"km_count": 0, "quantity_sum": 0} for st in statuses
-        }
-        for r in results:
-            for st in statuses:
-                if st in r["statuses"]:
-                    total[st]["km_count"] += r["statuses"][st]["km_count"]
-                    total[st]["quantity_sum"] += r["statuses"][st]["quantity_sum"]
+        # Общий итог: km_count/quantity_sum считаем только по организациям С ТОКЕНОМ,
+        # и только по их полным статусам. Организации без токена не включаются в итог
+        # (у них нет доступа), но перечисляются на org-уровне в organizations.
+        # Если по полному статусу данных нет у орг с токеном — помечаем неполным.
+        total: dict[str, dict[str, Any]] = {}
+        for st in statuses:
+            km = 0
+            qty = 0
+            complete = True
+            failed_orgs: list[str] = []
+            for r in results:
+                if r.get("no_token"):
+                    continue
+                entry = r["statuses"].get(st)
+                if entry is None:
+                    complete = False
+                    failed_orgs.append(r["name"])
+                    continue
+                if entry.get("error") or not entry.get("complete"):
+                    complete = False
+                    failed_orgs.append(r["name"])
+                    continue
+                km += entry["km_count"] or 0
+                qty += entry["quantity_sum"] or 0
+            total[st] = {
+                "km_count": km if complete else (km or None),
+                "quantity_sum": qty if complete else (qty or None),
+                "complete": complete,
+                "failed_organizations": failed_orgs,
+            }
 
         return {
             "gtin": gtin,

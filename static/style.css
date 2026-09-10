@@ -458,6 +458,8 @@ textarea:focus { outline: none; border-color: var(--primary); }
 .bal-card .q { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .bal-total { border-color: var(--primary); background: var(--surface-2); }
 .err-note { color: var(--err); font-size: 14px; }
+.bal-incomplete { border-color: var(--warn, #e6a700); background: var(--surface-2); }
+.bal-card .incomplete { font-size: 12px; color: var(--warn, #b7791f); margin-top: 4px; font-weight: 600; }
 
 /* ===== Desktop доп. инфо ===== */
 .desktop-only { display: none; }

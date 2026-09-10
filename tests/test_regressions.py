@@ -190,3 +190,107 @@ class TestBatchValidation:
             BalanceRequest(gtin="123456789012345")  # 15 цифр
         # ровно 14 цифр — ок
         assert BalanceRequest(gtin=VALID_GTIN).gtin == VALID_GTIN
+
+
+# ---- Неполный баланс -------------------------------------------------------
+
+class _FailingStatusClient(MockTrueApiClient):
+    """Client, у которого заданный статус падает ошибкой."""
+
+    def __init__(self, failing_status: str):
+        super().__init__()
+        self.failing_status = failing_status
+
+    async def search(self, gtin, status, token, per_page=1000, after=None, product_groups=None):
+        if status == self.failing_status:
+            raise TrueApiError(ErrorCategory.TIMEOUT, "Превышено время ожидания")
+        return await super().search(gtin, status, token, per_page, after, product_groups)
+
+
+class TestBalanceIncomplete:
+    @pytest.mark.asyncio
+    async def test_partial_status_marked_incomplete(self, tmp_path):
+        # INTRODUCED падает — EMITTED/APPLIED успешны.
+        client = _FailingStatusClient(failing_status="INTRODUCED")
+        store = FileTokenStore(tmp_path / "t.json")
+        store.set("7805809291", "mock-token")
+        svc_local = Service(client, store)
+        out = await svc_local.balance(VALID_GTIN, statuses=["EMITTED", "APPLIED", "INTRODUCED"])
+
+        # EMITTED и APPLIED — полные
+        assert out["total"]["EMITTED"]["complete"] is True
+        assert out["total"]["APPLIED"]["complete"] is True
+        # INTRODUCED — неполный, отмечен явно
+        assert out["total"]["INTRODUCED"]["complete"] is False
+        assert out["total"]["INTRODUCED"]["failed_organizations"]
+        # не подставляем ноль вместо неизвестного
+        assert out["total"]["INTRODUCED"]["km_count"] is None
+
+
+# ---- Защита пагинации ------------------------------------------------------
+
+class _MissingMarkerClient(MockTrueApiClient):
+    async def search(self, gtin, status, token, per_page=1000, after=None, product_groups=None):
+        return {"items": [{"cis": f"X{status}1"}], "is_last": False, "next": None}
+
+
+class _RepeatingMarkerClient(MockTrueApiClient):
+    async def search(self, gtin, status, token, per_page=1000, after=None, product_groups=None):
+        # всегда возвращает один и тот же marker → зацикливание
+        return {
+            "items": [{"cis": f"X{status}1"}],
+            "is_last": False,
+            "next": {"lastEmissionDate": "2026-01-01T00:00:00Z", "sgtin": "FIXED"},
+        }
+
+
+class _MultiPageClient(MockTrueApiClient):
+    """Корректная многостраничная пагинация: 3 страницы, потом is_last=True."""
+
+    async def search(self, gtin, status, token, per_page=1000, after=None, product_groups=None):
+        if after is None:
+            return {"items": [{"cis": f"{status}P1"}], "is_last": False,
+                    "next": {"lastEmissionDate": "d1", "sgtin": "p1"}}
+        if after.get("sgtin") == "p1":
+            return {"items": [{"cis": f"{status}P2"}], "is_last": False,
+                    "next": {"lastEmissionDate": "d2", "sgtin": "p2"}}
+        if after.get("sgtin") == "p2":
+            return {"items": [{"cis": f"{status}P3"}], "is_last": True, "next": None}
+        raise AssertionError(f"unexpected after marker: {after}")
+
+
+class TestPaginationSafety:
+    @pytest.mark.asyncio
+    async def test_missing_continuation_marker_is_error(self, tmp_path):
+        client = _MissingMarkerClient()
+        store = FileTokenStore(tmp_path / "t.json")
+        store.set("7805809291", "mock-token")
+        svc_local = Service(client, store)
+        out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
+        st = out["total"]["APPLIED"]
+        assert st["complete"] is False       # частичный результат НЕ выдан как полный
+        assert st["km_count"] is None        # не подменяем ноль
+        assert st["failed_organizations"]
+
+    @pytest.mark.asyncio
+    async def test_repeating_marker_detected(self, tmp_path):
+        client = _RepeatingMarkerClient()
+        store = FileTokenStore(tmp_path / "t.json")
+        store.set("7805809291", "mock-token")
+        svc_local = Service(client, store)
+        out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
+        st = out["total"]["APPLIED"]
+        assert st["complete"] is False
+        assert st["km_count"] is None
+
+    @pytest.mark.asyncio
+    async def test_normal_multipage_pagination_works(self, tmp_path):
+        client = _MultiPageClient()
+        store = FileTokenStore(tmp_path / "t.json")
+        store.set("7805809291", "mock-token")
+        svc_local = Service(client, store)
+        out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
+        st = out["total"]["APPLIED"]
+        assert st["complete"] is True
+        # 3 страницы по 1 КМ = 3 КМ
+        assert st["km_count"] == 3
