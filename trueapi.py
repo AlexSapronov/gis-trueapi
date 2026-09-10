@@ -8,7 +8,13 @@ Backend — единственная точка общения с True API. Fron
 - auth:      GET /auth/key, POST /auth/simpleSignIn
 - info:      POST /api/v3/true-api/cises/info  (массив КИ, до 1000)
 - search:    POST /api/v4/true-api/cises/search (фильтр + пагинация)
-- check:     POST /cises/check (криптографическая верификация)
+- check:     POST /cises/check — криптографическая верификация КМ.
+
+ВАЖНО: `check()` НЕ используется в основном flow (scan/batch/balance) — там
+применяется только `info()` (сведения по КИ), который криптографической
+проверкой НЕ является. `check()` оставлен как реализованный, но не
+подключённый метод — перед подключением нужно сверить с актуальной
+документацией его URL, формат запроса и дополнительные лимиты/запросы.
 """
 from __future__ import annotations
 

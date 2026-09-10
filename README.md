@@ -20,7 +20,11 @@
 
 ## Стек
 
-Python 3.12+, FastAPI, Uvicorn, httpx, Pydantic, Jinja2, vanilla JS. Без React/Redis/Celery/микросервисов.
+Python 3.11+, FastAPI, Uvicorn, httpx, Pydantic, Jinja2, vanilla JS. Без React/Redis/Celery/микросервисов.
+
+> Воспроизводимая установка: используйте `requirements-lock.txt` (точные версии,
+> проверенные на VPS с Python 3.11.15), чтобы обновление пакетов не сломало
+> приложение. `requirements.txt` оставлен как удобный (диапазоны `>=`).
 
 ## Структура
 
@@ -50,6 +54,8 @@ cd gis_app
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+# либо, для воспроизводимой установки как на VPS:
+# pip install -r requirements-lock.txt
 
 cp .env.example .env               # при необходимости поправить
 

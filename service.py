@@ -35,8 +35,11 @@ class Service:
         self.tokens = token_store
         # Состояние последнего обращения к True API (для healthcheck без доп. запросов).
         # Обновляется после каждого scan/batch/balance, НЕ отдельным запросом.
-        self._trueapi_last_success: Optional[str] = None   # ISO timestamp
-        self._trueapi_last_error: Optional[str] = None     # категория ошибки
+        # `_trueapi_state` — ТЕКУЩЕЕ состояние ("unknown"/"ok"/"error"),
+        # timestamps хранятся отдельно и при этом НЕ стираются.
+        self._trueapi_state: str = "unknown"
+        self._trueapi_last_success: Optional[str] = None   # ISO timestamp (не стирается)
+        self._trueapi_last_error: Optional[str] = None     # категория ПОСЛЕДНЕЙ ошибки
         self._trueapi_last_error_time: Optional[str] = None
 
     async def aclose(self) -> None:
@@ -47,29 +50,26 @@ class Service:
 
     def _mark_trueapi_success(self) -> None:
         from datetime import datetime, timezone
+        self._trueapi_state = "ok"
         self._trueapi_last_success = datetime.now(timezone.utc).isoformat()
-        # успех сбрасывает предыдущую ошибку
+        # успех сбрасывает только «текущую ошибку», но не timestamp последнего успеха
         self._trueapi_last_error = None
         self._trueapi_last_error_time = None
 
     def _mark_trueapi_error(self, category: str) -> None:
         from datetime import datetime, timezone
+        self._trueapi_state = "error"
         self._trueapi_last_error = category
         self._trueapi_last_error_time = datetime.now(timezone.utc).isoformat()
 
     def trueapi_state(self) -> dict[str, Any]:
-        """Безопасная сводка состояния True API для /api/status."""
-        if self._trueapi_last_success is None and self._trueapi_last_error is None:
-            return {"state": "unknown", "last_success": None, "last_error": None}
-        if self._trueapi_last_error is not None and self._trueapi_last_success is None:
-            return {
-                "state": "error",
-                "last_success": None,
-                "last_error": self._trueapi_last_error,
-                "last_error_time": self._trueapi_last_error_time,
-            }
+        """Безопасная сводка состояния True API для /api/status.
+
+        state определяется по ПОСЛЕДНЕМУ событию (success/error), а не по
+        наличию/отсутствию last_success. Timestamps выдаются отдельно.
+        """
         return {
-            "state": "ok",
+            "state": self._trueapi_state,
             "last_success": self._trueapi_last_success,
             "last_error": self._trueapi_last_error,
             "last_error_time": self._trueapi_last_error_time,
@@ -86,6 +86,33 @@ class Service:
                 f"нет токена для ИНН {inn}",
             )
         return token
+
+    def _pick_org_inn(self, org_inn: Optional[str]) -> str:
+        """Выбирает ИНН организации для запроса к True API.
+
+        - Если org_inn передан: организация должна существовать (иначе ошибка),
+          используется именно она.
+        - Если org_inn НЕ передан: выбирается ПЕРВАЯ организация с реально
+          настроенным токеном (а не просто первая в реестре).
+        """
+        if org_inn is not None:
+            if not registry.has(org_inn):
+                raise AppError(
+                    ErrorCategory.NOT_FOUND,
+                    f"Организация с ИНН {org_inn} не найдена",
+                )
+            return org_inn
+        # без явного выбора — первая организация с токеном
+        for inn in registry.inns():
+            if self.tokens.has(inn):
+                return inn
+        # токена нет ни у одной организации
+        inns = registry.inns()
+        raise AppError(
+            ErrorCategory.NO_ORG_TOKEN,
+            "Не настроено ни одной организации с токеном True API",
+            f"организации: {inns or 'нет'}",
+        )
 
     def _classify_owner(self, result: ScanResult) -> None:
         if result.owner_inn is None:
@@ -159,7 +186,13 @@ class Service:
             result.error_message = "Не настроено ни одной организации"
             return result
 
-        use_inn = org_inn if org_inn and registry.has(org_inn) else inns[0]
+        try:
+            use_inn = self._pick_org_inn(org_inn)
+        except AppError as e:
+            result.error_category = e.category
+            result.error_message = e.message
+            return result
+
         try:
             token = self._org_token(use_inn)
         except AppError as e:
@@ -249,7 +282,15 @@ class Service:
                 sr.error_category = ErrorCategory.NO_ORG_TOKEN
                 sr.error_message = "Не настроено ни одной организации"
             return results
-        use_inn = org_inn if org_inn and registry.has(org_inn) else inns[0]
+
+        try:
+            use_inn = self._pick_org_inn(org_inn)
+        except AppError as e:
+            for sr in results:
+                if sr.structure_valid:
+                    sr.error_category = e.category
+                    sr.error_message = e.message
+            return results
 
         try:
             token = self._org_token(use_inn)
@@ -357,19 +398,21 @@ class Service:
                         if page.get("is_last") or not page.get("next"):
                             break
                         after = page["next"]
-                    # quantityInPack получаем через info batch
+                    # quantityInPack нужен только для APPLIED/INTRODUCED.
+                    # Для EMITTED достаточно km_count — info() не вызываем.
                     qty_sum = 0
-                    cises = [it.get("cis") or it.get("sgtin") for it in all_items if (it.get("cis") or it.get("sgtin"))]
-                    if cises:
-                        records = await self.client.info(cises, token)
-                        for rec in records:
-                            if rec.get("errorMessage"):
-                                continue
-                            ci = rec.get("cisInfo") or {}
-                            try:
-                                qty_sum += int(ci.get("quantityInPack") or 0)
-                            except (TypeError, ValueError):
-                                pass
+                    if st != "EMITTED":
+                        cises = [it.get("cis") or it.get("sgtin") for it in all_items if (it.get("cis") or it.get("sgtin"))]
+                        if cises:
+                            records = await self.client.info(cises, token)
+                            for rec in records:
+                                if rec.get("errorMessage"):
+                                    continue
+                                ci = rec.get("cisInfo") or {}
+                                try:
+                                    qty_sum += int(ci.get("quantityInPack") or 0)
+                                except (TypeError, ValueError):
+                                    pass
                     out["statuses"][st] = {
                         "km_count": len(all_items),
                         "quantity_sum": qty_sum,

@@ -110,8 +110,8 @@ class ScanResult:
     raw_api: Optional[dict[str, Any]] = None
     api_checked: bool = False
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
+    def as_dict(self, include_raw_api: bool = False) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "raw_code": self.raw_code,
             "gtin": self.gtin,
             "serial": self.serial,
@@ -131,5 +131,9 @@ class ScanResult:
             "error_category": self.error_category,
             "error_message": self.error_message,
             "api_checked": self.api_checked,
-            "raw_api": self.raw_api,
         }
+        # raw_api не отдаём в обычный REST-ответ (UI его не использует, а там
+        # сырые данные ЧЗ). Включаем только в явном debug-режиме для диагностики.
+        if include_raw_api:
+            d["raw_api"] = self.raw_api
+        return d

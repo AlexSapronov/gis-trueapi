@@ -130,6 +130,21 @@
     statusDetail.textContent = detailText || '';
   }
 
+  // Человеческая интерпретация возраста последнего успешного контакта.
+  function agoText(iso) {
+    if (!iso) return '';
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return '';
+    const diff = Date.now() - t;
+    if (diff < 0) return iso.slice(11, 16);
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'только что';
+    if (m < 60) return m + ' мин назад';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + ' ч назад';
+    return Math.floor(h / 24) + ' дн назад';
+  }
+
   function computeStatus() {
     if (!S.serverOnline) {
       setStatus('err', 'НЕТ СВЯЗИ С СЕРВЕРОМ', 'Подключение восстанавливается…',
@@ -159,13 +174,32 @@
         'Обращений к True API после запуска ещё не было (state=unknown).');
       return;
     }
+
     if (ta.state === 'error') {
-      setStatus('err', 'ОШИБКА ЧЕСТНОГО ЗНАКА', 'Честный знак временно недоступен',
-        'last_error=' + (ta.last_error || '?') + ' time=' + (ta.last_error_time || '?'));
+      const cat = ta.last_error || '';
+      // различаем тип проблемы, а не валим всё в "ошибка ЧЗ"
+      if (cat === 'token_invalid' || cat === 'unauthorized') {
+        setStatus('warn', 'ТОКЕН ЧЗ ИСТЁК', 'Требуется обновить токен',
+          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+      } else if (cat === 'forbidden' || cat === 'no_permission') {
+        setStatus('warn', 'НЕТ ДОСТУПА К ЧЗ', 'Недостаточно прав для операции',
+          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+      } else if (cat === 'rate_limit') {
+        setStatus('warn', 'ЧЗ: СЛИШКОМ МНОГО ЗАПРОСОВ', 'Подождите и повторите',
+          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+      } else {
+        setStatus('err', 'ЧЕСТНЫЙ ЗНАК НЕДОСТУПЕН', 'Сервис маркировки временно недоступен',
+          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+      }
       return;
     }
-    // ok
-    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', 'Честный знак: доступен',
+
+    // state = ok
+    const ago = agoText(ta.last_success);
+    const sub = ta.last_success
+      ? (ago === 'только что' ? 'ЧЗ: последняя связь только что' : 'ЧЗ: готов к проверке · последняя связь ' + ago)
+      : 'ЧЗ: готов к проверке';
+    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub,
       'last_success=' + (ta.last_success || '?'));
   }
 
@@ -250,6 +284,32 @@
   function nowTime() {
     const d = new Date();
     return d.toTimeString().slice(0, 8);
+  }
+
+  // ===== общий fetch-helper =====
+  async function apiFetch(url, opts) {
+    opts = opts || {};
+    const ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    const to = setTimeout(() => ctrl.abort(), opts.timeoutMs || 15000);
+    let r;
+    try {
+      r = await fetch(url, opts);
+    } catch (e) {
+      clearTimeout(to);
+      return { ok: false, kind: 'network', status: 0, data: null };
+    }
+    clearTimeout(to);
+    let data = null;
+    try { data = await r.json(); } catch (e) { data = null; }
+    if (r.ok) return { ok: true, kind: 'ok', status: r.status, data };
+    if (r.status >= 400 && r.status < 500) return { ok: false, kind: 'biz', status: r.status, data };
+    return { ok: false, kind: 'server', status: r.status, data };
+  }
+  function showScanError(msg, retry) {
+    scanResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div>' +
+      '<div class="err-msg">' + esc(msg) + '</div>' +
+      (retry ? '<div class="retry">' + esc(retry) + '</div>' : '') + '</div>';
   }
 
   // ===== одиночный скан =====
@@ -340,34 +400,37 @@
     if (!code || !code.trim()) return;
     scanning = true;
     renderPending();
-    try {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 15000);
-      const r = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code.trim() }),
-        signal: ctrl.signal,
-      });
-      clearTimeout(to);
-      if (!r.ok) {
-        S.serverOnline = false; computeStatus();
-        scanResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div></div>';
-        focusScan();
-        return;
-      }
-      const d = await r.json();
-      // успешный HTTP = контакт с backend; обновим trueapi состоянием локально
-      if (S.trueapi) { /* trueapi обновится следующим poll-ом (или можно обновить сразу) */ }
-      renderScan(d);
-      focusScan();
-    } catch (e) {
+    const res = await apiFetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.trim() }),
+    });
+    if (res.kind === 'network') {
       S.serverOnline = false; computeStatus();
-      scanResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div><div class="retry">Подключение восстановится автоматически</div></div>';
+      showScanError('Сервер недоступен', 'Подключение восстановится автоматически');
       focusScan();
-    } finally {
       scanning = false;
+      return;
     }
+    // backend достигнут (4xx/5xx/2xx) — связь есть
+    S.serverOnline = true;
+    if (res.kind === 'server') {
+      showScanError('Внутренняя ошибка сервера', 'Повторите сканирование');
+      focusScan();
+      scanning = false;
+      return;
+    }
+    if (res.kind === 'biz') {
+      const msg = (res.data && res.data.message) || 'Ошибка проверки';
+      showScanError(msg, 'Повторите сканирование');
+      focusScan();
+      scanning = false;
+      return;
+    }
+    // success
+    renderScan(res.data);
+    focusScan();
+    scanning = false;
   }
 
   scanInput.addEventListener('keydown', (e) => {
@@ -387,16 +450,30 @@
     const lines = batchInput.value.split('\n').map((s) => s.trim()).filter(Boolean);
     if (!lines.length) return;
     batchCheck.disabled = true; batchCheck.textContent = 'Проверка…';
-    try {
-      const r = await fetch('/api/scan_batch', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: lines }),
-      });
-      if (!r.ok) { S.serverOnline = false; computeStatus(); return; }
-      const d = await r.json();
-      renderBatch(d.results);
-    } catch (e) { S.serverOnline = false; computeStatus(); }
-    finally { batchCheck.disabled = false; batchCheck.textContent = 'Проверить'; }
+    const res = await apiFetch('/api/scan_batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes: lines }),
+    });
+    batchCheck.disabled = false; batchCheck.textContent = 'Проверить';
+    if (res.kind === 'network') {
+      S.serverOnline = false; computeStatus();
+      batchSummary.classList.remove('hidden');
+      batchSummary.innerHTML = '<span class="err-n">Сервер недоступен</span>';
+      return;
+    }
+    S.serverOnline = true;
+    if (res.kind === 'server') {
+      batchSummary.classList.remove('hidden');
+      batchSummary.innerHTML = '<span class="err-n">Внутренняя ошибка сервера</span>';
+      return;
+    }
+    if (res.kind === 'biz') {
+      batchSummary.classList.remove('hidden');
+      const msg = (res.data && res.data.message) || 'Ошибка проверки';
+      batchSummary.innerHTML = '<span class="err-n">' + esc(msg) + '</span>';
+      return;
+    }
+    renderBatch(res.data.results);
   });
 
   function renderBatch(results) {
@@ -453,16 +530,27 @@
     const gtin = balanceInput.value.trim();
     if (!gtin) return;
     balanceResult.innerHTML = '<div class="result-card neutral"><span class="spinner"></span>Запрос…</div>';
-    try {
-      const r = await fetch('/api/balance', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gtin }),
-      });
-      if (!r.ok) { S.serverOnline = false; computeStatus(); return; }
-      const d = await r.json();
-      if (d.error) { balanceResult.innerHTML = '<div class="result-card err">' + esc(d.message) + '</div>'; return; }
-      renderBalance(d);
-    } catch (e) { S.serverOnline = false; computeStatus(); }
+    const res = await apiFetch('/api/balance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gtin }),
+    });
+    if (res.kind === 'network') {
+      S.serverOnline = false; computeStatus();
+      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div></div>';
+      return;
+    }
+    // backend достигнут — связь есть (в т.ч. 422 = невалидный GTIN)
+    S.serverOnline = true;
+    if (res.kind === 'server') {
+      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Внутренняя ошибка сервера</div></div>';
+      return;
+    }
+    if (res.kind === 'biz') {
+      const msg = (res.data && res.data.message) || 'Ошибка запроса';
+      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">' + esc(msg) + '</div></div>';
+      return;
+    }
+    renderBalance(res.data);
   }
 
   function renderBalance(d) {

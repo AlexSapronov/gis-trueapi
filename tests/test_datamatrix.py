@@ -155,3 +155,57 @@ class TestParseUnambiguous:
         assert p.gtin == "04640638345218"
         assert p.serial == "SERIAL21MORE"
         assert p.structure_valid is True
+
+
+class TestSerialNotTruncated:
+    """Regression: без GS нельзя объявлять любую последовательность цифр
+    (91xx/92x/240/3103/93) следующей AI-границей — это ломает serial."""
+
+    def test_serial_91_like_sequence(self):
+        p = parse(f"01{VALID_GTIN}21ABC91ABDEF")
+        assert p.serial == "ABC91ABDEF"
+
+    def test_serial_240_sequence(self):
+        p = parse(f"01{VALID_GTIN}21TEST240ABC")
+        assert p.serial == "TEST240ABC"
+
+    def test_serial_93_sequence(self):
+        p = parse(f"01{VALID_GTIN}21SERIAL93XYZ")
+        assert p.serial == "SERIAL93XYZ"
+
+    def test_serial_3103_sequence(self):
+        p = parse(f"01{VALID_GTIN}21A3103TEST")
+        assert p.serial == "A3103TEST"
+
+    def test_serial_91ee_still_splits(self):
+        # "91EE" — единственный fallback-маркер криптохвоста без GS
+        p = parse(f"01{VALID_GTIN}21SERIAL91EE06")
+        assert p.serial == "SERIAL"
+        assert p.has_crypto is True
+
+
+class TestScannerPrefix:
+    """Regression: scanner prefix должен нормализоваться и не попадать в api_cis."""
+
+    def test_aim_prefix_d2(self):
+        code = "]d2" + f"01{VALID_GTIN}21SERIAL"
+        p = parse(code)
+        assert p.gtin == VALID_GTIN
+        assert p.serial == "SERIAL"
+        # api_cis начинается непосредственно с "01", без prefix
+        assert p.api_cis == f"01{VALID_GTIN}21SERIAL"
+        assert p.api_cis.startswith("01")
+
+    def test_aim_prefix_c1(self):
+        code = "]C1" + f"01{VALID_GTIN}21SERIAL"
+        p = parse(code)
+        assert p.gtin == VALID_GTIN
+        assert p.serial == "SERIAL"
+        assert p.api_cis == f"01{VALID_GTIN}21SERIAL"
+
+    def test_caret_bracket_prefix(self):
+        code = "^]" + f"01{VALID_GTIN}21SERIAL"
+        p = parse(code)
+        assert p.gtin == VALID_GTIN
+        assert p.serial == "SERIAL"
+        assert p.api_cis == f"01{VALID_GTIN}21SERIAL"
