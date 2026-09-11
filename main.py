@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from config import settings
 from models import AppError, status_ru
 from organizations import registry
+from buildinfo import get_build_id
 from schemas import (
     BalanceRequest,
     ScanBatchRequest,
@@ -60,12 +61,14 @@ async def api_status():
                 "inn": o.inn,
                 "name": o.name,
                 "token_configured": svc.tokens.has(o.inn),
+                "token_updated_at": svc.tokens.updated_at(o.inn),
             }
         )
     return {
         "status": "ok",
         "mode": settings.mode,
         "backend": "online",
+        "build_id": get_build_id(),
         "trueapi": svc.trueapi_state(),
         "organizations": orgs,
     }
@@ -154,8 +157,12 @@ async def admin_token_post(
 # ---- static ------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    return HTMLResponse((BASE_DIR / "static" / "index.html").read_text(encoding="utf-8"))
+async def index(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"build_id": get_build_id()},
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")

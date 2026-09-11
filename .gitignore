@@ -15,6 +15,7 @@ htmlcov/
 
 # ===== Runtime data (tokens!) =====
 data/tokens.json
+data/tokens.json.bak-*
 data/_*
 
 # ===== Logs =====

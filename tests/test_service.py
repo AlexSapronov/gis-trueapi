@@ -85,6 +85,30 @@ async def test_scan_quantity(svc):
     assert r.quantity_in_pack == 500
 
 
+class _NoQuantityClient(MockTrueApiClient):
+    """Mock возвращает cisInfo БЕЗ quantityInPack (поле отсутствует)."""
+
+    async def info(self, cises, token):
+        records = await super().info(cises, token)
+        for rec in records:
+            ci = rec.get("cisInfo")
+            if ci:
+                ci.pop("quantityInPack", None)
+        return records
+
+
+@pytest.mark.asyncio
+async def test_scan_quantity_absent_yields_none_not_zero(tmp_path):
+    """Отсутствующее quantityInPack => quantity_in_pack = None (не 0)."""
+    store = FileTokenStore(tmp_path / "t.json")
+    store.set("7805809291", "mock-token")
+    svc_local = Service(_NoQuantityClient(), store)
+    r = await svc_local.scan(f"01{VALID_GTIN}21NOQTY00")
+    assert r.quantity_in_pack is None
+    d = r.as_dict()
+    assert d["quantity_in_pack"] is None
+
+
 @pytest.mark.asyncio
 async def test_batch_mixed(svc):
     valid = f"01{VALID_GTIN}21AAA"

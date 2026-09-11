@@ -7,10 +7,12 @@
     trueapi: null,           // {state, last_success, last_error...}
     orgs: [],                // список орг с token_configured
     mode: 'mock',
+    buildId: null,           // текущий build_id backend
     soundOn: localStorage.getItem('gis_sound') !== 'off', // default on
     theme: localStorage.getItem('gis_theme'),             // null = авто
     activeTab: 'scan',
     lastScanAt: null,        // timestamp последнего скана
+    reloadPending: false,    // уже запланирован reload (защита от повторного вызова)
   };
 
   const STATUS_RU = { EMITTED: 'Эмитирован', APPLIED: 'Нанесён', INTRODUCED: 'В обороте' };
@@ -128,6 +130,26 @@
     return !!(orgs.length && orgs.some((o) => o.token_configured));
   }
 
+  // Первая организация с настроенным токеном (для отображения возраста токена).
+  function primaryOrg() {
+    const orgs = S.orgs || [];
+    return orgs.find((o) => o.token_configured) || null;
+  }
+
+  function tokenAge(iso) {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return null;
+    const diff = Date.now() - t;
+    if (diff < 0) return 'только что';
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'только что';
+    if (m < 60) return m + ' мин назад';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + ' ч назад';
+    return Math.floor(h / 24) + ' дн назад';
+  }
+
   function setStatus(level, title, sub, detailText) {
     statusBar.className = 'status-bar ' + level;
     statusTitle.textContent = title;
@@ -175,8 +197,12 @@
     // состояние True API
     const ta = S.trueapi;
     if (!ta || ta.state === 'unknown') {
-      setStatus('ok', 'СИСТЕМА РАБОТАЕТ', 'ЧЗ: готов к проверке',
-        'Обращений к True API после запуска ещё не было (state=unknown).');
+      const org = primaryOrg();
+      const age = org ? tokenAge(org.token_updated_at) : null;
+      const sub = age ? ('ЧЗ: готов к проверке · токен обновлён ' + age) : 'ЧЗ: готов к проверке';
+      setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub,
+        'Обращений к True API после запуска ещё не было (state=unknown).' +
+        (org && org.token_updated_at ? ' token_updated_at=' + org.token_updated_at : ''));
       return;
     }
 
@@ -201,11 +227,14 @@
 
     // state = ok
     const ago = agoText(ta.last_success);
+    const org = primaryOrg();
+    const tAge = org ? tokenAge(org.token_updated_at) : null;
     const sub = ta.last_success
       ? (ago === 'только что' ? 'ЧЗ: последняя связь только что' : 'ЧЗ: готов к проверке · последняя связь ' + ago)
       : 'ЧЗ: готов к проверке';
-    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub,
-      'last_success=' + (ta.last_success || '?'));
+    const detail = 'last_success=' + (ta.last_success || '?') +
+      (org && org.token_updated_at ? ' · токен обновлён ' + (tAge || '') + '=' + org.token_updated_at : '');
+    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub, detail);
   }
 
   // полноэкранный оверлей "НЕТ СВЯЗИ"
@@ -235,6 +264,26 @@
   });
 
   // ===== polling backend =====
+  // Безопасный полный reload: ждём пока нет активного скана ввода, чтобы не
+  // прерывать сотрудника посреди операции, и не держим клавишу ввод в поле.
+  function scheduleReload() {
+    if (S.reloadPending) return;
+    S.reloadPending = true;
+    const doReload = () => {
+      try { location.reload(true); } catch (e) { window.scrollTo(0, 0); location.reload(); }
+    };
+    // откладываем до "спокойного" момента: не в момент ввода в поле
+    const active = document.activeElement;
+    const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.value.length > 0;
+    if (!typing) { doReload(); return; }
+    // поле занято — подождём blur/пустое поле
+    const wait = setInterval(() => {
+      const a = document.activeElement;
+      const busy = a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.value.length > 0;
+      if (!busy) { clearInterval(wait); doReload(); }
+    }, 1000);
+  }
+
   async function checkBackend() {
     try {
       const ctrl = new AbortController();
@@ -244,6 +293,12 @@
       if (!r.ok) { S.serverOnline = false; computeStatus(); return; }
       const d = await r.json();
       S.serverOnline = true;
+      // build_id сменился => новый деплой, подтягиваем свежий frontend
+      if (d.build_id && S.buildId && d.build_id !== S.buildId) {
+        scheduleReload();
+        return;
+      }
+      if (d.build_id) S.buildId = d.build_id;
       S.mode = d.mode;
       S.trueapi = d.trueapi;
       S.orgs = d.organizations || [];
@@ -368,17 +423,12 @@
     } else if (verdict === 'warning') {
       // EMITTED / неизвестный статус: жёлтая карточка. Не ошибка.
       const statusStr = statusRu(d.status);
-      const ours = d.ours === true;
-      const foreign = d.ours === false;
-      const ownerBadge = ours ? '<span class="owner-badge ours">НАШ КМ</span>'
-        : foreign ? '<span class="owner-badge foreign">ЧУЖОЙ КМ</span>' : '';
       html = '<div class="result-card warn">' +
         '<div class="verdict">⚠️ ВНИМАНИЕ</div>' +
         '<div class="product">' + esc(d.product_name || '—') + '</div>' +
-        '<div class="qty">' + (d.quantity_in_pack != null ? esc(fmtNum(d.quantity_in_pack)) + ' шт.' : '') + '</div>' +
+        qtyHtml(d.quantity_in_pack) +
         '<div class="status-pill">' + esc(statusStr || d.status || '') + '</div>' +
-        '<div class="owner">' + esc(d.our_org_name || d.owner_name || '') + '</div>' +
-        ownerBadge +
+        ownerHtml(d) +
         (d.verdict_message ? '<div class="warn-msg">' + esc(d.verdict_message) + '</div>' : '') +
         buildDetails(d) +
         '</div>';
@@ -386,17 +436,12 @@
     } else {
       // ok
       const statusStr = statusRu(d.status);
-      const ours = d.ours === true;
-      const foreign = d.ours === false;
-      const ownerBadge = ours ? '<span class="owner-badge ours">НАШ КМ</span>'
-        : foreign ? '<span class="owner-badge foreign">ЧУЖОЙ КМ</span>' : '';
       html = '<div class="result-card ok">' +
         '<div class="verdict">✓ OK</div>' +
         '<div class="product">' + esc(d.product_name || '—') + '</div>' +
-        '<div class="qty">' + (d.quantity_in_pack != null ? esc(fmtNum(d.quantity_in_pack)) + ' шт.' : '') + '</div>' +
+        qtyHtml(d.quantity_in_pack) +
         '<div class="status-pill">' + esc(statusStr || d.status || '') + '</div>' +
-        '<div class="owner">' + esc(d.our_org_name || d.owner_name || '') + '</div>' +
-        ownerBadge +
+        ownerHtml(d) +
         buildDetails(d) +
         '</div>';
       bumpStats('ok'); sfxSuccess();
@@ -410,6 +455,25 @@
 
   function fmtNum(n) {
     try { return Number(n).toLocaleString('ru-RU'); } catch (e) { return n; }
+  }
+
+  // Количество товара в КМ. Отличаем null/отсутствует (не показываем «0 шт.»)
+  // от явного числового 0 («0 шт.»).
+  function qtyHtml(q) {
+    if (q === null || q === undefined) {
+      return '<div class="qty missing">Количество: нет данных</div>';
+    }
+    return '<div class="qty">' + esc(fmtNum(q)) + ' шт.</div>';
+  }
+
+  // Владелец: «НАШ КМ · организация», «ЧУЖОЙ КМ · организация», или только имя.
+  function ownerHtml(d) {
+    const org = d.our_org_name || d.owner_name || '';
+    const badge = d.ours === true ? 'НАШ КМ' : (d.ours === false ? 'ЧУЖОЙ КМ' : '');
+    if (!badge && !org) return '';
+    const parts = badge && org ? badge + ' · ' + esc(org) : (badge || esc(org));
+    const cls = d.ours === true ? 'ours' : (d.ours === false ? 'foreign' : '');
+    return '<div class="owner"><span class="owner-badge ' + cls + '">' + parts + '</span></div>';
   }
 
   function buildDetails(d) {
