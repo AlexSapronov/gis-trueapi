@@ -164,6 +164,40 @@ button, input, textarea {
 }
 .status-bar.open .status-detail { display: block; }
 
+/* техническая строка в раскрытой панели */
+.status-detail .tech-line {
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+/* список организаций и возраст их токенов (в раскрытой панели статуса) */
+.status-detail .org-list {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.status-detail .org-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.status-detail .org-line:last-child { border-bottom: 0; }
+.status-detail .org-name { font-weight: 700; color: var(--text); }
+.status-detail .org-state { color: var(--muted); text-align: right; }
+.status-detail .org-state.no-token { color: var(--err); }
+.status-detail .org-state.warn { color: var(--warn); font-weight: 700; }
+.status-detail .org-note {
+  font-size: 12px;
+  color: var(--warn);
+  font-style: italic;
+  padding: 0 0 4px;
+  text-align: right;
+}
+
 /* ===== Навигация (вкладки) ===== */
 .tabbar {
   display: flex;

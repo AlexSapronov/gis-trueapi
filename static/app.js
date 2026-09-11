@@ -13,6 +13,7 @@
     activeTab: 'scan',
     lastScanAt: null,        // timestamp последнего скана
     reloadPending: false,    // уже запланирован reload (защита от повторного вызова)
+    opsInFlight: 0,          // число активных операций (scan/batch/balance)
   };
 
   const STATUS_RU = { EMITTED: 'Эмитирован', APPLIED: 'Нанесён', INTRODUCED: 'В обороте' };
@@ -150,11 +151,58 @@
     return Math.floor(h / 24) + ' дн назад';
   }
 
-  function setStatus(level, title, sub, detailText) {
+  // Возраст токена в часах (число) для профилактических порогов, либо null.
+  function tokenAgeHours(iso) {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return null;
+    return (Date.now() - t) / 3600000;
+  }
+
+  // Профилактическое замечание по возрасту токена. Фактическое expired
+  // определяет True API (token_invalid/unauthorized), а НЕ возраст.
+  function tokenAgeNote(iso) {
+    const h = tokenAgeHours(iso);
+    if (h === null) return null;
+    if (h > 10) return 'Токен обновлён более 10 часов назад. Проверьте доступ к ЧЗ.';
+    if (h >= 8) return 'Скоро может потребоваться обновление токена';
+    return null;
+  }
+
+  // HTML-список всех организаций с состоянием и возрастом их токена.
+  // Возраст = профилактика, не факт expiry.
+  function orgTokenListHtml() {
+    const orgs = S.orgs || [];
+    if (!orgs.length) return '';
+    const rows = orgs.map((o) => {
+      const name = esc(o.name || o.inn);
+      if (!o.token_configured) {
+        return '<div class="org-line"><span class="org-name">' + name + '</span>' +
+          '<span class="org-state no-token">токен не настроен</span></div>';
+      }
+      const age = o.token_updated_at ? tokenAge(o.token_updated_at) : null;
+      const note = o.token_updated_at ? tokenAgeNote(o.token_updated_at) : null;
+      if (!age) {
+        return '<div class="org-line"><span class="org-name">' + name + '</span>' +
+          '<span class="org-state">токен настроен, возраст неизвестен</span></div>';
+      }
+      const warnCls = note ? ' warn' : '';
+      const noteHtml = note ? '<div class="org-note">' + esc(note) + '</div>' : '';
+      return '<div class="org-line"><span class="org-name">' + name + '</span>' +
+        '<span class="org-state' + warnCls + '">токен обновлён ' + esc(age) + '</span></div>' + noteHtml;
+    });
+    return '<div class="org-list">' + rows.join('') + '</div>';
+  }
+
+  function setStatus(level, title, sub, detailText, detailHtml) {
     statusBar.className = 'status-bar ' + level;
     statusTitle.textContent = title;
     statusSub.textContent = sub || '';
-    statusDetail.textContent = detailText || '';
+    if (detailHtml !== undefined) {
+      statusDetail.innerHTML = detailHtml;
+    } else {
+      statusDetail.textContent = detailText || '';
+    }
   }
 
   // Человеческая интерпретация возраста последнего успешного контакта.
@@ -201,40 +249,40 @@
       const age = org ? tokenAge(org.token_updated_at) : null;
       const sub = age ? ('ЧЗ: готов к проверке · токен обновлён ' + age) : 'ЧЗ: готов к проверке';
       setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub,
-        'Обращений к True API после запуска ещё не было (state=unknown).' +
-        (org && org.token_updated_at ? ' token_updated_at=' + org.token_updated_at : ''));
+        null,
+        '<div class="tech-line">Обращений к True API после запуска ещё не было (state=unknown).</div>' +
+        orgTokenListHtml());
       return;
     }
 
     if (ta.state === 'error') {
       const cat = ta.last_error || '';
+      const techLine = '<div class="tech-line">last_error=' + esc(cat) +
+        ' time=' + esc(ta.last_error_time || '?') + '</div>';
       // различаем тип проблемы, а не валим всё в "ошибка ЧЗ"
       if (cat === 'token_invalid' || cat === 'unauthorized') {
-        setStatus('warn', 'ТОКЕН ЧЗ ИСТЁК', 'Требуется обновить токен',
-          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+        setStatus('warn', 'ТОКЕН ЧЗ ИСТЁК', 'Требуется обновить токен', null,
+          techLine + orgTokenListHtml());
       } else if (cat === 'forbidden' || cat === 'no_permission') {
-        setStatus('warn', 'НЕТ ДОСТУПА К ЧЗ', 'Недостаточно прав для операции',
-          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+        setStatus('warn', 'НЕТ ДОСТУПА К ЧЗ', 'Недостаточно прав для операции', null,
+          techLine + orgTokenListHtml());
       } else if (cat === 'rate_limit') {
-        setStatus('warn', 'ЧЗ: СЛИШКОМ МНОГО ЗАПРОСОВ', 'Подождите и повторите',
-          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+        setStatus('warn', 'ЧЗ: СЛИШКОМ МНОГО ЗАПРОСОВ', 'Подождите и повторите', null,
+          techLine + orgTokenListHtml());
       } else {
-        setStatus('err', 'ЧЕСТНЫЙ ЗНАК НЕДОСТУПЕН', 'Сервис маркировки временно недоступен',
-          'last_error=' + cat + ' time=' + (ta.last_error_time || '?'));
+        setStatus('err', 'ЧЕСТНЫЙ ЗНАК НЕДОСТУПЕН', 'Сервис маркировки временно недоступен', null,
+          techLine + orgTokenListHtml());
       }
       return;
     }
 
     // state = ok
     const ago = agoText(ta.last_success);
-    const org = primaryOrg();
-    const tAge = org ? tokenAge(org.token_updated_at) : null;
     const sub = ta.last_success
       ? (ago === 'только что' ? 'ЧЗ: последняя связь только что' : 'ЧЗ: готов к проверке · последняя связь ' + ago)
       : 'ЧЗ: готов к проверке';
-    const detail = 'last_success=' + (ta.last_success || '?') +
-      (org && org.token_updated_at ? ' · токен обновлён ' + (tAge || '') + '=' + org.token_updated_at : '');
-    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub, detail);
+    const techLine = '<div class="tech-line">last_success=' + esc(ta.last_success || '?') + '</div>';
+    setStatus('ok', 'СИСТЕМА РАБОТАЕТ', sub, null, techLine + orgTokenListHtml());
   }
 
   // полноэкранный оверлей "НЕТ СВЯЗИ"
@@ -264,24 +312,30 @@
   });
 
   // ===== polling backend =====
-  // Безопасный полный reload: ждём пока нет активного скана ввода, чтобы не
-  // прерывать сотрудника посреди операции, и не держим клавишу ввод в поле.
+  // Безопасный полный reload. Гарантированно не прерывает выполняющуюся
+  // операцию (scan/batch/balance): ждём пока все in-flight операции завершатся.
+  function canReload() {
+    return S.opsInFlight === 0;
+  }
+
+  function performReload() {
+    try { location.reload(true); } catch (e) { window.scrollTo(0, 0); location.reload(); }
+  }
+
+  // Вызывается при смене build_id и после завершения каждой операции.
+  // Выполняет reload ровно один раз, когда система свободна.
+  function maybePerformPendingReload() {
+    if (!S.reloadPending) return;
+    if (!canReload()) return;
+    S.reloadPending = false;
+    performReload();
+  }
+
+  // Пометить, что нужен reload (при смене build_id). Сам reload случится
+  // либо сразу (если idle), либо после завершения текущей операции.
   function scheduleReload() {
-    if (S.reloadPending) return;
     S.reloadPending = true;
-    const doReload = () => {
-      try { location.reload(true); } catch (e) { window.scrollTo(0, 0); location.reload(); }
-    };
-    // откладываем до "спокойного" момента: не в момент ввода в поле
-    const active = document.activeElement;
-    const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.value.length > 0;
-    if (!typing) { doReload(); return; }
-    // поле занято — подождём blur/пустое поле
-    const wait = setInterval(() => {
-      const a = document.activeElement;
-      const busy = a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.value.length > 0;
-      if (!busy) { clearInterval(wait); doReload(); }
-    }, 1000);
+    maybePerformPendingReload();
   }
 
   async function checkBackend() {
@@ -366,6 +420,19 @@
     if (r.status >= 400 && r.status < 500) return { ok: false, kind: 'biz', status: r.status, data };
     return { ok: false, kind: 'server', status: r.status, data };
   }
+  // Оборачивает операцию (scan/batch/balance) в учёт in-flight: счётчик
+  // гарантированно сбрасывается в finally, после завершения вызывается
+  // maybePerformPendingReload() (если был отложен reload из-за смены build_id).
+  async function withOperation(fn) {
+    S.opsInFlight += 1;
+    try {
+      return await fn();
+    } finally {
+      S.opsInFlight -= 1;
+      maybePerformPendingReload();
+    }
+  }
+
   function showScanError(msg, retry) {
     scanResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div>' +
       '<div class="err-msg">' + esc(msg) + '</div>' +
@@ -512,38 +579,40 @@
     if (scanning) return;         // дубль Enter
     if (!code || !code.trim()) return;
     scanning = true;
-    renderPending();
-    const res = await apiFetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: code.trim() }),
+    await withOperation(async () => {
+      renderPending();
+      const res = await apiFetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code.trim() }),
+      });
+      if (res.kind === 'network') {
+        S.serverOnline = false; computeStatus();
+        showScanError('Сервер недоступен', 'Подключение восстановится автоматически');
+        focusScan();
+        scanning = false;
+        return;
+      }
+      // backend достигнут (4xx/5xx/2xx) — связь есть
+      S.serverOnline = true;
+      if (res.kind === 'server') {
+        showScanError('Внутренняя ошибка сервера', 'Повторите сканирование');
+        focusScan();
+        scanning = false;
+        return;
+      }
+      if (res.kind === 'biz') {
+        const msg = apiErrorMessage(res.data, 'Ошибка проверки');
+        showScanError(msg, 'Повторите сканирование');
+        focusScan();
+        scanning = false;
+        return;
+      }
+      // success
+      renderScan(res.data);
+      focusScan();
+      scanning = false;
     });
-    if (res.kind === 'network') {
-      S.serverOnline = false; computeStatus();
-      showScanError('Сервер недоступен', 'Подключение восстановится автоматически');
-      focusScan();
-      scanning = false;
-      return;
-    }
-    // backend достигнут (4xx/5xx/2xx) — связь есть
-    S.serverOnline = true;
-    if (res.kind === 'server') {
-      showScanError('Внутренняя ошибка сервера', 'Повторите сканирование');
-      focusScan();
-      scanning = false;
-      return;
-    }
-    if (res.kind === 'biz') {
-      const msg = apiErrorMessage(res.data, 'Ошибка проверки');
-      showScanError(msg, 'Повторите сканирование');
-      focusScan();
-      scanning = false;
-      return;
-    }
-    // success
-    renderScan(res.data);
-    focusScan();
-    scanning = false;
   }
 
   scanInput.addEventListener('keydown', (e) => {
@@ -562,31 +631,33 @@
   batchCheck.addEventListener('click', async () => {
     const lines = batchInput.value.split('\n').map((s) => s.trim()).filter(Boolean);
     if (!lines.length) return;
-    batchCheck.disabled = true; batchCheck.textContent = 'Проверка…';
-    const res = await apiFetch('/api/scan_batch', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes: lines }),
+    await withOperation(async () => {
+      batchCheck.disabled = true; batchCheck.textContent = 'Проверка…';
+      const res = await apiFetch('/api/scan_batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes: lines }),
+      });
+      batchCheck.disabled = false; batchCheck.textContent = 'Проверить';
+      if (res.kind === 'network') {
+        S.serverOnline = false; computeStatus();
+        batchSummary.classList.remove('hidden');
+        batchSummary.innerHTML = '<span class="err-n">Сервер недоступен</span>';
+        return;
+      }
+      S.serverOnline = true;
+      if (res.kind === 'server') {
+        batchSummary.classList.remove('hidden');
+        batchSummary.innerHTML = '<span class="err-n">Внутренняя ошибка сервера</span>';
+        return;
+      }
+      if (res.kind === 'biz') {
+        batchSummary.classList.remove('hidden');
+        const msg = apiErrorMessage(res.data, 'Ошибка проверки');
+        batchSummary.innerHTML = '<span class="err-n">' + esc(msg) + '</span>';
+        return;
+      }
+      renderBatch(res.data.results);
     });
-    batchCheck.disabled = false; batchCheck.textContent = 'Проверить';
-    if (res.kind === 'network') {
-      S.serverOnline = false; computeStatus();
-      batchSummary.classList.remove('hidden');
-      batchSummary.innerHTML = '<span class="err-n">Сервер недоступен</span>';
-      return;
-    }
-    S.serverOnline = true;
-    if (res.kind === 'server') {
-      batchSummary.classList.remove('hidden');
-      batchSummary.innerHTML = '<span class="err-n">Внутренняя ошибка сервера</span>';
-      return;
-    }
-    if (res.kind === 'biz') {
-      batchSummary.classList.remove('hidden');
-      const msg = apiErrorMessage(res.data, 'Ошибка проверки');
-      batchSummary.innerHTML = '<span class="err-n">' + esc(msg) + '</span>';
-      return;
-    }
-    renderBatch(res.data.results);
   });
 
   function renderBatch(results) {
@@ -670,28 +741,30 @@
   async function doBalance() {
     const gtin = balanceInput.value.trim();
     if (!gtin) return;
-    balanceResult.innerHTML = '<div class="result-card neutral"><span class="spinner"></span>Запрос…</div>';
-    const res = await apiFetch('/api/balance', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gtin }),
+    await withOperation(async () => {
+      balanceResult.innerHTML = '<div class="result-card neutral"><span class="spinner"></span>Запрос…</div>';
+      const res = await apiFetch('/api/balance', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gtin }),
+      });
+      if (res.kind === 'network') {
+        S.serverOnline = false; computeStatus();
+        balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div></div>';
+        return;
+      }
+      // backend достигнут — связь есть (в т.ч. 422 = невалидный GTIN)
+      S.serverOnline = true;
+      if (res.kind === 'server') {
+        balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Внутренняя ошибка сервера</div></div>';
+        return;
+      }
+      if (res.kind === 'biz') {
+        const msg = apiErrorMessage(res.data, 'Ошибка запроса');
+        balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">' + esc(msg) + '</div></div>';
+        return;
+      }
+      renderBalance(res.data);
     });
-    if (res.kind === 'network') {
-      S.serverOnline = false; computeStatus();
-      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div></div>';
-      return;
-    }
-    // backend достигнут — связь есть (в т.ч. 422 = невалидный GTIN)
-    S.serverOnline = true;
-    if (res.kind === 'server') {
-      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Внутренняя ошибка сервера</div></div>';
-      return;
-    }
-    if (res.kind === 'biz') {
-      const msg = apiErrorMessage(res.data, 'Ошибка запроса');
-      balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">' + esc(msg) + '</div></div>';
-      return;
-    }
-    renderBalance(res.data);
   }
 
   function renderBalance(d) {
