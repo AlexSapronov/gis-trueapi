@@ -19,7 +19,7 @@ def client(monkeypatch, tmp_path):
     from service import Service
 
     store = FileTokenStore(tmp_path / "tokens.json")
-    store.set("7805809291", "mock-token")
+    store.set("0000000001", "mock-token")
     svc = Service(MockTrueApiClient(), store)
     monkeypatch.setattr(main_module, "svc", svc)
     return TestClient(main_module.app)
@@ -33,7 +33,7 @@ def test_status_has_build_id_and_token_meta(client):
     assert d["build_id"]  # непустой
 
     orgs = d["organizations"]
-    kombr = [o for o in orgs if o["inn"] == "7805809291"][0]
+    kombr = [o for o in orgs if o["inn"] == "0000000001"][0]
     assert kombr["token_configured"] is True
     assert "token_updated_at" in kombr
     assert kombr["token_updated_at"] is not None  # только что записан — meta есть
@@ -47,13 +47,13 @@ def test_status_legacy_token_has_null_updated_at(monkeypatch, tmp_path):
     from service import Service
 
     p = tmp_path / "legacy.json"
-    p.write_text(json.dumps({"7805809291": "raw-token"}), encoding="utf-8")
+    p.write_text(json.dumps({"0000000001": "raw-token"}), encoding="utf-8")
     store = FileTokenStore(p)
     svc = Service(MockTrueApiClient(), store)
     monkeypatch.setattr(main_module, "svc", svc)
 
     c = TestClient(main_module.app)
     d = c.get("/api/status").json()
-    kombr = [o for o in d["organizations"] if o["inn"] == "7805809291"][0]
+    kombr = [o for o in d["organizations"] if o["inn"] == "0000000001"][0]
     assert kombr["token_configured"] is True
     assert kombr["token_updated_at"] is None

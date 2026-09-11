@@ -29,12 +29,12 @@ async def test_exchange_token_success():
         return httpx.Response(200, json={"token": "jwt-token-abc"})
 
     c = make_client(handler)
-    token = await c.exchange_token("7805809291", "uuid-1", "signature-b64")
+    token = await c.exchange_token("0000000001", "uuid-1", "signature-b64")
     assert token == "jwt-token-abc"
     assert captured["url"].endswith("/api/v3/true-api/auth/simpleSignIn")
     assert captured["body"]["uuid"] == "uuid-1"
     assert captured["body"]["data"] == "signature-b64"
-    assert captured["body"]["inn"] == "7805809291"
+    assert captured["body"]["inn"] == "0000000001"
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,7 @@ async def test_exchange_token_invalid_signature():
 
     c = make_client(handler)
     with pytest.raises(TrueApiError) as ei:
-        await c.exchange_token("7805809291", "uuid", "bad")
+        await c.exchange_token("0000000001", "uuid", "bad")
     # 403 на auth => трактуем как проблема подписи
     assert ei.value.category in ("forbidden", "token_invalid")
 
@@ -63,7 +63,7 @@ async def test_info_parses_cisinfo_and_errors():
                         "gtin": "04640638345218",
                         "productName": "M12D-04PFFS-SF8002",
                         "status": "APPLIED",
-                        "ownerInn": "7805809291",
+                        "ownerInn": "0000000001",
                         "quantityInPack": 400,
                         "generalPackageType": "UNIT",
                     }
@@ -111,7 +111,7 @@ async def test_search_body_and_pagination():
                     "result": [
                         {"sgtin": "04640638345218AAA", "cis": "04640638345218AAA",
                          "gtin": "04640638345218", "status": "APPLIED",
-                         "emissionDate": "2026-01-01T00:00:00.000Z", "ownerInn": "7805809291"}
+                         "emissionDate": "2026-01-01T00:00:00.000Z", "ownerInn": "0000000001"}
                     ],
                 },
             )

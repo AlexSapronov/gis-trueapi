@@ -31,7 +31,7 @@ VALID_GTIN = "04640638345218"
 @pytest.fixture
 def svc(tmp_path):
     store = FileTokenStore(tmp_path / "tokens.json")
-    store.set("7805809291", "mock-token")
+    store.set("0000000001", "mock-token")
     client = MockTrueApiClient()
     s = Service(client, store)
     yield s
@@ -173,7 +173,7 @@ class TestUnknownStatusViaService:
     @pytest.mark.asyncio
     async def test_unknown_status_is_warning_not_ok(self, tmp_path):
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         client = _UnknownStatusClient()
         svc_local = Service(client, store)
 

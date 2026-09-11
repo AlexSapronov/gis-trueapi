@@ -12,10 +12,10 @@ VALID_GTIN = "04640638345218"
 @pytest.fixture
 def svc(tmp_path):
     store = FileTokenStore(tmp_path / "tokens.json")
-    store.set("7805809291", "mock-token")
-    store.set("7805550962", "mock-token-2")
-    store.set("7805809950", "mock-token-3")
-    store.set("7805825462", "mock-token-4")
+    store.set("0000000001", "mock-token")
+    store.set("0000000002", "mock-token-2")
+    store.set("0000000003", "mock-token-3")
+    store.set("0000000004", "mock-token-4")
     client = MockTrueApiClient()
     s = Service(client, store)
     yield s
@@ -27,7 +27,7 @@ async def test_scan_our_code(svc):
     r = await svc.scan(code)
     assert r.structure_valid is True
     assert r.ours is True
-    assert r.our_org_name == 'ООО "КОМБРИ"'
+    assert r.our_org_name == 'ООО "ОРГАНИЗАЦИЯ 1"'
     assert r.product_name == "M12D-04PFFS-SF8002"
     assert r.status == "APPLIED"
 
@@ -101,7 +101,7 @@ class _NoQuantityClient(MockTrueApiClient):
 async def test_scan_quantity_absent_yields_none_not_zero(tmp_path):
     """Отсутствующее quantityInPack => quantity_in_pack = None (не 0)."""
     store = FileTokenStore(tmp_path / "t.json")
-    store.set("7805809291", "mock-token")
+    store.set("0000000001", "mock-token")
     svc_local = Service(_NoQuantityClient(), store)
     r = await svc_local.scan(f"01{VALID_GTIN}21NOQTY00")
     assert r.quantity_in_pack is None
@@ -140,16 +140,16 @@ async def test_balance_independent(svc):
 
 @pytest.mark.asyncio
 async def test_balance_one_org_error(svc, tmp_path):
-    # новый чистый store: токены есть у 3 организаций, у Поинт-Л — нет
+    # новый чистый store: токены есть у 3 организаций, у ОРГАНИЗАЦИЯ 4 — нет
     import os
     fresh = FileTokenStore(tmp_path / "fresh.json")
-    fresh.set("7805809291", "mock-token")
-    fresh.set("7805550962", "mock-token-2")
-    fresh.set("7805809950", "mock-token-3")
+    fresh.set("0000000001", "mock-token")
+    fresh.set("0000000002", "mock-token-2")
+    fresh.set("0000000003", "mock-token-3")
     svc.tokens = fresh
     out = await svc.balance(VALID_GTIN)
     orgs = out["organizations"]
-    point = [o for o in orgs if o["inn"] == "7805825462"][0]
+    point = [o for o in orgs if o["inn"] == "0000000004"][0]
     assert point["error"] is not None
     # общий итог всё равно посчитан по 3 организациям
     assert out["total"]["EMITTED"]["km_count"] == 12 * 3
@@ -157,12 +157,12 @@ async def test_balance_one_org_error(svc, tmp_path):
 
 @pytest.mark.asyncio
 async def test_exchange_token(svc):
-    token = await svc.exchange_token("7805809291", "uuid-123", "sig-abc")
+    token = await svc.exchange_token("0000000001", "uuid-123", "sig-abc")
     assert token.startswith("mock-token-")
-    assert svc.tokens.get("7805809291") == token
+    assert svc.tokens.get("0000000001") == token
 
 
 @pytest.mark.asyncio
 async def test_exchange_token_bad_signature(svc):
     with pytest.raises(Exception):
-        await svc.exchange_token("7805809291", "uuid-123", "BAD-signature")
+        await svc.exchange_token("0000000001", "uuid-123", "BAD-signature")

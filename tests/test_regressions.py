@@ -25,10 +25,10 @@ VALID_GTIN = "04640638345218"
 @pytest.fixture
 def svc(tmp_path):
     store = FileTokenStore(tmp_path / "tokens.json")
-    store.set("7805809291", "mock-token")
-    store.set("7805550962", "mock-token-2")
-    store.set("7805809950", "mock-token-3")
-    store.set("7805825462", "mock-token-4")
+    store.set("0000000001", "mock-token")
+    store.set("0000000002", "mock-token-2")
+    store.set("0000000003", "mock-token-3")
+    store.set("0000000004", "mock-token-4")
     client = MockTrueApiClient()
     s = Service(client, store)
     yield s
@@ -79,9 +79,9 @@ class TestTrueApiState:
 class TestOrgSelection:
     @pytest.mark.asyncio
     async def test_scan_uses_first_org_with_token(self, tmp_path):
-        # У КОМБРИ (первая в реестре) токена НЕТ, у МТ-СИСТЕМС — есть.
+        # У ОРГАНИЗАЦИЯ 1 (первая в реестре) токена НЕТ, у ОРГАНИЗАЦИЯ 2 — есть.
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805550962", "mt-token")  # МТ-СИСТЕМС
+        store.set("0000000002", "mt-token")  # ОРГАНИЗАЦИЯ 2
         svc_local = Service(MockTrueApiClient(), store)
         code = f"01{VALID_GTIN}21SCANX"
         r = await svc_local.scan(code)
@@ -100,16 +100,16 @@ class TestOrgSelection:
     @pytest.mark.asyncio
     async def test_scan_explicit_org_without_token(self, tmp_path):
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805550962", "mt-token")
+        store.set("0000000002", "mt-token")
         svc_local = Service(MockTrueApiClient(), store)
-        # явно просим КОМБРИ, у которой токена нет
-        r = await svc_local.scan(f"01{VALID_GTIN}21SCANX", org_inn="7805809291")
+        # явно просим ОРГАНИЗАЦИЯ 1, у которой токена нет
+        r = await svc_local.scan(f"01{VALID_GTIN}21SCANX", org_inn="0000000001")
         assert r.error_category == ErrorCategory.NO_ORG_TOKEN
 
     @pytest.mark.asyncio
     async def test_scan_explicit_unknown_org(self, tmp_path):
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805550962", "mt-token")
+        store.set("0000000002", "mt-token")
         svc_local = Service(MockTrueApiClient(), store)
         r = await svc_local.scan(f"01{VALID_GTIN}21SCANX", org_inn="9999999999")
         assert r.error_category == ErrorCategory.NOT_FOUND
@@ -140,7 +140,7 @@ class TestBalanceEmittedSkipInfo:
     async def test_emitted_does_not_call_info(self, tmp_path):
         client = _RecordingClient()
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         svc_local = Service(client, store)
         await svc_local.balance(VALID_GTIN, statuses=["EMITTED", "APPLIED", "INTRODUCED"])
         # info() не должен вызываться для EMITTED
@@ -213,7 +213,7 @@ class TestBalanceIncomplete:
         # INTRODUCED падает — EMITTED/APPLIED успешны.
         client = _FailingStatusClient(failing_status="INTRODUCED")
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         svc_local = Service(client, store)
         out = await svc_local.balance(VALID_GTIN, statuses=["EMITTED", "APPLIED", "INTRODUCED"])
 
@@ -264,7 +264,7 @@ class TestPaginationSafety:
     async def test_missing_continuation_marker_is_error(self, tmp_path):
         client = _MissingMarkerClient()
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         svc_local = Service(client, store)
         out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
         st = out["total"]["APPLIED"]
@@ -276,7 +276,7 @@ class TestPaginationSafety:
     async def test_repeating_marker_detected(self, tmp_path):
         client = _RepeatingMarkerClient()
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         svc_local = Service(client, store)
         out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
         st = out["total"]["APPLIED"]
@@ -287,7 +287,7 @@ class TestPaginationSafety:
     async def test_normal_multipage_pagination_works(self, tmp_path):
         client = _MultiPageClient()
         store = FileTokenStore(tmp_path / "t.json")
-        store.set("7805809291", "mock-token")
+        store.set("0000000001", "mock-token")
         svc_local = Service(client, store)
         out = await svc_local.balance(VALID_GTIN, statuses=["APPLIED"])
         st = out["total"]["APPLIED"]

@@ -42,8 +42,8 @@ class MockTrueApiClient:
                 continue
 
             ours = gtin == self.our_gtin
-            owner_inn = "7805809291" if ours else "7770000000"
-            owner_name = 'ООО "КОМБРИ"' if ours else 'ООО "Сторонний поставщик"'
+            owner_inn = "0000000001" if ours else "7770000000"
+            owner_name = 'ООО "ОРГАНИЗАЦИЯ 1"' if ours else 'ООО "Сторонний поставщик"'
 
             status = "APPLIED"
             if "EMITTED" in serial:
