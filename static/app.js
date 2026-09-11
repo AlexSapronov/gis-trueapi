@@ -380,14 +380,95 @@
   tabs.forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
   // ===== focus manager =====
+  // Scan focus lock: пока активна вкладка «Скан», scanInput должен принимать
+  // ввод от аппаратного сканера (output-to-cursor) сразу, без тапа по полю.
+  // Восстановление фокуса — event-driven (не polling): blur, window focus,
+  // pageshow, visibilitychange, завершение клика/tap, switchTab, конец scan.
+  const isEditable = (el) => {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const t = el.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return true;
+    return el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true');
+  };
+
+  // Возвращает focus в scanInput, только если пользователь всё ещё на вкладке
+  // «Скан» и фокус уже не в editable-контроле (не воровать ввод из batch/balance).
   function focusScan() {
-    if (S.activeTab === 'scan') {
-      // небольшой отложенный фокус, чтобы не конфликтовать с кликами по кнопкам
-      setTimeout(() => { try { scanInput.focus(); } catch (e) {} }, 30);
-    }
+    if (S.activeTab !== 'scan') return;
+    if (document.activeElement === scanInput) return;
+    // если фокус в другом editable (например, поле balance), не крадём его —
+    // но на вкладке Scan других editable нет, кроме scanInput.
+    if (document.activeElement && isEditable(document.activeElement) &&
+        document.activeElement !== scanInput) return;
+    scheduleScanRefocus();
   }
+
+  // Отложенный refocus (~60 ms): даёт завершиться текущему клику/tap (в т.ч.
+  // клику по вкладке), затем возвращает focus сканеру. Защита от повторной
+  // постановки через таймер + повторную проверку activeTab прямо перед focus.
+  let refocusTimer = null;
+  function scheduleScanRefocus() {
+    if (refocusTimer) clearTimeout(refocusTimer);
+    refocusTimer = setTimeout(() => {
+      refocusTimer = null;
+      if (S.activeTab !== 'scan') return;      // финальная проверка перед focus
+      if (document.activeElement === scanInput) return;
+      try {
+        if (scanInput.focus && typeof scanInput.focus === 'function') {
+          scanInput.focus({ preventScroll: true });
+        }
+      } catch (e) {
+        try { scanInput.focus(); } catch (e2) { /* WebView без focus — игнорируем */ }
+      }
+    }, 60);
+  }
+
+  // клик/tap внутри страницы: если остались на «Скан», возвращаем focus после
+  // того как клик обработается (кнопки sound/theme/статус/«Подробнее»/сброс
+  // статистики срабатывают нормально, затем фокус возвращается к сканеру).
+  document.addEventListener('pointerup', () => {
+    if (S.activeTab === 'scan') scheduleScanRefocus();
+  });
+  document.addEventListener('mouseup', () => {
+    if (S.activeTab === 'scan') scheduleScanRefocus();
+  });
+
+  // случайная потеря фокуса сканером
+  scanInput.addEventListener('blur', () => {
+    if (S.activeTab === 'scan') scheduleScanRefocus();
+  });
+
+  // сворачивание Fully Kiosk / погасший экран / возврат
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) { checkBackend(); focusScan(); }
+  });
+  window.addEventListener('focus', () => { focusScan(); });
+  window.addEventListener('pageshow', () => { focusScan(); });
+
+  // ===== глобальный scanner fallback =====
+  // Страховка: если Fully Kiosk всё же потерял focus (focus оказался на body /
+  // кнопке / другом не-editable элементе), принимаем keyboard-wedge ввод на
+  // вкладке «Скан». НЕ перехватываем на Batch/Balance и не воруем из editable.
+  document.addEventListener('keydown', (e) => {
+    if (S.activeTab !== 'scan') return;          // только вкладка «Скан»
+    const ae = document.activeElement;
+    // если фокус уже в editable-контроле — отдаём ему ввод (не дублируем).
+    if (isEditable(ae)) {
+      // scanInput сам обработает Enter; на других вкладках мы уже вышли выше.
+      return;
+    }
+    // фокус на body/кнопке: принимаем wedge-ввод.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const code = scanInput.value;
+      scanInput.value = '';
+      doScan(code);
+    } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // печатный символ — направляем в scanInput (не вызывая click по input).
+      scanInput.value += e.key;
+    }
+    // после приёма wedge-ввода возвращаем focus сканеру (для следующего кода).
+    scheduleScanRefocus();
   });
 
   // ===== утилиты =====
