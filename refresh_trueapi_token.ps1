@@ -1,3 +1,4 @@
+# refresh_trueapi_token.ps1
 # Получение UUID + SIGNATURE для обновления токена True API (ГИС МТ / Честный ЗНАК).
 #
 # Назначение:  True API challenge -> КриптоПро CSP (подпись УКЭП) -> UUID + SIGNATURE.

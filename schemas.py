@@ -56,8 +56,8 @@ class BalanceRequest(BaseModel):
 
 class TokenUpdateRequest(BaseModel):
     inn: str = Field(..., description="ИНН организации")
-    uuid: str = Field(..., description="UUID из 123.ps1")
-    signature: str = Field(..., description="SIGNATURE из 123.ps1")
+    uuid: str = Field(..., description="UUID из refresh_trueapi_token.ps1")
+    signature: str = Field(..., description="SIGNATURE из refresh_trueapi_token.ps1")
 
 
 class TokenUpdateResponse(BaseModel):

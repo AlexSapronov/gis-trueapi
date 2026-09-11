@@ -1,162 +1,379 @@
-# GIS MT True API — внутреннее веб-приложение проверки кодов маркировки «Честный ЗНАК»
+# GIS MT True API — внутренняя проверка кодов маркировки «Честный Знак»
 
-Внутренний инструмент для сотрудников компании-дистрибьютора электронных
-компонентов. Работает через браузер на Windows-ПК и Android-ТСД со встроенным
-2D-сканером.
+Внутреннее web-приложение для склада: проверка кодов маркировки (КМ) через
+True API ГИС МТ. Основной сценарий — Android-ТСД с аппаратным DataMatrix-сканером
+под Fully Kiosk Browser (сканер в режиме `output to cursor`).
+
+Назначение:
+
+- сканирование КМ и проверка фактического состояния через True API;
+- понятный «складской» вердикт по каждому коду (OK / внимание / ошибка);
+- пакетная проверка списка КМ;
+- баланс по GTIN;
+- работа нескольких юридических лиц, каждое со своим bearer-токеном.
+
+Приложение сознательно простое: FastAPI + vanilla JS, без внешней БД,
+очередей и микросервисов.
+
+---
 
 ## Возможности
 
-- Проверка одного КМ (Data Matrix) со сканера — автофокус, Enter запускает проверку.
-- Пакетная проверка (текстовый ввод, вставка списком/колонкой из Excel).
-- Баланс GTIN по статусам EMITTED / APPLIED / INTRODUCED (независимо), по всем организациям.
-- Определение «наш / чужой» КМ по ownerInn против справочника организаций.
-- Несколько юридических лиц, каждое со своим токеном.
-- Mock-режим (работает без доступа к ЧЗ) и Live-режим (True API ГИС МТ).
-- Обновление токенов организаций через служебную страницу `/admin/token`.
-- Kiosk UI для Android-ТСД: крупные карточки результата, автофокус, звук/вибрация,
-  защита от дубля Enter, нижняя навигация, Membership-friendly CSS.
-- Светлая/тёмная тема (CSS-переменные, сохранение в localStorage).
-- Постоянная status bar с мониторингом состояния backend и True API (без доп. запросов к ЧЗ).
+### Одиночный скан
 
-## Стек
+Один DataMatrix (КМ), запрос свежих данных True API. Результаты проверки
+**не кэшируются** — каждый скан даёт актуальный ответ ЧЗ.
 
-Python 3.11+, FastAPI, Uvicorn, httpx, Pydantic, Jinja2, vanilla JS. Без React/Redis/Celery/микросервисов.
+Карточка результата показывает:
 
-> Воспроизводимая установка: используйте `requirements-lock.txt` (точные версии,
-> проверенные на VPS с Python 3.11.15), чтобы обновление пакетов не сломало
-> приложение. `requirements.txt` оставлен как удобный (диапазоны `>=`).
+- `productName`;
+- `quantityInPack`;
+- status (с русским маппингом);
+- owner (наш / чужой);
+- GTIN и Serial (в раскрываемых технических данных).
 
-## Структура
+### Business policy (verdict)
 
+Интерпретация фактического статуса ЧЗ для сотрудника склада. Реализована
+на backend в `models.py` (`business_verdict`) — явный whitelist, без принципа
+«нет `error_category` => OK»:
+
+| True API status | verdict | UI      |
+| --------------- | ------- | ------- |
+| `APPLIED`       | ok      | зелёный |
+| `INTRODUCED`    | ok      | зелёный |
+| `EMITTED`       | warning | жёлтый  |
+| неизвестный     | warning | жёлтый  |
+| ошибка DM/API/КМ| error   | красный |
+
+`EMITTED` = код эмитирован, но нанесение ещё не зарегистрировано. Это НЕ
+красная ошибка и НЕ зелёный успех — для склада это жёлтое предупреждение:
+если код физически уже нанесён на товар, следует проверить отчёт о нанесении.
+
+Неизвестный (новый) статус True API по умолчанию **не** считается зелёным —
+отображается как warning, без придумывания бизнес-смысла.
+
+Разделение ответственности:
+
+- `TrueApiClient` возвращает факты (сырой статус ЧЗ);
+- `Service` / business policy определяет verdict;
+- frontend только отображает готовый verdict.
+
+### quantityInPack
+
+`quantityInPack` — количество единиц товара, зашитое в конкретный КМ при
+отчёте о нанесении. Это **не** количество кодов и **не** balance quantity.
+
+В UI одно из главных полей, порядок:
+`productName -> quantityInPack -> status -> owner`.
+
+### Пакетная проверка (batch)
+
+Несколько КМ (до 1000 на запрос). Сводка по результату: Total, OK, Warning,
+Error. По каждой строке — свой verdict и `quantityInPack`, раскрываемые
+технические данные.
+
+### Баланс
+
+Баланс по GTIN и статусам `EMITTED` / `APPLIED` / `INTRODUCED`. Каждый статус
+считается независимо. Разделяются два показателя:
+
+- `km_count` — количество КМ;
+- `quantity_sum` — сумма `quantityInPack` по КМ (заполняется для `APPLIED` и
+  `INTRODUCED`; для `EMITTED` поле не заполняется).
+
+Итоги считаются только по организациям **с токеном**; организации без токена
+перечисляются на уровне организации, но не тянут вниз общий итог.
+
+### Несколько организаций
+
+Справочник организаций (`organizations.py` + конфиг `ORGANIZATIONS`) и
+отдельный bearer-токен на каждую (`tokens.py`). Выбор организации для запроса
+через `org_inn` или автоматически — первая организация с настроенным токеном.
+
+---
+
+## Kiosk / ТСД UX
+
+Приложение рассчитано на Android-ТСД. Сканер работает в режиме
+`output to cursor` (аппаратный сканер печатает символы в текущий focus).
+
+### Scan focus lock
+
+Пока открыта вкладка «Скан», поле сканирования автоматически держит focus —
+сотруднику не нужно вручную тапать по input перед каждым КМ:
+
+- focus восстанавливается после `blur`, клика/tap, возврата приложения
+  (`window focus`, `pageshow`, `visibilitychange`);
+- глобальный keyboard-wedge fallback ловит скан, если WebView всё же потерял
+  focus (printable-символы идут в поле, `Enter` запускает проверку);
+- восстановление event-driven, без агрессивного polling;
+- вкладки Batch и Balance **не** перехватываются, ввод не воруется из
+  `INPUT`/`TEXTAREA`/contenteditable.
+
+Атрибут `inputmode="none"` используется, чтобы не поднимать Android soft
+keyboard при автоматическом фокусе.
+
+---
+
+## Verdict policy
+
+Таблица — см. раздел «Business policy (verdict)» выше.
+
+Ключевой принцип: `EMITTED` и неизвестные статусы **не** меняют глобальное
+состояние True API. Если True API успешно ответил — верхняя системная панель
+остаётся зелёной («СИСТЕМА РАБОТАЕТ»); жёлтым становится только результат
+конкретного КМ.
+
+---
+
+## True API health / status bar
+
+Status bar отслеживает состояние системы и True API без дополнительных
+запросов к ЧЗ: состояние обновляется по итогу каждого scan/batch/balance.
+
+Показывается:
+
+- backend online/offline;
+- режим mock/live;
+- состояние True API (`unknown` / `ok` / `error`);
+- `last_success` и реальная категория последней ошибки;
+- список организаций с признаком `token_configured`;
+- возраст токена (`token_updated_at`).
+
+### Token age
+
+`token_updated_at` — когда токен был обновлён **нашим приложением**.
+Это НЕ точный `expires_at`. Эвристика для отображения:
+
+- до 8 часов — информационно;
+- 8–10 часов — «скоро может потребоваться обновление»;
+- более 10 часов — «проверьте доступ к ЧЗ».
+
+Фактический `token_invalid`/`unauthorized` от True API имеет приоритет над
+этой эвристикой.
+
+---
+
+## Автоматическое обновление kiosk
+
+`/api/status` отдаёт `build_id`. Frontend опрашивает статус примерно раз в
+6 секунд.
+
+`build_id`:
+
+- основной источник — Git short SHA текущего HEAD;
+- fallback (без `.git`) — short hash исходников приложения (`*.py`, `*.js`,
+  `*.css`, `*.html`).
+
+Если `build_id` изменился:
+
+- ставится pending reload;
+- активный scan/batch/balance **не** прерывается;
+- reload выполняется после завершения операции (повторный скан автоматически
+  не запускается).
+
+Cache busting — `app.js?v=<build_id>` и `style.css?v=<build_id>`. Это важно
+для Fully Kiosk, который может держать страницу открытой сутками: при
+обновлении приложения ТСД подхватывает свежий frontend без ручного reload.
+
+---
+
+## Архитектура
+
+Проект сознательно простой: FastAPI, Uvicorn, httpx, Pydantic, Jinja2,
+vanilla JS/CSS, файловое хранилище токенов. Без React, Redis, Celery,
+микросервисов и внешней БД.
+
+```text
+ТСД / Browser
+     |
+     v
+FastAPI (main.py)
+     |
+     v
+Service / business policy (service.py, models.py)
+     |
+     v
+TrueApiClient (trueapi.py)
+     |
+     v
+ГИС МТ True API
 ```
-gis_app/
-    main.py             FastAPI-приложение + REST API + /admin/token
-    config.py           конфигурация (.env), справочник организаций
-    service.py          бизнес-логика (scan / batch / balance / exchange)
-    trueapi.py          интерфейс MarkingApiClient + live-клиент True API
-    mockclient.py       mock-реализация клиента (для разработки/тестов)
-    datamatrix.py       парсер Data Matrix (GS1, FNC1, GTIN checksum)
-    models.py           модели, статусы, категории ошибок
-    organizations.py    справочник организаций
-    tokens.py           хранилище токенов (файловое)
-    schemas.py          Pydantic-схемы REST
-    static/             index.html, app.js, style.css
-    templates/          admin_token.html
-    123.ps1             PowerShell: получение UUID+SIGNATURE (УКЭП через КриптоПро)
-    tests/              pytest (parser, service, trueapi client)
-    data/               tokens.json (runtime, в .gitignore) + .gitkeep
+
+`TokenStore` (`tokens.py`) — bearer-токены по организациям (файловое
+хранилище, заменяемое через `TokenStore` Protocol).
+
+---
+
+## Структура проекта
+
+```text
+main.py                     FastAPI-приложение, REST API, /admin/token
+service.py                  бизнес-логика: scan / batch / balance / exchange
+trueapi.py                  MarkingApiClient Protocol + live-клиент True API
+mockclient.py               mock-реализация клиента (детерминированная)
+models.py                   модели, маппинг статусов, verdict policy, ошибки
+datamatrix.py               парсер Data Matrix (GS1, FNC1, checksum GTIN)
+tokens.py                   файловое хранилище bearer-токенов по организациям
+organizations.py            справочник организаций
+config.py                   конфигурация (.env), разбор организаций
+buildinfo.py                build_id (git SHA / source hash)
+schemas.py                  Pydantic-схемы REST
+static/                     app.js, style.css
+templates/                  index.html, admin_token.html
+tests/                      pytest
+refresh_trueapi_token.ps1   PowerShell: UUID+SIGNATURE (УКЭП через КриптоПро)
 ```
 
-## Запуск
+---
 
-```bash
-cd gis_app
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-# либо, для воспроизводимой установки как на VPS:
-# pip install -r requirements-lock.txt
+## Конфигурация
 
-cp .env.example .env               # при необходимости поправить
+Все переменные читаются через `config.py` (`.env` / env):
 
-# mock-режим (без ЧЗ):
-GIS_MODE=mock uvicorn main:app --host 0.0.0.0 --port 8000
+| Переменная       | Назначение                                  | По умолчанию                |
+| ---------------- | ------------------------------------------- | --------------------------- |
+| `GIS_MODE`       | `mock` или `live`                           | `mock`                      |
+| `GIS_BASE_URL`   | базовый URL True API                        | `https://markirovka.crpt.ru` |
+| `ADMIN_KEY`      | ключ доступа к `/admin/*`                   | `change-me-in-production`   |
+| `PRODUCT_GROUPS` | товарные группы для `cises/search`          | `radio`                     |
+| `ORGANIZATIONS`  | список `INN=Название;...`                   | 4 организации (см. `config.py`) |
+| `TOKENS_FILE`    | путь к файлу токенов                        | `data/tokens.json`          |
+| `BUILD_ID`       | явный build_id (опционально)                | не задан                    |
 
-# live-режим:
-GIS_MODE=live uvicorn main:app --host 0.0.0.0 --port 8000
-```
+Секретные значения (ADMIN_KEY, токены) в коде и документации не хранятся.
+`ADMIN_KEY` по умолчанию `change-me-in-production` — в таком виде доступ к
+`/admin/*` запрещён (fail-closed).
 
-Приложение: http://localhost:8000/
-Статус: http://localhost:8000/api/status
+---
 
-## Тесты
+## Token workflow
 
-```bash
-pytest -q
-```
-
-## Обновление токена организации (через 123.ps1)
-
-Токены живут ~10 часов (по данным ГИС МТ). Обновление — через служебную страницу
-`/admin/token` (на неё НЕТ ссылки в основном интерфейсе).
+Обновление bearer-токена организации — через служебную страницу `/admin/token`
+(ссылки на неё в основном интерфейсе нет; токен живёт ~10 часов по данным ГИС МТ).
 
 Порядок:
 
-1. На Windows-машине с установленным КриптоПро CSP запустить `123.ps1`.
-   Скрипт сам запрашивает `GET /auth/key`, подписывает `data` УКЭП и печатает
-   UUID + SIGNATURE.
-2. Открыть `/admin/token`, выбрать организацию.
-3. Вставить UUID в первое поле, SIGNATURE — во второе.
-4. Нажать «Обновить токен».
+1. На Windows-машине с КриптоПро CSP и действующей УКЭП запустить
+   `refresh_trueapi_token.ps1`:
 
-Backend обменивает UUID+SIGNATURE на bearer-токен через `POST /auth/simpleSignIn`
-и сразу начинает его использовать **без перезапуска**.
+   ```powershell
+   .\refresh_trueapi_token.ps1
+   ```
 
-ВАЖНО: пара UUID+SIGNATURE одноразовая и живёт считанные минуты. Вставлять
-свежий вывод 123.ps1 немедленно после запуска скрипта.
+2. Скрипт получает challenge (`GET /auth/key`), подписывает `data` УКЭП через
+   `csptest.exe` и печатает `UUID` + `SIGNATURE`.
+3. Открыть `/admin/token`, выбрать организацию.
+4. Вставить `UUID` в первое поле, `SIGNATURE` — во второе, нажать «Обновить токен».
+5. Backend обменивает `UUID` + `SIGNATURE` на bearer-токен
+   (`POST /auth/simpleSignIn`) и начинает использовать его без перезапуска.
+
+Bearer-токен хранится **только** на backend; frontend его не получает.
+Пара `UUID` + `SIGNATURE` одноразовая и живёт считанные минуты — вставлять
+свежий вывод скрипта сразу после запуска. Имя владельца сертификата УКЭП
+задаётся переменной `$certName` в начале скрипта, реальные auth-данные в
+репозиторий не попадают.
+
+---
+
+## Формат TokenStore
+
+`data/tokens.json` — runtime secret, в `.gitignore`, не коммитится.
+
+Поддерживаются два формата (оба читаются, запись всегда в новом):
+
+Legacy:
+
+```json
+{
+  "7700000000": "TOKEN"
+}
+```
+
+Новый (с метаданными):
+
+```json
+{
+  "7700000000": {
+    "token": "...",
+    "updated_at": "2026-09-11T05:30:00Z"
+  }
+}
+```
+
+Старые записи читаются как есть (`updated_at = null`). При следующем
+обновлении токена запись мигрирует в новый формат. Права файла — `0600`.
+
+---
+
+## API endpoints
+
+- `GET /` — интерфейс проверки КМ (рендер `templates/index.html`).
+- `GET /api/status` — состояние backend, True API, организаций, `build_id`.
+- `POST /api/scan` — проверка одного КМ.
+- `POST /api/scan_batch` — проверка списка КМ (до 1000).
+- `POST /api/balance` — баланс по GTIN (статусы EMITTED/APPLIED/INTRODUCED).
+- `GET /admin/token` — служебная страница обновления токена (защищена).
+- `POST /admin/token` — обмен UUID+SIGNATURE на bearer-токен (защищён).
+
+---
 
 ## Mock-режим
 
-Для разработки/демонстрации. Управляется `GIS_MODE=mock`.
+Детерминированный mock без доступа к ЧЗ (`GIS_MODE=mock`). GTIN
+`04640638345218` считается «нашим».
 
-Детерминированные тестовые КМ (GTIN `04640638345218` считается «нашим»):
+Маркеры в serial:
 
-- `010464063834521821<SERIAL>` — APPLIED, наш, 400 шт.
-- serial с `EMITTED` → статус EMITTED; с `INTRODUCED` → INTRODUCED.
-- serial с `Q<число>` → quantityInPack = числу (например `Q500` → 500).
-- serial с `NOTFOUND` → «КМ не найден».
-- чужой GTIN (например `07712345678907`) → «чужой».
+- `Q<число>` → `quantityInPack = <число>` (например `Q500` → 500);
+- `EMITTED` → статус `EMITTED`;
+- `INTRODUCED` → статус `INTRODUCED`;
+- `NOTFOUND` → «КМ не найден»;
+- иначе → статус `APPLIED`, quantity `400`.
 
-## Конфигурация (.env)
+Чужой GTIN → «чужой» КМ.
 
-| Переменная | Назначение | По умолчанию |
-|---|---|---|
-| `GIS_MODE` | `mock` или `live` | `mock` |
-| `GIS_BASE_URL` | базовый URL ГИС МТ | `https://markirovka.crpt.ru` |
-| `ADMIN_KEY` | ключ доступа к `/admin/*` | `change-me` (замените) |
-| `PRODUCT_GROUPS` | товарные группы для `cises/search` | `radio` |
-| `ORGANIZATIONS` | список `INN=Название;...` | 4 организации |
-| `TOKENS_FILE` | путь к tokens.json | `data/tokens.json` |
+---
 
-## Windows / PowerShell (123.ps1)
+## Тестирование
 
-`123.ps1` — PowerShell-скрипт для получения UUID + SIGNATURE на Windows-машине
-с установленным КриптоПро CSP и действующей УКЭП. Последовательность:
+```bash
+python -m pytest -q
+node --check static/app.js
+```
 
-True API challenge (`GET /auth/key`) → подпись `data` УКЭП через `csptest.exe`
-(`-sfsign -sign -base64 -add`) → вывод `UUID` + `SIGNATURE`.
+CI (`.github/workflows/ci.yml`) на push/PR в `main` запускает pytest
+(mock-режим, Python 3.11 и 3.12) и проверку синтаксиса JS.
 
-Полученные значения вставляются в `/admin/token` (по одному — UUID в первое поле,
-SIGNATURE во второе). Реальные auth-данные в репозиторий не попадают: имя владельца
-сертификата УКЭП задаётся переменной `$certName` в начале скрипта.
+На момент последнего обновления README полный suite проходит успешно.
+
+---
 
 ## Deployment
 
-Текущая схема боевого развёртывания — systemd-сервис + FastAPI/Uvicorn:
+Production: `/root/gis_app`, systemd-юнит `gis-trueapi.service`
+(автозапуск, `Restart=always`, `EnvironmentFile=` → `.env`, Uvicorn на
+`0.0.0.0:8000`).
 
-- systemd юнит `gis-trueapi.service` (автозапуск, рестарт при падении),
-  `EnvironmentFile=` указывает на локальный `.env`.
-- `GIS_MODE=live`, слушает `0.0.0.0:8000`.
-- Доступ по `http://<SERVER_IP>:8000`.
+```bash
+cd /root/gis_app
+git pull
+systemctl restart gis-trueapi.service
+systemctl status gis-trueapi.service
+```
 
 Файлы `.env` и `data/tokens.json` живут только на сервере (в `.gitignore`).
-Публичный IP VPS и секреты в документацию не включаются.
 
-## Безопасность
+---
 
-- `.env` и `data/tokens.json` — в `.gitignore`, не коммитить.
-- Токены не отдаются фронтенду и не логируются.
-- Приватные ключи УКЭП на сервере не хранятся (КриптоПро остаётся на Windows-ПК).
-- `/admin/*` защищён `ADMIN_KEY` (fail-closed: без ключа доступ запрещён).
-- В production: HTTPS + reverse proxy (Caddy/nginx). Не выставляйте Uvicorn голым портом.
+## Security notes
 
-## Архитектурные принципы
-
-1. Backend — единственная точка общения с True API. Frontend токенов не видит.
-2. Организации подключаются конфигурацией, без `if inn == "..."` в коде.
-3. Один Data Matrix parser (datamatrix.py) — везде.
-4. Один Service для скана, batch и balance.
-5. Результаты проверки КМ **не кэшируются** — каждый скан даёт свежий ответ True API.
-6. Connection pooling через единый httpx.AsyncClient.
-7. Batch API (до 1000 КМ) везде, где доступно.
-8. Каждый статус balance считается независимо. `quantityInPack` — отдельно от количества КМ.
+- bearer-токены хранятся только на backend, frontend их не получает и не
+  логирует;
+- `data/tokens.json` в `.gitignore`, права файла `0600`;
+- `/admin/*` защищён `ADMIN_KEY` (`hmac.compare_digest`, fail-closed);
+- не логировать token / signature / ADMIN_KEY;
+- приватные ключи УКЭП на сервере не хранятся (КриптоПро остаётся на Windows-ПК);
+- в production — HTTPS через reverse proxy (Caddy/nginx), не выставлять Uvicorn
+  голым портом.

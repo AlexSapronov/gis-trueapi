@@ -28,7 +28,7 @@ from models import CATEGORY_MESSAGES, ErrorCategory
 
 logger = logging.getLogger("gis.trueapi")
 
-# Auth (реальный прод-путь включает префикс /api/v3/true-api, как в 123.ps1)
+# Auth (реальный прод-путь включает префикс /api/v3/true-api, как в refresh_trueapi_token.ps1)
 AUTH_KEY_PATH = "/api/v3/true-api/auth/key"
 AUTH_SIGN_IN_PATH = "/api/v3/true-api/auth/simpleSignIn"
 # Cises
@@ -166,7 +166,7 @@ class TrueApiClient:
     # ---- auth -----------------------------------------------------------
 
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
-        """signature — подписанные УКЭП данные (base64) из 123.ps1."""
+        """signature — подписанные УКЭП данные (base64) из refresh_trueapi_token.ps1."""
         body = {
             "uuid": uuid,
             "data": signature,
