@@ -109,7 +109,7 @@ foreach ($line in $enumOutput) {
         $containers += $s
     }
 }
-$containers = $containers | Select-Object -Unique
+$containers = @($containers | Select-Object -Unique)
 
 if (-not $containers -or $containers.Count -eq 0) {
     Write-Host "Не найдено доступных контейнеров закрытых ключей КриптоПро."
@@ -146,7 +146,7 @@ foreach ($container in $containers) {
             }
         }
     }
-    $thumbs = $thumbs | Select-Object -Unique
+    $thumbs = @($thumbs | Select-Object -Unique)
 
     if ($thumbs.Count -eq 0) {
         Write-WarnMessage "контейнер найден, но отпечаток SHA1 не получен: $container"
@@ -201,7 +201,7 @@ if (-not $choices -or $choices.Count -eq 0) {
 }
 
 # Дедупликация по thumbprint + container.
-$choices = $choices | Sort-Object Thumbprint, Container -Unique
+$choices = @($choices | Sort-Object Thumbprint, Container -Unique)
 
 # ---------------------------------------------------------------------------
 # Показываем список и запрашиваем выбор
