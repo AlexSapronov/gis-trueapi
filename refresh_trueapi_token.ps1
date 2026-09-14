@@ -134,10 +134,16 @@ foreach ($container in $containers) {
     $thumbs = @()
     foreach ($line in $listOutput) {
         $s = ($line | Out-String)
-        # Ищем строку с SHA1 и hex-значением отпечатка.
-        if ($s -match 'SHA1\s*[:\s]+([0-9A-Fa-f]{40})') {
-            $t = $Matches[1] -replace '\s',''
-            $thumbs += $t.ToUpperInvariant()
+        # Формат подтверждён на CryptoPro CSP / certmgr 5.0.13800:
+        #   SHA1 Thumbprint     : ddf20ee29cc17a62d0aecc4f119d3f2a9736bc94
+        # Поддерживаем также потенциальный вид "SHA1 : <40 hex>" и
+        # отпечаток с пробелами между парами hex (DD F2 0E E2 ...).
+        if ($s -match '(?i)\bSHA1(?:\s+Thumbprint)?\b\s*:\s*(.+)$') {
+            $t = $Matches[1] -replace '[^0-9A-Fa-f]', ''
+            # Принимаем только ровно 40 hex-символов (SHA1-отпечаток).
+            if ($t.Length -eq 40) {
+                $thumbs += $t.ToUpperInvariant()
+            }
         }
     }
     $thumbs = $thumbs | Select-Object -Unique
