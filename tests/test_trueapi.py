@@ -26,15 +26,40 @@ async def test_exchange_token_success():
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"token": "jwt-token-abc"})
+        return httpx.Response(
+            200,
+            json={
+                # ЦРПТ в UUID-ответе возвращает и JWT `token`, и UUID-токен `uuidToken`.
+                "token": "jwt-token-should-be-ignored",
+                "uuidToken": "123e4567-e89b-12d3-a456-426655440000",
+                "expireDate": "2026-10-10T00:00:00.123Z",
+            },
+        )
 
     c = make_client(handler)
     token = await c.exchange_token("0000000001", "uuid-1", "signature-b64")
-    assert token == "jwt-token-abc"
+    # токен берётся именно из uuidToken, а не из старого поля token
+    assert token == "123e4567-e89b-12d3-a456-426655440000"
     assert captured["url"].endswith("/api/v3/true-api/auth/simpleSignIn")
     assert captured["body"]["uuid"] == "uuid-1"
     assert captured["body"]["data"] == "signature-b64"
-    assert captured["body"]["inn"] == "0000000001"
+    assert captured["body"]["unitedToken"] is True
+    # в нашем сценарии (прямая УКЭП организации) inn не должен уходить в True API
+    assert "inn" not in captured["body"]
+    # никаких других/лишних полей в теле
+    assert set(captured["body"]) == {"uuid", "data", "unitedToken"}
+
+
+@pytest.mark.asyncio
+async def test_exchange_token_requires_uuidtoken():
+    # mock вернул только старое поле token, без uuidToken => UUID-flow обязан упасть,
+    # а не молча подставить JWT
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"token": "jwt-token-abc"})
+
+    c = make_client(handler)
+    with pytest.raises(TrueApiError):
+        await c.exchange_token("0000000001", "uuid-1", "signature-b64")
 
 
 @pytest.mark.asyncio

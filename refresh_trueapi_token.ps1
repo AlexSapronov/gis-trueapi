@@ -1,77 +1,49 @@
 ﻿# refresh_trueapi_token.ps1
 # Получение UUID + SIGNATURE для обновления токена True API (ГИС МТ / Честный ЗНАК).
 #
-# Назначение:  True API challenge -> КриптоПро CSP (подпись УКЭП) -> UUID + SIGNATURE.
-# Полученные UUID и SIGNATURE вставляются в служебную страницу /admin/token
-# backend-приложения.
+# Назначение: True API challenge -> КриптоПро CSP (подпись УКЭП) -> UUID + SIGNATURE.
+# Полученные UUID и SIGNATURE вставляются в служебную страницу /admin/token.
 #
-# Требования: Windows + установленный КриптоПро CSP, действующая УКЭП в хранилище.
+# Требования: Windows + КриптоПро CSP + действующая УКЭП.
 #
-# Как работает выбор ЭЦП:
-#   1. Ищет доступные СЕЙЧАС контейнеры закрытых ключей КриптоПро:
-#        csptest.exe -keyset -enum_cont -verifycontext -fqcn
-#   2. Для каждого контейнера получает SHA1-отпечаток сертификата:
-#        certmgr.exe -list -container "<container>"
-#   3. Сопоставляет отпечаток с сертификатом в Cert:\CurrentUser\My.
-#   4. Показывает действующие сертификаты и просит выбрать нужный.
-#   5. Подписывает challenge выбранной ЭЦП по THUMBPRINT (а не по ФИО).
+# Важно для Windows PowerShell 5.1:
+# файл должен быть сохранён как UTF-8 WITH BOM.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ---------------------------------------------------------------------------
-# Русский вывод в консоль (UTF-8) для обычного Windows PowerShell 5.1
-# ---------------------------------------------------------------------------
 try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {
-    # некритично — если консоль не дала сменить кодировку, продолжаем как есть
+    # Некритично.
 }
 
-# ---------------------------------------------------------------------------
-# Поиск инструментов КриптоПро
-# ---------------------------------------------------------------------------
+function Write-WarnMessage([string]$Text) {
+    Write-Host "Внимание: $Text" -ForegroundColor Yellow
+}
+
 function Find-CryptoProTool([string]$Name) {
     $candidates = @()
-    # 1) Get-Command как fallback
+
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($cmd) {
         $candidates += $cmd.Source
     }
-    # 2) Известные пути установки
+
     $baseDirs = @(
         'C:\Program Files\Crypto Pro\CSP\',
         'C:\Program Files (x86)\Crypto Pro\CSP\'
     )
+
     foreach ($dir in $baseDirs) {
         $p = Join-Path $dir $Name
         if (Test-Path $p) {
             $candidates += $p
         }
     }
-    return ($candidates | Select-Object -Unique) | Where-Object { $_ }
-}
 
-$csptest = Find-CryptoProTool 'csptest.exe' | Select-Object -First 1
-$certmgr = Find-CryptoProTool 'certmgr.exe' | Select-Object -First 1
-
-if (-not $csptest) {
-    Write-Host "Ошибка: не найден csptest.exe." -ForegroundColor Red
-    Write-Host "Проверьте установку КриптоПро CSP (C:\Program Files\Crypto Pro\CSP\)." -ForegroundColor Red
-    exit 1
-}
-if (-not $certmgr) {
-    Write-Host "Ошибка: не найден certmgr.exe." -ForegroundColor Red
-    Write-Host "Проверьте установку КриптоПро CSP (C:\Program Files\Crypto Pro\CSP\)." -ForegroundColor Red
-    exit 1
-}
-
-# ---------------------------------------------------------------------------
-# Вспомогательные функции
-# ---------------------------------------------------------------------------
-function Write-WarnMessage([string]$Text) {
-    Write-Host "Внимание: $Text" -ForegroundColor Yellow
+    return @($candidates | Where-Object { $_ } | Select-Object -Unique)
 }
 
 function Get-DisplayName($Cert) {
@@ -79,73 +51,118 @@ function Get-DisplayName($Cert) {
         [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
         $false
     )
+
     if ([string]::IsNullOrWhiteSpace($name)) {
         $name = $Cert.Subject
     }
+
     return $name
 }
 
 function Get-ContainerKind([string]$Fqcn) {
-    # REGISTRY / HDIMAGE => локальный (software) контейнер; остальное — внешний носитель/токен.
-    if ($Fqcn -match '\\\\.\\(REGISTRY|HDIMAGE)\\') {
+    if ($Fqcn -match '^\\\\\.\\(REGISTRY|HDIMAGE)\\') {
         return 'локальный контейнер'
     }
+
     return 'токен'
 }
 
+$csptest = @(Find-CryptoProTool 'csptest.exe') | Select-Object -First 1
+$certmgr = @(Find-CryptoProTool 'certmgr.exe') | Select-Object -First 1
+
+if (-not $csptest) {
+    Write-Host "Ошибка: не найден csptest.exe." -ForegroundColor Red
+    Write-Host "Проверьте установку КриптоПро CSP." -ForegroundColor Red
+    exit 1
+}
+
+if (-not $certmgr) {
+    Write-Host "Ошибка: не найден certmgr.exe." -ForegroundColor Red
+    Write-Host "Проверьте установку КриптоПро CSP." -ForegroundColor Red
+    exit 1
+}
+
 # ---------------------------------------------------------------------------
-# 1. Перечисляем доступные сейчас контейнеры закрытых ключей
+# 1. Ищем доступные сейчас контейнеры КриптоПро
 # ---------------------------------------------------------------------------
-$enumOutput = & $csptest -keyset -enum_cont -verifycontext -fqcn 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Ошибка: не удалось получить список контейнеров КриптоПро (exit code $LASTEXITCODE)." -ForegroundColor Red
+
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $enumOutput = & $csptest -keyset -enum_cont -verifycontext -fqcn 2>&1
+    $enumExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+
+if ($enumExitCode -ne 0) {
+    Write-Host "Ошибка: не удалось получить список контейнеров КриптоПро (exit code $enumExitCode)." -ForegroundColor Red
     exit 1
 }
 
 $containers = @()
+
 foreach ($line in $enumOutput) {
     $s = ($line | Out-String).Trim()
+
     if ($s -match '^\\\\\.\\') {
         $containers += $s
     }
 }
+
 $containers = @($containers | Select-Object -Unique)
 
-if (-not $containers -or $containers.Count -eq 0) {
+if ($containers.Count -eq 0) {
     Write-Host "Не найдено доступных контейнеров закрытых ключей КриптоПро."
     Write-Host "Проверьте, что токен подключён."
     exit 1
 }
 
 # ---------------------------------------------------------------------------
-# 2-4. Сопоставляем контейнер -> SHA1 отпечаток -> сертификат в CurrentUser\My
+# 2. Контейнер -> SHA1 thumbprint -> сертификат CurrentUser\My
 # ---------------------------------------------------------------------------
+
 $now = Get-Date
-$choices = @()  # элементы: @{ Container; Kind; Cert; Thumbprint; Name; NotAfter; DisplayText }
+$choices = @()
 
 foreach ($container in $containers) {
-    $listOutput = & $certmgr -list -container $container 2>&1
-    # Ошибка одного контейнера не роняет весь поиск.
-    if ($LASTEXITCODE -ne 0) {
-        Write-WarnMessage "не удалось прочитать контейнер (exit code $LASTEXITCODE): $container"
+    $previousErrorActionPreference = $ErrorActionPreference
+
+    try {
+        # На Windows PowerShell 5.1 stderr native-программы при
+        # ErrorActionPreference=Stop может прервать скрипт раньше проверки
+        # $LASTEXITCODE. Поэтому для одного вызова certmgr временно Continue.
+        $ErrorActionPreference = 'Continue'
+        $listOutput = & $certmgr -list -container $container 2>&1
+        $certmgrExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($certmgrExitCode -ne 0) {
+        Write-WarnMessage "не удалось прочитать контейнер (exit code $certmgrExitCode): $container"
         continue
     }
 
     $thumbs = @()
+
     foreach ($line in $listOutput) {
         $s = ($line | Out-String)
-        # Формат подтверждён на CryptoPro CSP / certmgr 5.0.13800:
-        #   SHA1 Thumbprint     : ddf20ee29cc17a62d0aecc4f119d3f2a9736bc94
-        # Поддерживаем также потенциальный вид "SHA1 : <40 hex>" и
-        # отпечаток с пробелами между парами hex (DD F2 0E E2 ...).
+
+        # Подтверждённый формат CryptoPro certmgr 5.0.13800:
+        # SHA1 Thumbprint     : ddf20ee29cc17a62d0aecc4f119d3f2a9736bc94
+        # Также поддерживается "SHA1 : ..." и отпечаток с пробелами.
         if ($s -match '(?i)\bSHA1(?:\s+Thumbprint)?\b\s*:\s*(.+)$') {
             $t = $Matches[1] -replace '[^0-9A-Fa-f]', ''
-            # Принимаем только ровно 40 hex-символов (SHA1-отпечаток).
+
             if ($t.Length -eq 40) {
                 $thumbs += $t.ToUpperInvariant()
             }
         }
     }
+
     $thumbs = @($thumbs | Select-Object -Unique)
 
     if ($thumbs.Count -eq 0) {
@@ -163,69 +180,75 @@ foreach ($container in $containers) {
             continue
         }
 
-        # Фильтрация: действующий сейчас, имеет закрытый ключ.
         if (-not $cert.HasPrivateKey) {
             Write-WarnMessage "сертификат не связан с закрытым ключом, пропущен: $(Get-DisplayName $cert)"
             continue
         }
+
         if ($cert.NotBefore -gt $now) {
             Write-WarnMessage "сертификат ещё не действует, пропущен: $(Get-DisplayName $cert)"
             continue
         }
+
         if ($cert.NotAfter -lt $now) {
             Write-WarnMessage "срок действия сертификата истёк, пропущен: $(Get-DisplayName $cert)"
             continue
         }
 
-        $name = Get-DisplayName $cert
-        $kind = Get-ContainerKind $container
-        $shortThumb = $thumb.Substring(0, 8) + '...' + $thumb.Substring($thumb.Length - 8)
-
         $choices += [PSCustomObject]@{
-            Container    = $container
-            Kind         = $kind
-            Cert         = $cert
-            Thumbprint   = $thumb
-            Name         = $name
-            NotAfter     = $cert.NotAfter
-            DisplayText  = "$name"
+            Container  = $container
+            Kind       = Get-ContainerKind $container
+            Cert       = $cert
+            Thumbprint = $thumb
+            Name       = Get-DisplayName $cert
+            NotAfter   = $cert.NotAfter
         }
     }
 }
 
-if (-not $choices -or $choices.Count -eq 0) {
+$choices = @($choices | Sort-Object Thumbprint, Container -Unique)
+
+if ($choices.Count -eq 0) {
     Write-Host ""
     Write-Host "Не найдено доступных действующих сертификатов УКЭП." -ForegroundColor Red
     Write-Host "Проверьте, что токен подключён и сертификат установлен в личное хранилище." -ForegroundColor Red
     exit 1
 }
 
-# Дедупликация по thumbprint + container.
-$choices = @($choices | Sort-Object Thumbprint, Container -Unique)
+# ---------------------------------------------------------------------------
+# 3. Выбор сертификата
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Показываем список и запрашиваем выбор
-# ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "Доступные сертификаты УКЭП:"
 Write-Host ""
+
 $i = 1
+
 foreach ($c in $choices) {
-    $containerShort = $c.Container
-    # Для читаемости обрезаем длинный FQCN до последнего сегмента (имени контейнера)
-    $lastSeg = $containerShort.Split('\') | Where-Object { $_ } | Select-Object -Last 1
-    $mediaLabel = "[$($c.Kind)]" + $(if ($lastSeg) { " $lastSeg" } else { "" })
+    $lastSeg = $c.Container.Split('\') |
+        Where-Object { $_ } |
+        Select-Object -Last 1
+
+    if ($lastSeg) {
+        $mediaLabel = "[$($c.Kind)] $lastSeg"
+    }
+    else {
+        $mediaLabel = "[$($c.Kind)]"
+    }
 
     Write-Host "[$i] $($c.Name)"
     Write-Host "    Действителен до: $($c.NotAfter.ToString('dd.MM.yyyy'))"
     Write-Host "    Носитель: $mediaLabel"
     Write-Host "    Отпечаток: $($c.Thumbprint)"
     Write-Host ""
+
     $i++
 }
 
 $max = $choices.Count
 $selected = $null
+
 while ($null -eq $selected) {
     $answer = Read-Host "Выберите сертификат [1-$max]"
 
@@ -235,6 +258,7 @@ while ($null -eq $selected) {
     }
 
     $num = 0
+
     if (-not [int]::TryParse($answer, [ref]$num)) {
         Write-Host "Некорректный ввод. Введите число от 1 до $max." -ForegroundColor Yellow
         continue
@@ -249,15 +273,19 @@ while ($null -eq $selected) {
 }
 
 Write-Host ""
-Write-Host "Выбран сертификат: $($selected.Name) (отпечаток $($selected.Thumbprint))"
+Write-Host "Выбран сертификат: $($selected.Name)"
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# 5. Получаем challenge True API
+# 4. Получаем challenge True API
 # ---------------------------------------------------------------------------
+
 try {
-    $response = Invoke-RestMethod -Uri "https://markirovka.crpt.ru/api/v3/true-api/auth/key" -Method Get
-} catch {
+    $response = Invoke-RestMethod `
+        -Uri "https://markirovka.crpt.ru/api/v3/true-api/auth/key" `
+        -Method Get
+}
+catch {
     Write-Host "Ошибка при получении challenge True API: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
@@ -266,16 +294,17 @@ $uuid = $response.uuid
 $data = $response.data
 
 if (-not $uuid -or -not $data) {
-    Write-Host "Ошибка: API True API не вернул uuid или data." -ForegroundColor Red
+    Write-Host "Ошибка: True API не вернул uuid или data." -ForegroundColor Red
     exit 1
 }
 
 # ---------------------------------------------------------------------------
-# 6. Подписываем challenge по THUMBPRINT
+# 5. Подписываем challenge
 # ---------------------------------------------------------------------------
+
 $guid = [Guid]::NewGuid().ToString('N')
 $dataFile = Join-Path $env:TEMP "gis_trueapi_$guid.data"
-$sigFile  = Join-Path $env:TEMP "gis_trueapi_$guid.sig"
+$sigFile = Join-Path $env:TEMP "gis_trueapi_$guid.sig"
 
 try {
     [System.IO.File]::WriteAllText(
@@ -284,17 +313,28 @@ try {
         [System.Text.Encoding]::ASCII
     )
 
-    & $csptest `
-        -sfsign `
-        -sign `
-        -in $dataFile `
-        -out $sigFile `
-        -my $selected.Thumbprint `
-        -base64 `
-        -add
+    $previousErrorActionPreference = $ErrorActionPreference
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Ошибка подписи КриптоПро. Exit code: $LASTEXITCODE" -ForegroundColor Red
+    try {
+        $ErrorActionPreference = 'Continue'
+
+        & $csptest `
+            -sfsign `
+            -sign `
+            -in $dataFile `
+            -out $sigFile `
+            -my $selected.Thumbprint `
+            -base64 `
+            -add
+
+        $signExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($signExitCode -ne 0) {
+        Write-Host "Ошибка подписи КриптоПро. Exit code: $signExitCode" -ForegroundColor Red
         exit 1
     }
 
@@ -304,7 +344,7 @@ try {
     }
 
     $sig = Get-Content $sigFile -Raw
-    $sig = $sig -replace '\s',''
+    $sig = $sig -replace '\s', ''
 
     Write-Host ""
     Write-Host "========== UUID =========="
@@ -315,5 +355,5 @@ try {
 }
 finally {
     Remove-Item $dataFile -ErrorAction SilentlyContinue
-    Remove-Item $sigFile  -ErrorAction SilentlyContinue
+    Remove-Item $sigFile -ErrorAction SilentlyContinue
 }

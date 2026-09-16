@@ -166,21 +166,32 @@ class TrueApiClient:
     # ---- auth -----------------------------------------------------------
 
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
-        """signature — подписанные УКЭП данные (base64) из refresh_trueapi_token.ps1."""
+        """signature — подписанные УКЭП данные (base64) из refresh_trueapi_token.ps1.
+
+        Запрашивает единый токен аутентификации в формате UUID (unitedToken=true).
+        `inn` НЕ отправляется в True API: по актуальной документации ЦРПТ параметр
+        обязателен только для сценария с МЧД, которого в проекте нет. INN здесь —
+        локальный идентификатор организации и используется только вызывающей
+        стороной (service) для сохранения полученного токена.
+        """
         body = {
             "uuid": uuid,
             "data": signature,
+            "unitedToken": True,
         }
-        if inn:
-            body["inn"] = inn
         resp = await self._post_json(AUTH_SIGN_IN_PATH, body, token=None)
         if resp.status_code == 200:
             data = resp.json()
-            token = data.get("token") or data.get("uuidToken")
+            # Единый токен в формате UUID приходит в поле `uuidToken`.
+            # `token` (JWT) может присутствовать в том же ответе в рамках backward
+            # compatibility ЦРПТ, поэтому при UUID-flow нужно читать именно uuidToken.
+            token = data.get("uuidToken")
             if not token:
                 raise TrueApiError(
                     ErrorCategory.API_ERROR, "В ответе нет токена", 200
                 )
+            # `expireDate` (опциональный, только для UUID) корректно принимаем и
+            # игнорируем без падения: хранение срока оставлено отдельным улучшением.
             return token
         if resp.status_code in (401, 403):
             self._raise_401(resp)

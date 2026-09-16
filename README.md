@@ -251,12 +251,29 @@ refresh_trueapi_token.ps1   PowerShell: UUID+SIGNATURE (УКЭП через Кр
 ## Token workflow
 
 Обновление bearer-токена организации — через служебную страницу `/admin/token`
-(ссылки на неё в основном интерфейсе нет; токен живёт ~10 часов по данным ГИС МТ).
+(ссылки на неё в основном интерфейсе нет; UUID-токен живёт ~10 часов по данным ГИС МТ).
+
+Auth-flow (по актуальной документации ЦРПТ «Описание True API»):
+
+```
+GET /auth/key
+   ↓
+uuid + data
+   ↓
+подпись data через УКЭП (КриптоПро CSP)
+   ↓
+POST /auth/simpleSignIn  ({ uuid, data, unitedToken: true })
+   ↓
+uuidToken
+   ↓
+Authorization: Bearer <uuidToken>
+```
 
 Порядок:
 
 1. На Windows-машине с КриптоПро CSP и действующей УКЭП запустить
-   `refresh_trueapi_token.ps1`:
+   `refresh_trueapi_token.ps1` — либо двойным кликом по удобному лаунчеру
+   `Обновить токен ЧЗ.cmd` (лежит в той же директории и вызывает PowerShell-скрипт):
 
    ```powershell
    .\refresh_trueapi_token.ps1
@@ -271,8 +288,11 @@ refresh_trueapi_token.ps1   PowerShell: UUID+SIGNATURE (УКЭП через Кр
    `UUID` + `SIGNATURE`.
 3. Открыть `/admin/token`, выбрать организацию.
 4. Вставить `UUID` в первое поле, `SIGNATURE` — во второе, нажать «Обновить токен».
-5. Backend обменивает `UUID` + `SIGNATURE` на bearer-токен
-   (`POST /auth/simpleSignIn`) и начинает использовать его без перезапуска.
+5. Backend обменивает `UUID` + `SIGNATURE` на единый токен аутентификации в формате
+   UUID (`POST /auth/simpleSignIn` с `unitedToken: true`) и начинает использовать его
+   как `Authorization: Bearer <uuidToken>` без перезапуска. `inn` в запрос True API
+   **не** отправляется: по документации ЦРПТ параметр обязателен только для сценария
+   с МЧД, которого в проекте нет.
 
 Bearer-токен хранится **только** на backend; frontend его не получает.
 Пара `UUID` + `SIGNATURE` одноразовая и живёт считанные минуты — вставлять
