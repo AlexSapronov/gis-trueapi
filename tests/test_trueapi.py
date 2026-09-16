@@ -44,10 +44,9 @@ async def test_exchange_token_success():
     assert captured["body"]["uuid"] == "uuid-1"
     assert captured["body"]["data"] == "signature-b64"
     assert captured["body"]["unitedToken"] is True
-    # в нашем сценарии (прямая УКЭП организации) inn не должен уходить в True API
-    assert "inn" not in captured["body"]
-    # никаких других/лишних полей в теле
-    assert set(captured["body"]) == {"uuid", "data", "unitedToken"}
+    assert captured["body"]["inn"] == "0000000001"
+    # в точном теле только 4 поля
+    assert set(captured["body"]) == {"uuid", "data", "inn", "unitedToken"}
 
 
 @pytest.mark.asyncio
