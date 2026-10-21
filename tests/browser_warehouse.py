@@ -2,7 +2,7 @@
 Run: pip install playwright==1.55.0; python -m playwright install chromium
      python tests/browser_warehouse.py
 """
-import sys, re, os, socket, subprocess, tempfile, time, urllib.request
+import sys, re, os, socket, subprocess, tempfile, time, urllib.request, shutil
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -31,6 +31,9 @@ if __name__ == '__main__' and '--scenario' not in sys.argv:
                 except OSError:
                     time.sleep(.1)
             result = subprocess.run([sys.executable, __file__, '--scenario'], cwd=ROOT, env=env)
+            if os.environ.get('WAREHOUSE_SCREENSHOTS'):
+                target=Path(os.environ['WAREHOUSE_SCREENSHOTS']);target.mkdir(parents=True,exist_ok=True)
+                for screenshot in Path(temp).glob('*.png'): shutil.copy2(screenshot,target / screenshot.name)
         finally:
             server.terminate()
             server.wait(timeout=5)
@@ -70,6 +73,10 @@ with sync_playwright() as p:
  admin.locator('#import-form button').click()
  expect(admin.locator('#doc-title')).to_contain_text('Браузер/001')
  assert admin.locator('#lines').inner_text().startswith('MOCK-PN-')
+ admin.locator('#doc-settings summary').click()
+ expect(admin.locator('[data-pn]')).to_be_visible()
+ expect(admin.locator('[data-quantity]')).to_have_value('300')
+ admin.locator('#doc-settings summary').click()
  doc=re.search(r'doc=([^&]+)',admin.url).group(1)
  admin.locator('#start').click();expect(admin.locator('#doc-status')).to_contain_text('В сборке')
  pc.goto(BASE+'/warehouse?kind=shipment')
@@ -124,8 +131,28 @@ with sync_playwright() as p:
  expect(admin.locator('#issue-events')).to_contain_text('КМ удалён')
  expect(admin.locator('#issue-detail')).to_contain_text('APPLIEDQ10ERR')
  admin.locator('#issue-resolution').fill('Заменили ошибочный КМ и убрали лишнее')
- admin.locator('#resolve-form button').click()
+ admin.locator('#return-warehouse').click()
+ expect(admin.locator('#notice')).to_have_text('Документ возвращён на склад с комментарием')
  expect(admin.locator('#issue-state')).to_have_text('Обращения разобраны')
+ expect(mobile.locator('#warehouse-replies')).to_contain_text('Заменили ошибочный КМ и убрали лишнее',timeout=7000)
+ expect(mobile.locator('#wh-scan')).to_be_enabled()
+ expect(pc.locator('#warehouse-replies')).to_contain_text('Заменили ошибочный КМ и убрали лишнее',timeout=7000)
+ mobile.screenshot(path=str(TEST_DIR / 'mobile-reply.png'),full_page=True)
+ admin.screenshot(path=str(TEST_DIR / 'admin-reply.png'),full_page=True)
+ pc.locator('#back').click();pc.locator('#filter-scans').select_option('scanned')
+ expect(pc.locator('#document-list')).to_contain_text('Ответственный ответил — можно продолжать')
+ pc.locator('[data-doc="'+doc+'"]').click()
+ pc.locator('[data-ack-return]').click()
+ expect(pc.locator('#warehouse-replies')).to_be_empty()
+ expect(mobile.locator('#warehouse-replies')).to_be_empty(timeout=7000)
+ expect(admin.locator('#issue-detail')).to_contain_text('Склад ознакомился',timeout=7000)
+ # Theme setting and manual/scanner input remain available on a narrow screen.
+ mobile.locator('#theme-btn').click()
+ expect(mobile.locator('html')).to_have_attribute('data-theme','dark')
+ mobile.locator('#manual-input').click();expect(mobile.locator('#wh-scan')).to_have_attribute('inputmode','text')
+ mobile.locator('#manual-input').click();expect(mobile.locator('#wh-scan')).to_have_attribute('inputmode','none')
+ mobile.screenshot(path=str(TEST_DIR / 'mobile-dark.png'),full_page=True)
+ assert mobile.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile page overflows horizontally'
  pc.locator('#check').click();expect(pc.locator('#complete')).to_be_enabled()
  pc.screenshot(path=str(TEST_DIR / 'desktop.png'),full_page=True)
  mobile.screenshot(path=str(TEST_DIR / 'mobile.png'),full_page=True)
@@ -144,6 +171,7 @@ with sync_playwright() as p:
  admin.locator('#filter-from').fill('2026-10-22');expect(admin.locator('#filter-count')).to_have_text('Документов: 0')
  admin.locator('#filter-from').fill('2026-10-21');admin.locator('#filter-to').fill('2026-10-21');expect(admin.locator('#filter-count')).to_have_text('Документов: 1')
  admin.locator('#document-filters button[type=reset]').click()
+ admin.screenshot(path=str(TEST_DIR / 'admin-list.png'),full_page=True)
  # Receipt: a separate browser resumes a previously started operation.
  receipt=str(TEST_DIR / 'receipt.xlsx')
  open(receipt,'wb').write(make_xlsx({'Документ':header[:4],'Товары':[['PN','GTIN','Код маркировки','Количество в КМ'],['PN',GTIN,code(100,'R'),100]]}))
@@ -192,6 +220,9 @@ with sync_playwright() as p:
  admin.reload();expect(admin.locator('#login')).to_be_visible()
  pc.goto(BASE+'/');pc.locator('#scan-input').fill(code(100));pc.locator('#scan-input').press('Enter')
  expect(pc.locator('#scan-result')).to_contain_text('В обороте')
+ mobile.goto(BASE+'/');expect(mobile.locator('html')).to_have_attribute('data-theme','dark')
+ mobile.locator('#theme-btn').click();expect(mobile.locator('html')).to_have_attribute('data-theme','light')
+ mobile.screenshot(path=str(TEST_DIR / 'verify-light.png'),full_page=True)
  assert not errors, errors
- print('Browser PASS: filters, incident snapshot/log/resolve, code search/error filtering, trash restore, unified admin, session reload/logout, token update, document deletion, admin import/PN/start/export, 2 independent clients, mobile layout, duplicate, stale result, deletion, completion freeze, receipt after reload, general scan. No JS errors.')
+ print('Browser PASS: return to warehouse/ack, shared theme, responsive UI, manual input, filters, incident snapshot/log/resolve, code search/error filtering, trash restore, unified admin, session reload/logout, token update, document deletion, admin import/PN/start/export, 2 independent clients, mobile layout, duplicate, stale result, deletion, completion freeze, receipt after reload, general scan. No JS errors.')
  browser.close()
