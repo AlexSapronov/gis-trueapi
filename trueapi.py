@@ -36,6 +36,8 @@ INFO_PATH = "/api/v3/true-api/cises/info"
 SEARCH_PATH = "/api/v4/true-api/cises/search"
 CHECK_PATH = "/cises/check"
 
+PRODUCT_INFO_PATH = "/api/v4/true-api/product/info"
+
 MAX_INFO_BATCH = 1000
 MAX_SEARCH_PER_PAGE = 1000
 
@@ -59,6 +61,10 @@ class MarkingApiClient(Protocol):
 
         Возвращает {items: [...], is_last: bool, next: {lastEmissionDate, sgtin} | None}.
         """
+        ...
+
+    async def product_info(self, gtins: list[str], token: str) -> list[dict[str, Any]]:
+        """Карточки товаров; model — модель / артикул производителя."""
         ...
 
     async def check(self, cises: list[str], token: str) -> dict[str, Any]:
@@ -240,6 +246,19 @@ class TrueApiClient:
                 self._raise_http(resp)
             # 5xx и прочее
             self._raise_http(resp)
+        return results
+
+    async def product_info(self, gtins: list[str], token: str) -> list[dict[str, Any]]:
+        """Official True API: POST v4/product/info, up to 1000 GTINs."""
+        results = []
+        for start in range(0, len(gtins), MAX_INFO_BATCH):
+            resp = await self._post_json(PRODUCT_INFO_PATH, {"gtins": gtins[start:start + MAX_INFO_BATCH]}, token=token)
+            if resp.status_code != 200:
+                self._raise_http(resp)
+            data = resp.json()
+            if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                raise TrueApiError(ErrorCategory.API_ERROR, "Некорректный ответ product/info")
+            results.extend(x for x in data["results"] if isinstance(x, dict))
         return results
 
     # ---- search ---------------------------------------------------------
