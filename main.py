@@ -133,6 +133,7 @@ from warehouse_store import WarehouseStore
 from warehouse_routes import install_warehouse
 
 warehouse = WarehouseStore(settings.warehouse_db)
+svc.policy_getter = lambda: warehouse.application_settings()['values']
 install_admin_sessions(app, lambda: settings.admin_key)
 install_warehouse(app, lambda: svc, lambda: warehouse, templates)
 

@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from pydantic import BaseModel, Field
 
 from admin_auth import authorized
+from app_settings import ApplicationSettings, SettingsUpdate, defaults
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
@@ -146,8 +147,16 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     @admin.get('/settings')
     def admin_settings():
+        runtime = store_getter().application_settings()
         return {'organizations': [{'inn': o.inn, 'name': o.name} for o in registry.all()],
-                'receipt_default_org': settings.receipt_default_org}
+                'receipt_default_org': runtime['values']['receipt_default_org'],
+                'runtime': runtime,
+                'defaults': defaults(), 'schema': ApplicationSettings.model_json_schema(),
+                'history': store_getter().settings_history()}
+
+    @admin.put('/settings')
+    def save_settings(body: SettingsUpdate):
+        return store_getter().update_settings(body.revision, body.values.model_dump())
 
     @admin.get('/documents')
     def admin_documents(filters: Annotated[AdminFilters, Query()]):
@@ -157,7 +166,7 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     @admin.get('/templates/{kind}')
     def download_template(kind: str):
-        return xlsx_response(template(kind, settings.receipt_default_org if kind == 'receipt' else ''), kind + '-template.xlsx')
+        return xlsx_response(template(kind, store_getter().application_settings()['values']['receipt_default_org'] if kind == 'receipt' else ''), kind + '-template.xlsx')
 
     @admin.post('/documents')
     async def create_document(kind: str = Form(...), org_inn: str = Form(''),
@@ -165,7 +174,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
         content = await file.read(MAX_FILE_SIZE + 1)
         header, lines, expected = await asyncio.to_thread(import_xlsx, content, kind, org_inn or None)
         warnings = []
-        if kind == 'shipment':
+        values = store_getter().application_settings()['values']
+        if kind == 'shipment' and values['auto_pn']:
             try:
                 async with asyncio.timeout(90):
                     pns, warnings = await resolve_pns(service_getter(), [l['gtin'] for l in lines if not l['pn']], header['org_inn'])

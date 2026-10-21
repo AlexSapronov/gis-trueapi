@@ -34,6 +34,7 @@ class Service:
     def __init__(self, client: MarkingApiClient, token_store: TokenStore):
         self.client = client
         self.tokens = token_store
+        self.policy_getter = lambda: {}
         # Состояние последнего обращения к True API (для healthcheck без доп. запросов).
         # Обновляется после каждого scan/batch/balance, НЕ отдельным запросом.
         # `_trueapi_state` — ТЕКУЩЕЕ состояние ("unknown"/"ok"/"error"),
@@ -128,7 +129,7 @@ class Service:
             result.our_org_name = None
 
     @staticmethod
-    def _apply_cisinfo(result: ScanResult, rec: dict[str, Any]) -> None:
+    def _apply_cisinfo(result: ScanResult, rec: dict[str, Any], policy=None) -> None:
         """Накладываем cisInfo-запись на ScanResult."""
         ci = rec.get("cisInfo") or {}
         result.product_name = ci.get("productName")
@@ -148,7 +149,7 @@ class Service:
 
         # business policy layer: интерпретация фактического статуса ЧЗ.
         # НЕ влияет на глобальное состояние True API (оно помечается отдельно).
-        result.verdict, result.verdict_message = business_verdict(result.status)
+        result.verdict, result.verdict_message = business_verdict(result.status, policy)
 
     @staticmethod
     def _info_error_category(rec: dict[str, Any]) -> str:
@@ -167,6 +168,7 @@ class Service:
     # ---- scan (один КМ) ------------------------------------------------
 
     async def scan(self, raw_code: str, org_inn: Optional[str] = None) -> ScanResult:
+        policy = self.policy_getter()
         result = ScanResult(raw_code=raw_code)
 
         parsed = parse(raw_code)
@@ -246,7 +248,7 @@ class Service:
             # при 422/owner — владелец недоступен, но не ошибка структуры КМ
             return result
 
-        self._apply_cisinfo(result, rec)
+        self._apply_cisinfo(result, rec, policy)
         self._classify_owner(result)
         return result
 
@@ -255,6 +257,7 @@ class Service:
     async def scan_batch(
         self, lines: list[str], org_inn: Optional[str] = None
     ) -> list[ScanResult]:
+        policy = self.policy_getter()
         cleaned = [ln.strip() for ln in lines if ln.strip()]
         results: list[ScanResult] = []
         valid: list[tuple[int, str]] = []
@@ -354,7 +357,7 @@ class Service:
                 sr.error_category = self._info_error_category(rec)
                 sr.error_message = rec["errorMessage"]
                 continue
-            self._apply_cisinfo(sr, rec)
+            self._apply_cisinfo(sr, rec, policy)
             self._classify_owner(sr)
 
         return results

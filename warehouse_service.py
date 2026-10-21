@@ -36,6 +36,8 @@ async def resolve_pns(service, gtins, org_inn):
 
 
 async def shipment_results(service, doc):
+    policy = doc.get('runtime_settings', {}).get('values', {})
+    allowed = policy.get('shipment_statuses', ['INTRODUCED'])
     scans = doc['scans']
     results = await service.scan_batch([s['raw_code'] for s in scans], doc['org_inn'])
     # Owner fields may be visible only to another organization. Retry only unresolved codes.
@@ -58,8 +60,8 @@ async def shipment_results(service, doc):
             reasons.append(r.error_message or 'Проверка через True API не выполнена')
         if api.get('gtin') != scan['gtin']:
             reasons.append('GTIN в ответе True API не совпадает с отсканированным')
-        if r.status != 'INTRODUCED':
-            reasons.append(f'Недопустимый статус: {r.status or "не установлен"}. Нужен INTRODUCED (В обороте)')
+        if r.status not in allowed:
+            reasons.append(f'Недопустимый статус: {r.status or "не установлен"}. Допустимы: {", ".join(allowed)}')
         if not r.owner_inn:
             reasons.append('Владелец не установлен')
         elif doc['strict_owner'] and r.owner_inn != doc['org_inn']:
@@ -112,17 +114,21 @@ def receipt_results(doc):
 
 async def check_document(store, service, document_id):
     check_id, doc = store.begin_check(document_id)
+    policy = doc['runtime_settings']['values']
     try:
-        async with asyncio.timeout(540):
+        async with asyncio.timeout(policy['check_timeout_seconds']):
             if doc['kind'] == 'shipment':
                 result, pns = await shipment_results(service, doc)
                 missing = [l['gtin'] for l in doc['lines'] if not l['pn'] and l['gtin'] not in pns]
-                resolved, warnings = await resolve_pns(service, missing, doc['org_inn']) if missing else ({}, [])
-                store.fill_pns(document_id, {**pns, **resolved})
+                resolved, warnings = await resolve_pns(service, missing, doc['org_inn']) if missing and policy['auto_pn'] else ({}, [])
+                if policy['auto_pn']:
+                    store.fill_pns(document_id, {**pns, **resolved})
                 result['warnings'] = warnings
             else:
                 result = receipt_results(doc)
             result['checked_at'] = datetime.now(timezone.utc).isoformat()
+            result['policy'] = {'settings_revision': doc['runtime_settings']['revision'],
+                                'shipment_statuses': policy['shipment_statuses'], 'strict_owner': bool(doc['strict_owner'])}
             return store.finish_check(document_id, check_id, doc['version'], result)
     except BaseException:
         store.cancel_check(document_id, check_id)

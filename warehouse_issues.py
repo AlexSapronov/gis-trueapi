@@ -40,6 +40,9 @@ class WarehouseIssues:
     def report_issue(self, document_id, version, result_at, message=''):
         from warehouse_store import WarehouseError, now
         with self.connection(True) as c:
+            values = self.require_feature(c, 'report_issues')
+            if values['report_comment_required'] and not message.strip():
+                raise WarehouseError('Опишите расхождение в комментарии')
             d = self._snapshot(c, document_id)
             self._active(d)
             if d['version'] != version or d['result_at'] != result_at or not d['check_current']:
@@ -109,6 +112,7 @@ class WarehouseIssues:
         if not message:
             raise WarehouseError('Напишите складу, что было исправлено и что нужно сделать')
         with self.connection(True) as c:
+            self.require_feature(c, 'return_to_warehouse')
             d=self._doc(c,document_id)
             self._active(d)
             issue=c.execute('SELECT * FROM warehouse_issues WHERE document_id=? AND id=?',(document_id,issue_id)).fetchone()

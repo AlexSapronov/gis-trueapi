@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from warehouse_issues import WarehouseIssues
+from app_settings import RuntimeSettings
 
 
 class WarehouseError(Exception):
@@ -22,7 +23,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(WarehouseIssues):
+class WarehouseStore(WarehouseIssues, RuntimeSettings):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,7 @@ class WarehouseStore(WarehouseIssues):
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
             if 'deleted_at' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
+            self.init_settings(c)
         c.close()
 
     @contextmanager
@@ -114,6 +116,7 @@ class WarehouseStore(WarehouseIssues):
     def create(self, header, lines, expected):
         document_id, ts = uuid.uuid4().hex, now()
         with self.connection(True) as c:
+            header = {**header, 'strict_owner': header.get('strict_owner', self._settings(c)['values']['strict_owner_default'])}
             c.execute('''INSERT INTO warehouse_documents
                 (id,kind,number,date,org_inn,org_name,recipient_name,recipient_inn,
                  strict_owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
@@ -139,6 +142,7 @@ class WarehouseStore(WarehouseIssues):
         d['expected'] = [dict(r) for r in c.execute(
             'SELECT * FROM warehouse_expected WHERE document_id=? ORDER BY cis', (document_id,))]
         d['result'] = json.loads(d['result']) if d['result'] else None
+        d['runtime_settings'] = self._settings(c)
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
         d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
         d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['checking'] and
@@ -229,6 +233,7 @@ class WarehouseStore(WarehouseIssues):
 
     def delete_scan(self, document_id, scan_id):
         with self.connection(True) as c:
+            self.require_feature(c, 'worker_delete_scans')
             self._active(self._doc(c, document_id))
             prior = c.execute('SELECT * FROM warehouse_scans WHERE document_id=? AND id=?', (document_id,scan_id)).fetchone()
             changed = c.execute('DELETE FROM warehouse_scans WHERE document_id=? AND id=?',
