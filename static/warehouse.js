@@ -4,6 +4,7 @@
   const admin = document.body.dataset.admin === 'true';
   let authenticated = false;
   let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
+  let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshing = false, queueError = false;
@@ -22,7 +23,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !tokenDraft() && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -73,6 +74,67 @@
   const focus = input ? ScannerFocus.create({input, active:() => !!current && current.status === 'active' && !$('duplicate').open,
     submit:code => enqueue(code), resume:() => refresh()}) : null;
 
+  function caseDraft() { return admin && !!$('issue-resolution').value; }
+  function filterValues() {
+    const values = {kind, scan_state:$('filter-scans').value};
+    if ($('filter-org').value) values.org_inn = $('filter-org').value;
+    if (admin) {
+      [['query','filter-query'],['status','filter-status'],['date_from','filter-from'],['date_to','filter-to']].forEach(([field,id]) => { if ($(id).value) values[field] = $(id).value; });
+      values.issue_state = $('filter-issues').value; values.trash = $('filter-trash').value;
+    }
+    return values;
+  }
+  function filterKey() { return 'warehouse-filters-' + (admin ? 'admin-' : 'worker-') + kind; }
+  function saveFilters() { try { sessionStorage.setItem(filterKey(), JSON.stringify(filterValues())); } catch (_) { /* optional preferences */ } }
+  function loadFilters() {
+    loadingFilters=true; $('document-filters').reset();
+    let saved; try { saved = JSON.parse(sessionStorage.getItem(filterKey()) || '{}'); } catch (_) { saved = {}; }
+    const ids = {org_inn:'filter-org',scan_state:'filter-scans',query:'filter-query',status:'filter-status',date_from:'filter-from',date_to:'filter-to',issue_state:'filter-issues',trash:'filter-trash'};
+    Object.entries(ids).forEach(([field,id]) => { if ($(id) && saved[field] != null) $(id).value = saved[field]; });
+    if (!$('filter-scans').value) $('filter-scans').value = 'all';
+    loadingFilters=false;
+  }
+  function setupFilterOrgs(orgs) {
+    $('filter-org').innerHTML = '<option value="">Все организации</option>' + orgs.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
+  }
+  function renderScans() {
+    if (!current) return;
+    const details = new Map((current.result?.codes || []).map(c => [c.scan_id,c]));
+    const query = $('scan-query').value.trim().toLowerCase(), errorsOnly = $('scan-errors-only').checked;
+    const scans = current.scans.filter(s => (!query || (s.cis + ' ' + s.raw_code + ' ' + s.gtin).toLowerCase().includes(query)) && (!errorsOnly || details.get(s.id)?.errors.length));
+    $('scan-total').textContent = '(' + current.scans.length + ')';
+    $('scan-found').textContent = `Показано ${scans.length} из ${current.scans.length}`;
+    $('scans').innerHTML = scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>` : '<p>КМ не проверен</p>'}${!admin && current.status === 'active' ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('') || '<p>Подходящих КМ нет</p>';
+  }
+  async function loadIssues() {
+    if (!current) return;
+    const id = current.id, data = await json(apiBase + '/documents/' + id + '/issues');
+    if (current?.id !== id) return;
+    $('issues-panel').hidden = false;
+    $('issues-list').innerHTML = data.issues.map(i => `<button class="btn wh-issue-choice" data-issue="${esc(i.id)}">${i.resolved_at ? 'Разобрано' : 'Проблема'} · ${esc(stamp(i.reported_at))} · ${esc(i.message || 'Без комментария')}</button>`).join('') || '<p>Обращений нет</p>';
+  }
+  async function loadIssueEvents(append=false) {
+    if (!current || !selectedIssue) return;
+    const id=current.id, issue=selectedIssue.id;
+    const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
+    if (current?.id !== id || selectedIssue?.id !== issue) return;
+    const labels={created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано'};
+    const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
+    if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
+    eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
+  }
+  async function openIssue(issueId) {
+    if (caseDraft()) throw new Error('Сначала завершите разбор текущего обращения или очистите комментарий.');
+    const id=current.id, issue=await json(apiBase + '/documents/' + id + '/issues/' + issueId);
+    if (current?.id !== id) return;
+    selectedIssue=issue; eventsBefore=null;
+    const snap=issue.snapshot, result=snap.result, rawCodes=new Map(snap.scans.map(s=>[s.id,s.raw_code]));
+    const rows=result.rows.filter(r => r.remaining !== 0).map(r => `<p>${esc(r.gtin)}: требуется ${r.required}, проверено ${r.actual}, осталось ${r.remaining}</p>`).join('');
+    const codes=result.codes.map(c => `<details class="wh-code"><summary>${c.errors.length ? 'Ошибка · ' : ''}${esc(c.cis)}</summary><p>${esc(c.owner_name || c.owner_inn || '')} ${esc(c.status || '')} · ${c.quantity ?? 'Количество неизвестно'}</p><p class="wh-bad">${esc(c.errors.join('; '))}</p><pre>${esc(rawCodes.get(c.scan_id) || '')}</pre></details>`).join('');
+    const missing=(result.missing || []).map(c => `<p class="wh-bad">Отсутствует КМ: ${esc(c.cis)}</p>`).join('');
+    $('issue-detail').innerHTML=`<h4>Проверка от ${esc(stamp(issue.result_at))} · версия ${issue.version}</h4><p>${esc(issue.message || 'Без комментария')}</p><p class="${issue.resolved_at ? 'wh-good' : 'wh-bad'}">${issue.resolved_at ? 'Разобрано: ' + esc(issue.resolution) : 'Требует внимания'}</p>${rows}${missing}<details open><summary>Коды в обращении: ${snap.scans.length}</summary>${codes}</details>`;
+    $('resolve-form').hidden=!!issue.resolved_at; await loadIssueEvents();
+  }
   function tokenDraft() { return admin && (!!$('token-uuid').value || !!$('token-signature').value); }
   function requireLogin() {
     authenticated = false;
@@ -81,6 +143,7 @@
     $('connection').textContent = 'Войдите в админку';
   }
   function showSection() {
+    $('document-filters').hidden = !!current || (admin && section === 'token');
     if (!admin) return;
     const token = section === 'token';
     $('token-panel').hidden = !token;
@@ -103,6 +166,7 @@
     $('login').hidden = true; $('workspace').hidden = false;
     defaultReceiptOrg = config.receipt_default_org;
     const options = config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
+    setupFilterOrgs(config.organizations); loadFilters();
     $('import-org').innerHTML = '<option value="">Из файла</option>' + options;
     $('token-org').innerHTML = options;
     if (kind === 'receipt') $('import-org').value = defaultReceiptOrg;
@@ -113,14 +177,19 @@
     showSection();
   }
   async function list() {
-    const data = await json(apiBase + '/documents?kind=' + kind);
+    const serial=++listSerial;
+    const data = await json(apiBase + '/documents?' + new URLSearchParams(filterValues()));
+    if (serial !== listSerial || (admin && section === 'token')) return;
+    $('filter-count').textContent = 'Документов: ' + data.documents.length;
     document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', b.dataset.kind === kind));
-    $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc" data-doc="${esc(d.id)}"><b>№ ${esc(d.number)} · ${esc(d.date)}</b><span>${esc(d.org_name)}</span>${d.recipient_name ? `<span>Получатель: ${esc(d.recipient_name)}</span>` : ''}<span>${esc(status(d))} · ${d.scan_count} КМ</span>${d.kind === 'shipment' ? `<span>${d.strict_owner ? 'Строгое соответствие' : 'Наши организации'}</span>` : ''}<span>Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<p>Документов пока нет</p>';
+    $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc ${d.open_issues ? 'wh-problem' : ''}" data-doc="${esc(d.id)}"><b>№ ${esc(d.number)} · ${esc(d.date)}</b>${d.open_issues ? '<span class="wh-bad">⚠ Проблемный · обращений: ' + d.open_issues + '</span>' : ''}${d.deleted_at ? '<span>В корзине</span>' : ''}<span>${esc(d.org_name)}</span>${d.recipient_name ? `<span>Получатель: ${esc(d.recipient_name)}</span>` : ''}<span>${esc(status(d))} · ${d.scan_count} КМ · ${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span>${d.kind === 'shipment' ? `<span>${d.strict_owner ? 'Строгое соответствие' : 'Наши организации'}</span>` : ''}<span>Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<p>Документы не найдены. Проверьте фильтры.</p>';
   }
   async function open(id) {
     if (queue.length || flushing || input?.value) { message('Сначала сохраните ожидающие КМ и завершите ввод.', true); return; }
     const d = await json(apiBase + '/documents/' + id);
-    current = d; dirty = false; queue = []; section = 'documents';
+    current = d; dirty = false; queue = []; section = 'documents'; selectedIssue=null; eventsBefore=null;
+    $('scan-query').value=''; $('scan-errors-only').checked=false;
+    if (admin) { $('issues-panel').hidden=true; $('events-title').hidden=true; $('events-more').hidden=true; $('issue-detail').innerHTML=''; $('issue-events').innerHTML=''; $('issue-resolution').value=''; $('resolve-form').hidden=true; }
     $('document').hidden = false; $('document-list').hidden = true;
     if ($('import-box')) $('import-box').hidden = true;
     history.replaceState(null, '', location.pathname + '?kind=' + kind + '&doc=' + encodeURIComponent(id));
@@ -136,43 +205,47 @@
     const d = current, result = d.result;
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + ' от ' + d.date;
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
-    $('doc-status').textContent = `${status(d)} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
+    $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     $('doc-count').textContent = `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '');
     const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав изменён, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : 'Проверено. Есть расхождения.';
     $('check-state').textContent = state;
     $('check-state').className = !d.check_current || d.checking ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad';
+    $('issue-state').textContent = d.open_issues ? '⚠ Сообщено ответственному · открытых обращений: ' + d.open_issues : (d.issue_count ? 'Обращения разобраны' : '');
     $('actual-label').textContent = d.kind === 'shipment' ? 'Собрано' : 'Принято';
     const actual = new Map((result?.rows || []).map(r => [r.gtin,r]));
-    $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td>${esc(l.gtin)}</td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? 'wh-bad' : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
-    $('scan-total').textContent = '(' + d.scans.length + ')';
-    const details = new Map((result?.codes || []).map(c => [c.scan_id,c]));
-    $('scans').innerHTML = d.scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>` : '<p>КМ не проверен</p>'}${!admin && d.status === 'active' ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('');
+    $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? 'wh-bad' : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
+    renderScans();
     $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + (result.missing.length ? `<h3>Отсутствующие КМ: ${result.missing.length}</h3>` + result.missing.map(m => `<p class="wh-code"><code>${esc(m.cis)}</code></p>`).join('') : '') : '';
     if (admin) {
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed';
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
-      $('strict-label').hidden = d.kind !== 'shipment'; $('strict').disabled = d.status === 'completed';
+      $('restore-document').hidden=!d.deleted_at; $('delete-document').hidden=!!d.deleted_at;
+      $('show-issues').hidden=!d.issue_count;
+      if (d.deleted_at) { $('start').hidden=true; $('reopen').hidden=true; $('export').hidden=true; }
+      $('save').disabled=!!d.deleted_at; $('strict-label').hidden = d.kind !== 'shipment'; $('strict').disabled = !!d.deleted_at || d.status === 'completed';
       if (!dirty) {
         editVersion = d.version; editRevision = d.revision; editLines = d.lines.map(l => ({...l}));
         $('strict').checked = !!d.strict_owner;
-        $('pn-fields').innerHTML = d.lines.map(l => `<label>${esc(l.gtin)}<input data-pn="${esc(l.gtin)}" value="${esc(l.pn)}" maxlength="1000" placeholder="Модель / артикул"><input type="number" min="1" max="2147483647" step="1" data-quantity="${esc(l.gtin)}" value="${l.quantity}" ${d.kind !== 'shipment' || d.status === 'completed' ? 'disabled' : ''} aria-label="Плановое количество"><small>${esc(l.pn_source || 'PN не определён')}</small></label>`).join('');
+        $('pn-fields').innerHTML = d.lines.map(l => `<label>${esc(l.gtin)}<input data-pn="${esc(l.gtin)}" value="${esc(l.pn)}" maxlength="1000" ${d.deleted_at ? 'disabled' : ''} placeholder="Модель / артикул"><input type="number" min="1" max="2147483647" step="1" data-quantity="${esc(l.gtin)}" value="${l.quantity}" ${d.deleted_at || d.kind !== 'shipment' || d.status === 'completed' ? 'disabled' : ''} aria-label="Плановое количество"><small>${esc(l.pn_source || 'PN не определён')}</small></label>`).join('');
       }
     } else {
       input.disabled = d.status !== 'active';
       $('scan-form').querySelector('button').disabled = d.status !== 'active';
       $('complete').textContent = d.kind === 'shipment' ? 'Завершить сборку' : 'Завершить приёмку';
+      $('report-issue').hidden=!(d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
+      $('report-issue').disabled=!!d.reported_current_result; $('report-issue').textContent=d.reported_current_result ? 'Уже сообщено' : 'Сообщить ответственному';
       pendingState();
     }
   }
   async function refresh() {
-    if (refreshing || (admin && !authenticated) || (!admin && current?.status === 'deleted')) return;
+    if (refreshing || (admin && !authenticated)) return;
     refreshing = true;
     try {
       if (admin && section === 'token') await tokenStatus();
       else if (current) {
         const id = current.id, next = await json(apiBase + '/documents/' + id);
         if (current?.id === id) {
-          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length]);
+          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.open_issues,d.issue_count]);
           const changed = signature(current) !== signature(next);
           current = next; if (changed) render();
         }
@@ -180,7 +253,7 @@
       $('connection').textContent = 'Сервер доступен · синхронизация каждые 2 с';
     } catch (e) {
       if (e.status === 404 && current) {
-        if (!admin) { input.disabled = true; $('scan-form').querySelector('button').disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; }
+        if (!admin) { input.disabled = true; $('scan-form').querySelector('button').disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; $('report-issue').hidden=true; }
         else { current = null; dirty = false; history.replaceState(null, '', '/admin?kind=' + kind); showSection(); await list(); }
         if (!admin) $('doc-status').textContent = 'Удалён администратором';
         message('Документ удалён администратором. Дальнейшая работа по нему недоступна.', true);
@@ -223,15 +296,28 @@
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $('duplicate').close(); focus?.focus(); maybeReload(); });
   $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
-    if (queue.length || flushing || input?.value || dirty || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
-    kind = b.dataset.kind; section = 'documents'; current = null; $('document').hidden = true; $('document-list').hidden = false;
+    if (queue.length || flushing || input?.value || dirty || caseDraft() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
+    kind = b.dataset.kind; loadFilters(); section = 'documents'; current = null; $('document').hidden = true; $('document-list').hidden = false;
     if ($('import-box')) { $('import-box').hidden = false; $('import-org').value = kind === 'receipt' ? defaultReceiptOrg : ''; }
     showSection();
     history.replaceState(null, '', location.pathname + '?kind=' + kind); await list();
   }));
+  $('document-filters').onsubmit=e=>e.preventDefault();
+  $('document-filters').addEventListener('change',()=>{ saveFilters(); action(list); });
+  $('document-filters').addEventListener('input',e=>{ if(e.target.type!=='search')return; clearTimeout(filterTimer); filterTimer=setTimeout(()=>{saveFilters();action(list);},300); });
+  $('document-filters').addEventListener('reset',()=>{ if(loadingFilters)return; setTimeout(()=>{saveFilters();action(list);},0); });
+  $('scan-query').oninput=renderScans; $('scan-errors-only').onchange=renderScans;
+  $('lines').onclick=e=>{const b=e.target.closest('[data-product]');if(b){$('scan-query').value=b.dataset.product;$('scan-details').open=true;renderScans();}};
   $('back').onclick = () => document.querySelector(`[data-kind="${kind}"]`).click();
   $('list-refresh').onclick = () => action(refresh);
   if (!admin) {
+    $('report-issue').onclick=()=>{reportSnapshot={id:current.id,version:current.version,result_at:current.result_at};$('report-message').value='';$('report-dialog').showModal();};
+    $('report-cancel').onclick=()=>{$('report-dialog').close();reportSnapshot=null;focus?.focus();};
+    $('report-form').onsubmit=e=>{e.preventDefault();action(async()=>{
+      const report=reportSnapshot;if(!report)return;
+      const result=await json('/api/warehouse/documents/'+report.id+'/issues',{method:'POST',body:{version:report.version,result_at:report.result_at,message:$('report-message').value}});
+      $('report-dialog').close();reportSnapshot=null;await refresh();message(result.duplicate?'Обращение уже отправлено':'Сообщено ответственному');focus?.focus();
+    });};
     input.addEventListener('input', () => { savePending(); pendingState(); maybeReload(); });
     $('scan-form').onsubmit = e => { e.preventDefault(); const code = input.value; input.value = ''; enqueue(code); };
     $('check').onclick = () => action(async () => {
@@ -251,11 +337,11 @@
       await authenticatedWorkspace();
     }); };
     $('logout').onclick = () => action(async () => {
-      if ((dirty || tokenDraft()) && !confirm('Выйти и отменить несохранённый ввод?')) return;
+      if ((dirty || caseDraft() || tokenDraft()) && !confirm('Выйти и отменить несохранённый ввод?')) return;
       await json('/api/admin/session', {method:'DELETE'}); dirty = false; $('token-form').reset(); location.replace('/admin');
     });
     $('token-tab').onclick = () => action(async () => {
-      if (dirty || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
+      if (dirty || caseDraft() || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
       section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
       showSection(); await tokenStatus();
     });
@@ -271,6 +357,18 @@
       } catch (e) { $('token-result').textContent = e.message; $('token-result').className = 'wh-bad'; }
       finally { $('token-submit').disabled = false; }
     }); };
+    $('restore-document').onclick=()=>action(async()=>{
+      const d=current;await json(apiBase+'/documents/'+d.id+'/restore',{method:'POST',body:{version:d.version,revision:d.revision}});
+      $('filter-trash').value='false';saveFilters();await refresh();message('Документ восстановлен из корзины');
+    });
+    $('show-issues').onclick=()=>action(loadIssues); $('issues-refresh').onclick=()=>action(async()=>{await loadIssues();if(selectedIssue&&!caseDraft())await openIssue(selectedIssue.id);});
+    $('issues-list').onclick=e=>{const b=e.target.closest('[data-issue]');if(b)action(()=>openIssue(b.dataset.issue));};
+    $('events-more').onclick=()=>action(()=>loadIssueEvents(true));
+    $('resolve-form').onsubmit=e=>{e.preventDefault();action(async()=>{
+      if(!selectedIssue)return;
+      await json(apiBase+'/documents/'+current.id+'/issues/'+selectedIssue.id+'/resolve',{method:'POST',body:{resolution:$('issue-resolution').value}});
+      $('issue-resolution').value='';await refresh();await loadIssues();await openIssue(selectedIssue.id);message('Обращение закрыто');
+    });};
     $('delete-document').onclick = () => {
       if (dirty) { message('Сохраните или отмените изменения перед удалением.', true); return; }
       deletion = {id:current.id,number:current.number,version:current.version,revision:current.revision};
@@ -308,7 +406,7 @@
       if (current.kind === 'shipment' && current.status !== 'completed' && $('strict').checked !== !!current.strict_owner) body.strict_owner = $('strict').checked;
       await json(apiBase + '/documents/' + current.id, {method:'PATCH',body}); dirty = false; await refresh(); render(); message('Изменения сохранены');
     }); };
-    window.addEventListener('beforeunload', e => { if (dirty || tokenDraft()) { e.preventDefault(); e.returnValue=''; } });
+    window.addEventListener('beforeunload', e => { if (dirty || caseDraft() || tokenDraft()) { e.preventDefault(); e.returnValue=''; } });
   }
   setInterval(refresh, 2000);
   setInterval(async () => {
@@ -319,5 +417,5 @@
     try { await json('/api/admin/session'); await authenticatedWorkspace(); }
     catch (e) { if (e.status !== 403) throw e; requireLogin(); }
   });
-  if (!admin) action(async () => { await list(); const id = new URLSearchParams(location.search).get('doc'); if (id) await open(id); });
+  if (!admin) action(async () => { setupFilterOrgs((await json('/api/status')).organizations); loadFilters(); await list(); const id = new URLSearchParams(location.search).get('doc'); if (id) await open(id); });
 })();

@@ -36,20 +36,36 @@
 <label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label><button class="btn primary">Загрузить документ</button></form>
 </details>
 {% endif %}
+<form id="document-filters" class="wh-card wh-filters">
+<label>Наша организация <select id="filter-org"><option value="">Все организации</option></select></label>
+<label>Сканирование <select id="filter-scans"><option value="all">Все документы</option><option value="unscanned">Ещё не начато</option><option value="scanned">Есть сканы</option></select></label>
+{% if admin %}
+<label>Поиск <input id="filter-query" type="search" placeholder="Номер, контрагент, ИНН"></label>
+<label>Статус <select id="filter-status"><option value="">Все статусы</option><option value="draft">Ожидает запуска</option><option value="active">Операция запущена</option><option value="completed">Завершён</option></select></label>
+<label>Дата с <input id="filter-from" type="date"></label><label>Дата по <input id="filter-to" type="date"></label>
+<label>Обращения склада <select id="filter-issues"><option value="all">Все</option><option value="open">Проблемные</option><option value="closed">Разобраны</option><option value="none">Без обращений</option></select></label>
+<label>Раздел <select id="filter-trash"><option value="false">Документы</option><option value="true">Корзина</option></select></label>
+{% endif %}
+<button class="btn" type="reset">Сбросить фильтры</button><span id="filter-count" role="status"></span>
+</form>
 <section id="document-list" class="wh-list" aria-label="Список документов"></section>
 <section id="document" class="wh-card" hidden>
 <button id="back" class="btn">← К списку</button><h2 id="doc-title"></h2><p id="doc-parties"></p>
 <p id="doc-status"></p><p id="doc-count"></p><p id="check-state" role="status"></p>
+<p id="issue-state" class="wh-stale" role="status"></p>
 {% if admin %}
-<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="delete-document" class="btn wh-danger">Удалить документ</button></div>
+<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="delete-document" class="btn wh-danger">Удалить документ</button><button id="restore-document" class="btn primary" hidden>Восстановить из корзины</button><button id="show-issues" class="btn" hidden>Разобрать обращения</button></div>
 <form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><p id="pn-fields"></p><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form>
 {% endif %}
 <div class="wh-table"><table><thead><tr><th>PN</th><th>GTIN</th><th>Требуется</th><th id="actual-label">Собрано</th><th>Осталось</th></tr></thead><tbody id="lines"></tbody></table></div>
 {% if not admin %}
 <form id="scan-form" class="wh-scan"><label for="wh-scan">DataMatrix</label><input id="wh-scan" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Сканируйте код…"><button class="btn primary">Добавить КМ</button></form>
-<p id="scan-feedback" role="status" aria-live="polite"></p><p id="pending"></p><div class="wh-toolbar"><button id="check" class="btn primary">Проверить</button><button id="complete" class="btn primary" disabled>Завершить</button></div>
+<p id="scan-feedback" role="status" aria-live="polite"></p><p id="pending"></p><div class="wh-toolbar"><button id="check" class="btn primary">Проверить</button><button id="complete" class="btn primary" disabled>Завершить</button><button id="report-issue" class="btn wh-small" hidden>Сообщить ответственному</button></div>
 {% endif %}
-<div id="check-errors"></div><details><summary>Общий список КМ <span id="scan-total"></span></summary><div id="scans"></div></details>
+<div id="check-errors"></div><details id="scan-details"><summary>Общий список КМ <span id="scan-total"></span></summary><div class="wh-toolbar"><label>Поиск КМ / GTIN <input id="scan-query" type="search" autocomplete="off"></label><label><input id="scan-errors-only" type="checkbox"> Только ошибки</label><span id="scan-found"></span></div><div id="scans"></div></details>
+{% if admin %}
+<section id="issues-panel" class="wh-card" hidden><h3>Обращения склада</h3><button id="issues-refresh" class="btn">Обновить обращения</button><div id="issues-list"></div><div id="issue-detail"></div><form id="resolve-form" hidden><label>Результат разбора <textarea id="issue-resolution" rows="3" maxlength="2000" required></textarea></label><button class="btn primary">Закрыть обращение</button></form><h4 id="events-title" hidden>Действия по документу</h4><div id="issue-events"></div><button id="events-more" class="btn" hidden>Показать более ранние действия</button></section>
+{% endif %}
 </section>
 </div>
 </main>
@@ -59,6 +75,7 @@
 <form id="delete-form"><label>Для подтверждения введите номер документа <input id="delete-number" type="text" autocomplete="off" required></label>
 <div class="wh-toolbar"><button class="btn wh-danger" id="delete-confirm" disabled>Удалить документ</button><button class="btn" id="delete-cancel" type="button">Отмена</button></div></form></dialog>
 {% endif %}
+{% if not admin %}<dialog id="report-dialog"><h2>Сообщить ответственному</h2><p>Результат проверки и коды будут доступны ответственному в админке.</p><form id="report-form"><label>Комментарий <textarea id="report-message" rows="3" maxlength="2000" placeholder="Что нужно уточнить? Необязательно"></textarea></label><div class="wh-toolbar"><button class="btn primary">Отправить</button><button id="report-cancel" class="btn" type="button">Отмена</button></div></form></dialog>{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Исходный КМ остаётся в документе. Повторное считывание не увеличивает количество.</p><div class="wh-toolbar"><button class="btn primary" data-close="keep">Оставить</button><button class="btn" data-close="discard">Удалить повтор</button></div></dialog>
 <script src="/static/scanner-focus.js?v={{ build_id }}"></script><script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>

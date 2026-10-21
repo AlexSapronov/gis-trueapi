@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from warehouse_issues import WarehouseIssues
+
 
 class WarehouseError(Exception):
     def __init__(self, message, status=422):
@@ -20,7 +22,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore:
+class WarehouseStore(WarehouseIssues):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +56,15 @@ class WarehouseStore:
             CREATE TABLE IF NOT EXISTS warehouse_checks (
               id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               version INTEGER NOT NULL, created_at TEXT NOT NULL, result TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS warehouse_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              created_at TEXT NOT NULL,actor TEXT NOT NULL,action TEXT NOT NULL,details TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS warehouse_events_doc ON warehouse_events(document_id,id);
+            CREATE TABLE IF NOT EXISTS warehouse_issues (
+              id TEXT PRIMARY KEY,document_id TEXT NOT NULL REFERENCES warehouse_documents(id),version INTEGER NOT NULL,
+              result_at TEXT NOT NULL,reported_at TEXT NOT NULL,message TEXT NOT NULL,snapshot TEXT NOT NULL,
+              resolved_at TEXT,resolution TEXT);
+            CREATE INDEX IF NOT EXISTS warehouse_issues_doc ON warehouse_issues(document_id,resolved_at);
             ''')
             if 'revision' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
@@ -78,9 +89,9 @@ class WarehouseStore:
             c.close()
 
     @staticmethod
-    def _doc(c, document_id):
+    def _doc(c, document_id, include_deleted=False):
         row = c.execute('SELECT * FROM warehouse_documents WHERE id=?', (document_id,)).fetchone()
-        if not row or row['deleted_at']:
+        if not row or (row['deleted_at'] and not include_deleted):
             raise WarehouseError('Документ не найден', 404)
         return dict(row)
 
@@ -109,10 +120,12 @@ class WarehouseStore:
             for e in expected:
                 c.execute('INSERT INTO warehouse_expected VALUES (?,?,?,?,?,?)',
                           (document_id, e['cis'], e['raw_code'], e['full_code'], e['gtin'], e['quantity']))
+            self._event(c, document_id, 'created', {'number':header['number'],'kind':header['kind']}, actor='admin')
         return self.get(document_id)
 
-    def _snapshot(self, c, document_id):
-        d = self._doc(c, document_id)
+    def _snapshot(self, c, document_id, include_deleted=False):
+        d = self._doc(c, document_id, include_deleted)
+        self._issue_counts(c, d)
         d['lines'] = [dict(r) for r in c.execute(
             'SELECT gtin,pn,pn_source,quantity FROM warehouse_lines WHERE document_id=? ORDER BY gtin', (document_id,))]
         d['scans'] = [dict(r) for r in c.execute(
@@ -122,29 +135,50 @@ class WarehouseStore:
         d['result'] = json.loads(d['result']) if d['result'] else None
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
         d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
-        d['can_complete'] = (d['status'] == 'active' and not d['checking'] and
+        d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['checking'] and
                              d['check_current'] and d['result']['ok'])
         d.pop('check_id', None)
         d.pop('check_until', None)
         return d
 
-    def get(self, document_id):
+    def get(self, document_id, include_deleted=False):
         with self.connection() as c:
-            return self._snapshot(c, document_id)
+            return self._snapshot(c, document_id, include_deleted)
 
-    def list(self, admin=False, kind=None):
+    def list(self, admin=False, kind=None, org_inn=None, scan_state='all', status=None,
+             query='', date_from=None, date_to=None, issue_state='all', trash=False):
         with self.connection() as c:
-            rows = c.execute('''SELECT d.*, (SELECT count(*) FROM warehouse_scans s
-                WHERE s.document_id=d.id) AS scan_count FROM warehouse_documents d
-                WHERE deleted_at IS NULL AND (? OR status != 'draft') AND (? IS NULL OR kind=?)
-                ORDER BY created_at DESC''', (int(admin), kind, kind))
+            c.create_function('casefold', 1, lambda value: (value or '').casefold(), deterministic=True)
+            clauses, args = ['deleted_at IS NOT NULL' if admin and trash else 'deleted_at IS NULL'], []
+            if not admin:
+                clauses.append("status != 'draft'")
+            for field, value in [('kind',kind),('org_inn',org_inn),('status',status)]:
+                if value:
+                    clauses.append(field+'=?'); args.append(value)
+            if scan_state != 'all':
+                clauses.append('scan_count=0' if scan_state=='unscanned' else 'scan_count>0')
+            if admin:
+                if query.strip():
+                    clauses.append("instr(casefold(number || ' ' || recipient_name || ' ' || recipient_inn || ' ' || org_name || ' ' || org_inn),?)>0")
+                    args.append(query.strip().casefold())
+                if date_from:
+                    clauses.append('date>=?'); args.append(str(date_from))
+                if date_to:
+                    clauses.append('date<=?'); args.append(str(date_to))
+                if issue_state != 'all':
+                    clauses.append({'open':'open_issues>0','closed':'issue_count>0 AND open_issues=0','none':'issue_count=0'}[issue_state])
+            sql = '''SELECT * FROM (SELECT d.*,
+                (SELECT count(*) FROM warehouse_scans s WHERE s.document_id=d.id) AS scan_count,
+                (SELECT count(*) FROM warehouse_issues i WHERE i.document_id=d.id) AS issue_count,
+                (SELECT count(*) FROM warehouse_issues i WHERE i.document_id=d.id AND i.resolved_at IS NULL) AS open_issues
+                FROM warehouse_documents d) WHERE '''
+            rows = c.execute(sql + ' AND '.join(clauses) + ' ORDER BY open_issues>0 DESC,created_at DESC,id', args)
             result = []
             for r in rows:
                 d = dict(r)
                 d['result'] = json.loads(d['result']) if d['result'] else None
                 d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
-                d.pop('check_id', None)
-                d.pop('check_until', None)
+                d.pop('check_id', None); d.pop('check_until', None)
                 result.append(d)
             return result
 
@@ -158,6 +192,7 @@ class WarehouseStore:
                 raise WarehouseError('Дождитесь завершения проверки перед удалением документа', 409)
             c.execute('''UPDATE warehouse_documents SET deleted_at=?,updated_at=?,
                 version=version+1,revision=revision+1 WHERE id=?''', (now(), now(), document_id))
+            self._event(c, document_id, 'deleted', actor='admin')
 
     def start(self, document_id, reopen=False):
         with self.connection(True) as c:
@@ -167,6 +202,7 @@ class WarehouseStore:
             c.execute('''UPDATE warehouse_documents SET status='active',started_at=?,
                 completed_at=NULL, version=version+1, revision=revision+1, updated_at=? WHERE id=?''',
                 (now(), now(), document_id))
+            self._event(c, document_id, 'reopened' if reopen else 'started', actor='admin')
         return self.get(document_id)
 
     def add_scan(self, document_id, scan):
@@ -181,15 +217,18 @@ class WarehouseStore:
                       (row['id'], document_id, row['cis'], row['raw_code'], row['full_code'],
                        row['gtin'], int(row['has_crypto']), row['scanned_at']))
             self._bump(c, document_id)
+            self._event(c, document_id, 'scan_added', row)
             return {'duplicate': False, 'scan': row}
 
     def delete_scan(self, document_id, scan_id):
         with self.connection(True) as c:
             self._active(self._doc(c, document_id))
+            prior = c.execute('SELECT * FROM warehouse_scans WHERE document_id=? AND id=?', (document_id,scan_id)).fetchone()
             changed = c.execute('DELETE FROM warehouse_scans WHERE document_id=? AND id=?',
                                 (document_id, scan_id)).rowcount
             if changed:
                 self._bump(c, document_id)
+                self._event(c, document_id, 'scan_removed', dict(prior))
         return self.get(document_id)
 
     def edit(self, document_id, version, strict_owner=None, pns=None, quantities=None, revision=None):
@@ -218,6 +257,7 @@ class WarehouseStore:
                                  (pn.strip(), 'manual', document_id, gtin)).rowcount:
                     raise WarehouseError('GTIN отсутствует в документе')
             c.execute('UPDATE warehouse_documents SET revision=revision+1,updated_at=? WHERE id=?', (now(), document_id))
+            self._event(c, document_id, 'edited', {'pns':pns,'quantities':quantities,'strict_owner':strict_owner}, actor='admin')
         return self.get(document_id)
 
     def begin_check(self, document_id):
@@ -229,6 +269,7 @@ class WarehouseStore:
             check_id = uuid.uuid4().hex
             c.execute('UPDATE warehouse_documents SET check_id=?,check_until=? WHERE id=?',
                       (check_id, time.time() + 600, document_id))
+            self._event(c, document_id, 'check_started', {'version':d['version']})
             return check_id, self._snapshot(c, document_id)
 
     def finish_check(self, document_id, check_id, version, result):
@@ -241,6 +282,7 @@ class WarehouseStore:
                 c.execute('''UPDATE warehouse_documents SET check_id=NULL,check_until=NULL,
                     result=?, result_version=?,result_at=?,updated_at=? WHERE id=?''',
                     (body, version, now(), now(), document_id))
+            self._event(c, document_id, 'checked', {'version':version,'ok':result['ok'],'current':d['version']==version})
         return self.get(document_id)
 
     def cancel_check(self, document_id, check_id):
@@ -264,4 +306,5 @@ class WarehouseStore:
                 raise WarehouseError('Завершение запрещено: выполните актуальную проверку без расхождений', 409)
             c.execute("UPDATE warehouse_documents SET status='completed',revision=revision+1,completed_at=?,updated_at=? WHERE id=?",
                       (now(), now(), document_id))
+            self._event(c, document_id, 'completed')
         return self.get(document_id)
