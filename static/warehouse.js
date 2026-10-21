@@ -2,7 +2,10 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const admin = document.body.dataset.admin === 'true';
-  let key = '', kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
+  let authenticated = false;
+  let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
+  let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null;
+  let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshing = false, queueError = false;
   let editVersion = null, editRevision = null, editLines = [];
   let pendingReload = false, buildId = document.body.dataset.build, noticeTimer;
@@ -19,18 +22,20 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !$('duplicate').open) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !tokenDraft() && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
-    if (admin) headers['X-Admin-Key'] = key;
+    if (admin) headers['X-Admin-Request'] = '1';
     if (options.body && !(options.body instanceof FormData)) {
       headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(options.body);
     }
     const response = await fetch(path, {...options, headers, cache:'no-store'});
     if (!response.ok) {
       let d; try { d = await response.json(); } catch (_) { d = {}; }
-      throw new Error(d.message || (typeof d.detail === 'string' ? d.detail : `Ошибка ${response.status}`));
+      if (admin && response.status === 403 && path !== '/api/admin/session') requireLogin();
+      const error = new Error(d.message || (typeof d.detail === 'string' ? d.detail : `Ошибка ${response.status}`));
+      error.status = response.status; throw error;
     }
     return response;
   }
@@ -68,6 +73,45 @@
   const focus = input ? ScannerFocus.create({input, active:() => !!current && current.status === 'active' && !$('duplicate').open,
     submit:code => enqueue(code), resume:() => refresh()}) : null;
 
+  function tokenDraft() { return admin && (!!$('token-uuid').value || !!$('token-signature').value); }
+  function requireLogin() {
+    authenticated = false;
+    $('workspace').hidden = true; $('login').hidden = false;
+    document.querySelectorAll('dialog[open]').forEach(d => d.close());
+    $('connection').textContent = 'Войдите в админку';
+  }
+  function showSection() {
+    if (!admin) return;
+    const token = section === 'token';
+    $('token-panel').hidden = !token;
+    $('document-list').hidden = token || !!current;
+    $('document').hidden = token || !current;
+    $('import-box').hidden = token || !!current;
+    $('list-refresh').hidden = token;
+    $('token-tab').classList.toggle('primary', token);
+    document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', !token && b.dataset.kind === kind));
+  }
+  async function tokenStatus() {
+    const data = await json('/api/status');
+    tokenOrganizations = data.organizations;
+    const org = tokenOrganizations.find(o => o.inn === $('token-org').value);
+    $('token-meta').textContent = org ? (org.token_configured ? 'Токен настроен · Обновлён: ' + stamp(org.token_updated_at) : 'Токен не настроен') : '';
+  }
+  async function authenticatedWorkspace() {
+    const config = await json(apiBase + '/settings');
+    authenticated = true; $('admin-key').value = '';
+    $('login').hidden = true; $('workspace').hidden = false;
+    defaultReceiptOrg = config.receipt_default_org;
+    const options = config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
+    $('import-org').innerHTML = '<option value="">Из файла</option>' + options;
+    $('token-org').innerHTML = options;
+    if (kind === 'receipt') $('import-org').value = defaultReceiptOrg;
+    if (section === 'documents') {
+      const id = new URLSearchParams(location.search).get('doc');
+      if (id && !current) await open(id); else if (current) render(); else await list();
+    } else await tokenStatus();
+    showSection();
+  }
   async function list() {
     const data = await json(apiBase + '/documents?kind=' + kind);
     document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', b.dataset.kind === kind));
@@ -76,7 +120,7 @@
   async function open(id) {
     if (queue.length || flushing || input?.value) { message('Сначала сохраните ожидающие КМ и завершите ввод.', true); return; }
     const d = await json(apiBase + '/documents/' + id);
-    current = d; dirty = false; queue = [];
+    current = d; dirty = false; queue = []; section = 'documents';
     $('document').hidden = false; $('document-list').hidden = true;
     if ($('import-box')) $('import-box').hidden = true;
     history.replaceState(null, '', location.pathname + '?kind=' + kind + '&doc=' + encodeURIComponent(id));
@@ -84,7 +128,7 @@
       try { const cached = JSON.parse(sessionStorage.getItem(pendingKey()) || '{}'); queue = cached.queue || []; input.value = cached.partial || ''; }
       catch (_) { queue = []; }
     }
-    render(); focus?.focus();
+    render(); showSection(); focus?.focus();
     if (queue.length) flush();
   }
   function render() {
@@ -121,10 +165,11 @@
     }
   }
   async function refresh() {
-    if (refreshing || (admin && !key)) return;
+    if (refreshing || (admin && !authenticated) || (!admin && current?.status === 'deleted')) return;
     refreshing = true;
     try {
-      if (current) {
+      if (admin && section === 'token') await tokenStatus();
+      else if (current) {
         const id = current.id, next = await json(apiBase + '/documents/' + id);
         if (current?.id === id) {
           const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length]);
@@ -133,7 +178,16 @@
         }
       } else await list();
       $('connection').textContent = 'Сервер доступен · синхронизация каждые 2 с';
-    } catch (e) { $('connection').textContent = 'Нет синхронизации: ' + e.message; }
+    } catch (e) {
+      if (e.status === 404 && current) {
+        if (!admin) { input.disabled = true; $('scan-form').querySelector('button').disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; }
+        else { current = null; dirty = false; history.replaceState(null, '', '/admin?kind=' + kind); showSection(); await list(); }
+        if (!admin) $('doc-status').textContent = 'Удалён администратором';
+        message('Документ удалён администратором. Дальнейшая работа по нему недоступна.', true);
+        $('connection').textContent = 'Документ удалён'; return;
+      }
+      $('connection').textContent = 'Нет синхронизации: ' + e.message;
+    }
     finally { refreshing = false; }
   }
   function enqueue(code) {
@@ -170,8 +224,9 @@
   $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
     if (queue.length || flushing || input?.value || dirty || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
-    kind = b.dataset.kind; current = null; $('document').hidden = true; $('document-list').hidden = false;
-    if ($('import-box')) $('import-box').hidden = false;
+    kind = b.dataset.kind; section = 'documents'; current = null; $('document').hidden = true; $('document-list').hidden = false;
+    if ($('import-box')) { $('import-box').hidden = false; $('import-org').value = kind === 'receipt' ? defaultReceiptOrg : ''; }
+    showSection();
     history.replaceState(null, '', location.pathname + '?kind=' + kind); await list();
   }));
   $('back').onclick = () => document.querySelector(`[data-kind="${kind}"]`).click();
@@ -192,13 +247,47 @@
     window.addEventListener('beforeunload', e => { savePending(); if (queue.length || input.value) { e.preventDefault(); e.returnValue=''; } });
   } else {
     $('login').onsubmit = e => { e.preventDefault(); action(async () => {
-      key = $('admin-key').value; const config = await json(apiBase + '/settings'); $('admin-key').value = '';
-      $('login').hidden = true; $('workspace').hidden = false;
-      $('import-org').innerHTML = '<option value="">Из файла</option>' + config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
-      if (kind === 'receipt') $('import-org').value = config.receipt_default_org;
-      await list(); const id = new URLSearchParams(location.search).get('doc'); if (id) await open(id);
+      await json('/api/admin/session', {method:'POST', body:{key:$('admin-key').value}});
+      await authenticatedWorkspace();
     }); };
-    $('logout').onclick = () => { key=''; location.replace('/admin/warehouse'); };
+    $('logout').onclick = () => action(async () => {
+      if ((dirty || tokenDraft()) && !confirm('Выйти и отменить несохранённый ввод?')) return;
+      await json('/api/admin/session', {method:'DELETE'}); dirty = false; $('token-form').reset(); location.replace('/admin');
+    });
+    $('token-tab').onclick = () => action(async () => {
+      if (dirty || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
+      section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
+      showSection(); await tokenStatus();
+    });
+    $('token-org').onchange = () => action(tokenStatus);
+    $('token-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      $('token-submit').disabled = true; $('token-result').textContent = 'Обновление…';
+      try {
+        const form = new FormData(); form.set('inn', $('token-org').value); form.set('uuid', $('token-uuid').value.trim()); form.set('signature', $('token-signature').value.trim());
+        const result = await json('/admin/token', {method:'POST',body:form});
+        if (!result.ok) throw new Error(result.message);
+        $('token-result').textContent = result.message; $('token-result').className = 'wh-good';
+        $('token-uuid').value = ''; $('token-signature').value = ''; await tokenStatus();
+      } catch (e) { $('token-result').textContent = e.message; $('token-result').className = 'wh-bad'; }
+      finally { $('token-submit').disabled = false; }
+    }); };
+    $('delete-document').onclick = () => {
+      if (dirty) { message('Сохраните или отмените изменения перед удалением.', true); return; }
+      deletion = {id:current.id,number:current.number,version:current.version,revision:current.revision};
+      $('delete-description').textContent = (current.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + current.number + ' · ' + status(current);
+      $('delete-number').value = ''; $('delete-confirm').disabled = true; $('delete-dialog').showModal();
+    };
+    $('delete-number').oninput = () => { $('delete-confirm').disabled = $('delete-number').value !== deletion?.number; };
+    $('delete-cancel').onclick = () => { $('delete-dialog').close(); deletion = null; };
+    $('delete-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      if (!deletion || $('delete-number').value !== deletion.number) return;
+      $('delete-confirm').disabled = true;
+      try {
+        await json(apiBase + '/documents/' + deletion.id, {method:'DELETE',body:{version:deletion.version,revision:deletion.revision}});
+        $('delete-dialog').close(); deletion = null; current = null; dirty = false;
+        history.replaceState(null, '', '/admin?kind=' + kind); showSection(); await list(); message('Документ удалён');
+      } catch (e) { $('delete-dialog').close(); deletion = null; await refresh(); throw e; }
+    }); };
     $('template').onclick = () => action(() => download(apiBase + '/templates/' + kind, 'template.xlsx'));
     $('import-form').onsubmit = e => { e.preventDefault(); action(async () => {
       if (!$('import-file').files[0]) return;
@@ -219,12 +308,16 @@
       if (current.kind === 'shipment' && current.status !== 'completed' && $('strict').checked !== !!current.strict_owner) body.strict_owner = $('strict').checked;
       await json(apiBase + '/documents/' + current.id, {method:'PATCH',body}); dirty = false; await refresh(); render(); message('Изменения сохранены');
     }); };
-    window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue=''; } });
+    window.addEventListener('beforeunload', e => { if (dirty || tokenDraft()) { e.preventDefault(); e.returnValue=''; } });
   }
   setInterval(refresh, 2000);
   setInterval(async () => {
     try { const s = await (await fetch('/api/status', {cache:'no-store'})).json(); if (s.build_id !== buildId) { pendingReload = true; maybeReload(); } } catch (_) { /* refresh shows connection state */ }
   }, 10000);
   window.addEventListener('online', () => { refresh(); if (queue.length) flush(); });
+  if (admin) action(async () => {
+    try { await json('/api/admin/session'); await authenticatedWorkspace(); }
+    catch (e) { if (e.status !== 403) throw e; requireLogin(); }
+  });
   if (!admin) action(async () => { await list(); const id = new URLSearchParams(location.search).get('doc'); if (id) await open(id); });
 })();

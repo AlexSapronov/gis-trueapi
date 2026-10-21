@@ -4,15 +4,15 @@ Frontend никогда не получает bearer-токены и не обр
 """
 from __future__ import annotations
 
-import hmac
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from admin_auth import authorized, install_admin_sessions, valid_key
 from config import settings
 from models import AppError, status_ru
 from organizations import registry
@@ -103,23 +103,12 @@ def _check_admin(key: Optional[str]) -> bool:
 
     Сравнение через hmac.compare_digest (constant-time, не палит длину ключа).
     """
-    configured = settings.admin_key
-    if not configured or configured == "change-me-in-production":
-        return False
-    if not key:
-        return False
-    return hmac.compare_digest(key.encode("utf-8"), configured.encode("utf-8"))
+    return valid_key(key, settings.admin_key)
 
 
-@app.get("/admin/token", response_class=HTMLResponse)
-async def admin_token_page(request: Request):
-    # Public login shell; no secret is embedded into HTML or accepted through URL.
-    orgs = [{"inn": o.inn, "name": o.name} for o in registry.all()]
-    return templates.TemplateResponse(
-        request=request,
-        name="admin_token.html",
-        context={"organizations": orgs},
-    )
+@app.get("/admin/token")
+async def admin_token_page():
+    return RedirectResponse('/admin?section=token', status_code=307)
 
 
 @app.post("/admin/token")
@@ -129,8 +118,7 @@ async def admin_token_post(
     uuid: str = Form(...),
     signature: str = Form(...),
 ):
-    provided = request.headers.get("X-Admin-Key")
-    if not _check_admin(provided):
+    if not authorized(request, settings.admin_key):
         return JSONResponse({"ok": False, "message": "Доступ запрещён"}, status_code=403)
     try:
         token = await svc.exchange_token(inn.strip(), uuid.strip(), signature.strip())
@@ -145,7 +133,8 @@ from warehouse_store import WarehouseStore
 from warehouse_routes import install_warehouse
 
 warehouse = WarehouseStore(settings.warehouse_db)
-install_warehouse(app, lambda: svc, lambda: warehouse, _check_admin, templates)
+install_admin_sessions(app, lambda: settings.admin_key)
+install_warehouse(app, lambda: svc, lambda: warehouse, templates)
 
 
 # ---- static ------------------------------------------------------------

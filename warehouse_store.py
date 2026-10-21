@@ -35,7 +35,7 @@ class WarehouseStore:
               version INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
               check_id TEXT, check_until REAL, result TEXT,
-              result_version INTEGER, result_at TEXT);
+              result_version INTEGER, result_at TEXT, deleted_at TEXT);
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -57,6 +57,8 @@ class WarehouseStore:
             ''')
             if 'revision' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+            if 'deleted_at' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
         c.close()
 
     @contextmanager
@@ -78,7 +80,7 @@ class WarehouseStore:
     @staticmethod
     def _doc(c, document_id):
         row = c.execute('SELECT * FROM warehouse_documents WHERE id=?', (document_id,)).fetchone()
-        if not row:
+        if not row or row['deleted_at']:
             raise WarehouseError('Документ не найден', 404)
         return dict(row)
 
@@ -134,7 +136,7 @@ class WarehouseStore:
         with self.connection() as c:
             rows = c.execute('''SELECT d.*, (SELECT count(*) FROM warehouse_scans s
                 WHERE s.document_id=d.id) AS scan_count FROM warehouse_documents d
-                WHERE (? OR status != 'draft') AND (? IS NULL OR kind=?)
+                WHERE deleted_at IS NULL AND (? OR status != 'draft') AND (? IS NULL OR kind=?)
                 ORDER BY created_at DESC''', (int(admin), kind, kind))
             result = []
             for r in rows:
@@ -145,6 +147,17 @@ class WarehouseStore:
                 d.pop('check_until', None)
                 result.append(d)
             return result
+
+    def delete(self, document_id, version, revision):
+        """Remove from active use, retaining the document and audit data in SQLite."""
+        with self.connection(True) as c:
+            d = self._doc(c, document_id)
+            if d['version'] != version or d['revision'] != revision:
+                raise WarehouseError('Документ изменён другим сотрудником. Обновите карточку и повторите удаление.', 409)
+            if d['check_id'] and (d['check_until'] or 0) > time.time():
+                raise WarehouseError('Дождитесь завершения проверки перед удалением документа', 409)
+            c.execute('''UPDATE warehouse_documents SET deleted_at=?,updated_at=?,
+                version=version+1,revision=revision+1 WHERE id=?''', (now(), now(), document_id))
 
     def start(self, document_id, reopen=False):
         with self.connection(True) as c:
