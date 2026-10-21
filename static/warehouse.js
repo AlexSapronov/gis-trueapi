@@ -5,6 +5,7 @@
   GisTheme.bind($('theme-btn'));
   let authenticated = false;
   let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
+  if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
   let returnRequestId = null;
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null;
@@ -25,7 +26,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -79,6 +80,7 @@
     $('check').disabled = !current || current.status !== 'active' || current.checking || queue.length > 0 || flushing;
     $('complete').disabled = !current?.can_complete || queue.length > 0 || flushing || !!input.value;
   }
+  const settingsEditor = admin ? AdminSettings.create({json, action, message, onSaved:config=>{defaultReceiptOrg=config.runtime.values.receipt_default_org;}}) : null;
   const focus = input ? ScannerFocus.create({input, active:() => !!current && current.status === 'active' && !$('duplicate').open,
     submit:code => enqueue(code), resume:() => refresh()}) : null;
 
@@ -112,7 +114,7 @@
     const scans = current.scans.filter(s => (!query || (s.cis + ' ' + s.raw_code + ' ' + s.gtin).toLowerCase().includes(query)) && (!errorsOnly || details.get(s.id)?.errors.length));
     $('scan-total').textContent = '(' + current.scans.length + ')';
     $('scan-found').textContent = `Показано ${scans.length} из ${current.scans.length}`;
-    $('scans').innerHTML = scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>` : '<p>КМ не проверен</p>'}${!admin && current.status === 'active' ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('') || '<p>Подходящих КМ нет</p>';
+    $('scans').innerHTML = scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>` : '<p>КМ не проверен</p>'}${!admin && current.status === 'active' && current.runtime_settings?.values.worker_delete_scans !== false ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('') || '<p>Подходящих КМ нет</p>';
   }
   async function loadIssues() {
     if (!current) return;
@@ -126,7 +128,7 @@
     const id=current.id, issue=selectedIssue.id;
     const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
     if (current?.id !== id || selectedIssue?.id !== issue) return;
-    const labels={created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
+    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
     const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
     if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
     eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
@@ -143,8 +145,8 @@
     const missing=(result.missing || []).map(c => `<p class="wh-bad">Отсутствует КМ: ${esc(c.cis)}</p>`).join('');
     $('issue-detail').innerHTML=`<h4>Проверка от ${esc(stamp(issue.result_at))} · версия ${issue.version}</h4><p>${esc(issue.message || 'Без комментария')}</p><p class="${issue.resolved_at ? 'wh-good' : 'wh-bad'}">${issue.resolved_at ? 'Разобрано: ' + esc(issue.resolution) : 'Требует внимания'}</p>${(issue.returns || []).map(r=>`<div class="wh-reply-history"><b>Передано на склад · ${esc(stamp(r.created_at))}</b><p>${esc(r.message)}</p><small>${r.acknowledged_at ? 'Склад ознакомился: '+esc(stamp(r.acknowledged_at)) : 'Ожидает ознакомления склада'}</small></div>`).join('')}${rows}${missing}<details open><summary>Коды в обращении: ${snap.scans.length}</summary>${codes}</details>`;
     $('resolve-form').hidden=false; $('resolve-issue').hidden=!!issue.resolved_at;
-    $('return-warehouse').disabled=current.status!=='active'||!!current.deleted_at;
-    $('return-hint').textContent=$('return-warehouse').disabled ? 'Для передачи ответа документ должен быть в работе. При необходимости восстановите или возобновите его.' : 'Комментарий будет виден складу. Сканирование доступно до и после возврата.';
+    $('return-warehouse').disabled=current.status!=='active'||!!current.deleted_at||current.runtime_settings?.values.return_to_warehouse===false;
+    $('return-hint').textContent=$('return-warehouse').disabled ? 'Возврат недоступен. Проверьте, что документ в работе и функция включена в настройках.' : 'Комментарий будет виден складу. Сканирование доступно до и после возврата.';
     await loadIssueEvents();
   }
   function tokenDraft() { return admin && (!!$('token-uuid').value || !!$('token-signature').value); }
@@ -155,19 +157,21 @@
     $('connection').textContent = 'Войдите в админку'; $('connection').dataset.state='pending';
   }
   function showSection() {
-    $('document-filters').hidden = !!current || (admin && section === 'token');
+    $('document-filters').hidden = !!current || (admin && section !== 'documents');
     $('list-heading').hidden=$('document-filters').hidden;
     $('list-title').textContent=(admin && $('filter-trash').value==='true' ? 'Корзина · ' : '') + (kind==='shipment' ? 'Отгрузки' : 'Приёмки');
     document.querySelectorAll('[data-mode]').forEach(a=>{a.classList.toggle('current',a.dataset.mode===(admin?'admin':kind));if(a.classList.contains('current'))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     if (!admin) return;
-    const token = section === 'token';
+    const token = section === 'token', settings = section === 'settings', other = token || settings;
+    $('application-settings').hidden = !settings;
+    $('settings-tab').classList.toggle('primary', settings);
     $('token-panel').hidden = !token;
-    $('document-list').hidden = token || !!current;
-    $('document').hidden = token || !current;
-    $('import-box').hidden = token || !!current;
-    $('list-refresh').hidden = token;
+    $('document-list').hidden = other || !!current;
+    $('document').hidden = other || !current;
+    $('import-box').hidden = other || !!current;
+    $('list-refresh').hidden = other;
     $('token-tab').classList.toggle('primary', token);
-    document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', !token && b.dataset.kind === kind));
+    document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', !other && b.dataset.kind === kind));
   }
   async function tokenStatus() {
     const data = await json('/api/status');
@@ -188,13 +192,14 @@
     if (section === 'documents') {
       const id = new URLSearchParams(location.search).get('doc');
       if (id && !current) await open(id); else if (current) render(); else await list();
-    } else await tokenStatus();
+    } else if (section === 'settings') await settingsEditor.load();
+    else await tokenStatus();
     showSection();
   }
   async function list() {
     const serial=++listSerial;
     const data = await json(apiBase + '/documents?' + new URLSearchParams(filterValues()));
-    if (serial !== listSerial || (admin && section === 'token')) return;
+    if (serial !== listSerial || (admin && section !== 'documents')) return;
     $('filter-count').textContent = 'Документов: ' + data.documents.length;
     $('list-title').textContent=(admin && $('filter-trash').value==='true'?'Корзина · ':'')+(kind==='shipment'?'Отгрузки':'Приёмки');
     document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', b.dataset.kind === kind));
@@ -225,7 +230,7 @@
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     $('doc-count').textContent = `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '');
-    const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав изменён, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : 'Проверено. Есть расхождения.';
+    const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : 'Проверено. Есть расхождения.';
     $('check-state').textContent = state;
     $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
     $('warehouse-replies').innerHTML=(d.warehouse_replies || []).map(r=>`<section class="wh-reply"><span class="wh-eyebrow">Ответственный ответил · ${esc(stamp(r.created_at))}</span><h3>${admin?'Ответ передан на склад':'Можно продолжать работу'}</h3><p>${esc(r.message)}</p>${admin?'<small>Ожидает ознакомления склада</small>':`<button class="btn primary" data-ack-return="${esc(r.id)}">${d.status==='active'?'Продолжить работу':'Ответ прочитан'}</button>`}</section>`).join('');
@@ -253,7 +258,12 @@
       input.disabled = d.status !== 'active';
       $('scan-form').querySelector('button').disabled = d.status !== 'active';
       $('complete').textContent = d.kind === 'shipment' ? 'Завершить сборку' : 'Завершить приёмку';
-      $('report-issue').hidden=!(d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
+      const features = d.runtime_settings?.values || {};
+      $('manual-input').hidden=features.manual_input===false;
+      if(features.manual_input===false){input.inputMode='none';$('manual-input').textContent='Ручной ввод';$('manual-input').setAttribute('aria-pressed','false');}
+      $('report-message').required=!!features.report_comment_required;
+      $('report-message').placeholder=features.report_comment_required ? 'Опишите расхождение' : 'Что нужно уточнить? Необязательно';
+      $('report-issue').hidden=!(features.report_issues!==false && d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
       $('report-issue').disabled=!!d.reported_current_result; $('report-issue').textContent=d.reported_current_result ? 'Уже сообщено' : 'Сообщить ответственному';
       pendingState();
     }
@@ -262,11 +272,12 @@
     if (refreshing || (admin && !authenticated)) return;
     refreshing = true;
     try {
+      if (admin && section === 'settings') return;
       if (admin && section === 'token') await tokenStatus();
       else if (current) {
         const id = current.id, next = await json(apiBase + '/documents/' + id);
         if (current?.id === id) {
-          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.open_issues,d.issue_count,d.pending_returns]);
+          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.open_issues,d.issue_count,d.pending_returns,d.runtime_settings?.revision]);
           const changed = signature(current) !== signature(next);
           current = next; if (changed) {render(); if(admin&&selectedIssue&&!$('issues-panel').hidden)await openIssue(selectedIssue.id,true);}
         }
@@ -318,7 +329,7 @@
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $('duplicate').close(); focus?.focus(); maybeReload(); });
   $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
-    if (queue.length || flushing || input?.value || dirty || caseDraft() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
+    if (queue.length || flushing || input?.value || dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
     kind = b.dataset.kind; loadFilters(); section = 'documents'; current = null; $('document').hidden = true; $('document-list').hidden = false;
     if ($('import-box')) { $('import-box').hidden = false; $('import-org').value = kind === 'receipt' ? defaultReceiptOrg : ''; }
     showSection();
@@ -367,13 +378,18 @@
       await authenticatedWorkspace();
     }); };
     $('logout').onclick = () => action(async () => {
-      if ((dirty || caseDraft() || tokenDraft()) && !confirm('Выйти и отменить несохранённый ввод?')) return;
+      if ((dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty()) && !confirm('Выйти и отменить несохранённый ввод?')) return;
       await json('/api/admin/session', {method:'DELETE'}); dirty = false; $('token-form').reset(); location.replace('/admin');
     });
     $('token-tab').onclick = () => action(async () => {
-      if (dirty || caseDraft() || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
+      if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
       section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
       showSection(); await tokenStatus();
+    });
+    $('settings-tab').onclick = () => action(async () => {
+      if (dirty || caseDraft() || tokenDraft() || settingsEditor.isDirty() || busy > 1) throw new Error('Сохраните или отмените текущие изменения перед переходом.');
+      section = 'settings'; current = null; history.replaceState(null, '', '/admin?section=settings');
+      showSection(); await settingsEditor.load();
     });
     $('token-org').onchange = () => action(tokenStatus);
     $('token-form').onsubmit = e => { e.preventDefault(); action(async () => {
@@ -446,7 +462,7 @@
       if (current.kind === 'shipment' && current.status !== 'completed' && $('strict').checked !== !!current.strict_owner) body.strict_owner = $('strict').checked;
       await json(apiBase + '/documents/' + current.id, {method:'PATCH',body}); dirty = false; await refresh(); render(); message('Изменения сохранены');
     }); };
-    window.addEventListener('beforeunload', e => { if (dirty || caseDraft() || tokenDraft()) { e.preventDefault(); e.returnValue=''; } });
+    window.addEventListener('beforeunload', e => { if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty()) { e.preventDefault(); e.returnValue=''; } });
   }
   setInterval(refresh, 2000);
   setInterval(async () => {

@@ -56,7 +56,7 @@ VERDICT_TITLE: dict[str, str] = {
 }
 
 
-def business_verdict(status: Optional[str]) -> tuple[str, Optional[str]]:
+def business_verdict(status: Optional[str], policy: Optional[dict] = None) -> tuple[str, Optional[str]]:
     """Возвращает (verdict, verdict_message) для бизнес-статуса ЧЗ.
 
     - APPLIED / INTRODUCED   -> ok (зелёный)
@@ -65,6 +65,17 @@ def business_verdict(status: Optional[str]) -> tuple[str, Optional[str]]:
     - None/пустой            -> error (структура/API разберётся отдельно)
     """
     s = (status or "").strip().upper()
+    if s and policy:
+        key = 'verdict_' + s.lower() if s in {'EMITTED', 'APPLIED', 'INTRODUCED'} else 'verdict_unknown'
+        if key in policy:
+            verdict = policy[key]
+            if verdict == VERTICT_OK:
+                return verdict, None
+            message = ("Код эмитирован, но нанесение ещё не зарегистрировано." if s == 'EMITTED'
+                       else f'Статус {status_ru(s)} ({s}): ' + ('требует внимания' if verdict == VERTICT_WARNING else 'не допускается'))
+            if key == 'verdict_unknown':
+                message = f'Неизвестный статус: {s}'
+            return verdict, message
     if s in BUSINESS_OK_STATUSES:
         return VERTICT_OK, None
     if s in BUSINESS_WARNING_STATUSES:

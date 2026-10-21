@@ -802,3 +802,148 @@ def test_return_api_authentication_and_reply_identity(clients,store,svc):
     assert b.post('/api/warehouse/documents/'+other['id']+'/returns/'+reply['id']+'/acknowledge').status_code==404
     assert b.post(public+'/returns/'+reply['id']+'/acknowledge').status_code==200
     assert not b.get(public).json()['pending_returns']
+
+
+# Runtime application settings: persisted policies, concurrent admins and API enforcement.
+def configure(store, **changes):
+    previous = store.application_settings()
+    return store.update_settings(previous['revision'], {**previous['values'], **changes})
+
+
+def test_settings_persist_and_conflicting_admin_cannot_overwrite(store):
+    old = store.application_settings()
+    updated = configure(store, manual_input=False, receipt_default_org=ORG2)
+    restarted = WarehouseStore(store.path)
+    assert restarted.application_settings() == updated
+    assert restarted.settings_history()[0]['changes']['manual_input'] == {'before': True, 'after': False}
+    with pytest.raises(WarehouseError, match='другим администратором'):
+        restarted.update_settings(old['revision'], old['values'])
+    assert configure(store, manual_input=False)['revision'] == updated['revision']
+    with pytest.raises(WarehouseError, match='справочнике'):
+        configure(store, receipt_default_org='9999999999')
+    assert restarted.application_settings() == updated
+
+
+@pytest.mark.parametrize('patch', [
+    {'shipment_statuses': []}, {'shipment_statuses': ['UNKNOWN']},
+    {'shipment_statuses': ['INTRODUCED', 'INTRODUCED']},
+    {'verdict_unknown': 'ok'}, {'check_timeout_seconds': 29},
+    {'check_timeout_seconds': 541}, {'manual_input': 'false'}, {'invented': True},
+])
+def test_settings_api_rejects_invalid_values_without_mutation(clients, store, patch):
+    a, _ = clients
+    old = store.application_settings()
+    r = a.put('/api/admin/warehouse/settings', headers={'X-Admin-Key': 'test-admin'},
+              json={'revision': old['revision'], 'values': {**old['values'], **patch}})
+    assert r.status_code == 422
+    assert store.application_settings() == old
+    assert store.settings_history() == []
+
+
+def test_settings_session_csrf_and_concurrent_save(clients, store):
+    a, b = clients
+    path = '/api/admin/warehouse/settings'
+    old = store.application_settings()
+    body = {'revision': old['revision'], 'values': {**old['values'], 'worker_delete_scans': False}}
+    assert a.put(path, json=body).status_code == 403
+    assert a.post('/api/admin/session', json={'key': 'test-admin'}).status_code == 200
+    assert a.put(path, json=body).status_code == 403
+    assert a.put(path, json=body, headers={'X-Admin-Request': '1'}).status_code == 200
+    assert b.put(path, json=body, headers={'X-Admin-Key': 'test-admin'}).status_code == 409
+    payload = a.get(path).json()
+    assert payload['runtime']['revision'] == 1 and payload['history'][0]['revision'] == 1
+    assert 'admin_key' not in payload['runtime']['values']
+
+
+@pytest.mark.asyncio
+async def test_runtime_verdict_applies_single_batch_but_never_masks_api_or_structure_errors(store, svc):
+    svc.policy_getter = lambda: store.application_settings()['values']
+    configure(store, verdict_emitted='error', verdict_applied='warning')
+    assert (await svc.scan(code('EMITTED01'))).verdict == 'error'
+    batch = await svc.scan_batch([code('EMITTED01'), code('APPLIED01'), 'bad'])
+    assert [r.verdict for r in batch] == ['error', 'warning', 'error']
+    assert batch[-1].error_category
+    configure(store, verdict_emitted='ok')
+    assert (await svc.scan(code('EMITTED01'))).verdict == 'ok'
+    missing = await svc.scan(code('NOTFOUND01'))
+    assert missing.error_category and missing.verdict == 'error'
+
+
+@pytest.mark.asyncio
+async def test_policy_change_invalidates_unfinished_shipment_preserves_receipt_and_completed(store, svc):
+    shipped = document(store); add(store, shipped)
+    completed = await check_document(store, svc, shipped['id']); store.complete(shipped['id'])
+    receipt = document(store, 'receipt'); add(store, receipt)
+    await check_document(store, svc, receipt['id'])
+    d = document(store); add(store, d, code('APPLIED01'))
+    failed = await check_document(store, svc, d['id'])
+    assert not failed['result']['ok']
+    # A check that started under old rules must not authorize completion after a save.
+    check_id, snapshot = store.begin_check(d['id'])
+    configure(store, shipment_statuses=['INTRODUCED', 'APPLIED'])
+    old_result = {**failed['result'], 'ok': True}
+    late = store.finish_check(d['id'], check_id, snapshot['version'], old_result)
+    assert not late['check_current'] and not late['can_complete']
+    with pytest.raises(WarehouseError):
+        store.complete(d['id'])
+    checked = await check_document(store, svc, d['id'])
+    assert checked['check_current'] and checked['result']['policy']['settings_revision'] == 1
+    # APPLIED fixture has a different quantity, so do not loosen quantity matching.
+    assert not checked['result']['codes'][0]['errors']
+    assert store.get(receipt['id'])['check_current']
+    assert store.get(shipped['id'])['status'] == 'completed'
+    assert store.get(shipped['id'])['check_current']
+    assert len(checked['scans']) == 1
+
+
+@pytest.mark.asyncio
+async def test_feature_switches_enforced_server_side_without_blocking_scans(clients, store, svc):
+    a, _ = clients
+    d = document(store); add(store, d, code('INTRODUCEDQ50'))
+    checked = await check_document(store, svc, d['id'])
+    configure(store, report_comment_required=True)
+    report = {'version': checked['version'], 'result_at': checked['result_at'], 'message': ''}
+    path = '/api/warehouse/documents/' + d['id']
+    assert a.post(path + '/issues', json=report).status_code == 422
+    report['message'] = 'Недостача'
+    issue = a.post(path + '/issues', json=report).json()
+    configure(store, report_issues=False, return_to_warehouse=False, worker_delete_scans=False)
+    assert a.post(path + '/issues', json=report).status_code == 409
+    assert a.delete(path + '/scans/' + checked['scans'][0]['id']).status_code == 409
+    admin_path = '/api/admin/warehouse/documents/' + d['id'] + '/issues/' + issue['id'] + '/return'
+    assert a.post(admin_path, headers={'X-Admin-Key':'test-admin'}, json={'resolution':'Продолжайте', 'request_id':'settings-test'}).status_code == 409
+    assert a.post(path + '/scans', json={'code':code('INTRODUCEDQ50B')}).status_code == 200
+    assert len(store.get(d['id'])['scans']) == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_pn_switch_and_default_owner_affect_only_new_documents(store, svc):
+    old = document(store)
+    configure(store, auto_pn=False, strict_owner_default=False)
+    d = document(store, rows=[['', GTIN, 100]])
+    assert not d['strict_owner'] and store.get(old['id'])['strict_owner']
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Product lookup called when automatic PN is disabled')
+    svc.client.product_info = forbidden
+    add(store, d)
+    checked = await check_document(store, svc, d['id'])
+    assert checked['lines'][0]['pn'] == ''
+    assert checked['can_complete']
+
+
+@pytest.mark.asyncio
+async def test_check_timeout_and_receipt_template_use_saved_settings(clients, store, svc, monkeypatch):
+    configure(store, check_timeout_seconds=30, receipt_default_org=ORG2)
+    original_timeout, deadlines = asyncio.timeout, []
+    def record_timeout(delay):
+        deadlines.append(delay)
+        return original_timeout(delay)
+    monkeypatch.setattr(asyncio, 'timeout', record_timeout)
+    d = document(store); add(store, d)
+    checked = await check_document(store, svc, d['id'])
+    assert 30 in deadlines and checked['can_complete']
+    a, _ = clients
+    response = a.get('/api/admin/warehouse/templates/receipt', headers={'X-Admin-Key':'test-admin'})
+    book = openpyxl.load_workbook(io.BytesIO(response.content))
+    metadata = {r[0]:r[1] for r in book['Документ'].iter_rows(min_row=2,values_only=True)}
+    assert metadata['ИНН организации'] == ORG2

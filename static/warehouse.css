@@ -93,3 +93,12 @@ dialog::backdrop { background:#0008; }dialog h2 { font-size:22px; margin-top:0; 
 #connection::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--warn); }
 #connection[data-state=online]::before { background:var(--ok); }
 #connection[data-state=offline]::before { background:var(--err); }
+.wh-policy-group {border:1px solid var(--border);border-radius:12px;padding:18px;margin:20px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:20px;min-width:0}
+.wh-policy-group legend {font-weight:700;padding:0 8px}
+.wh-policy-field {display:flex;flex-direction:column;gap:6px;min-width:0}
+.wh-policy-field label {display:block}
+.wh-policy-field label input:not([type=checkbox]),.wh-policy-field select {display:block;width:100%;margin-top:8px}
+.wh-policy-options {display:flex;flex-direction:column;gap:8px}
+.wh-policy-options label {margin:0;display:flex;align-items:center;gap:8px;min-height:32px}
+.wh-policy-field small {font-size:.85rem;line-height:1.5}
+@media(min-width:760px) {.wh-policy-group {grid-template-columns:repeat(2,minmax(0,1fr))}}

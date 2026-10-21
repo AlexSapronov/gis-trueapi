@@ -17,8 +17,14 @@
 <form id="login" class="wh-card wh-login"><span class="wh-eyebrow">Административный доступ</span><h2>Вход в админку</h2><p class="wh-muted">Один вход для токенов, приёмки и отгрузки.</p><label>Ключ администратора <input id="admin-key" type="password" autocomplete="current-password" required></label><button class="btn primary">Войти</button></form>
 {% endif %}
 <div id="workspace" {% if admin %}hidden{% endif %}>
-<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button><span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
+<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
 {% if admin %}
+<section id="application-settings" class="wh-card" hidden>
+<span class="wh-eyebrow">Управление приложением</span><h2>Настройки</h2><p id="settings-meta" class="wh-muted"></p>
+<p>Применяются после сохранения, без перезапуска. Правила отгрузки и вердикты сверки КМ настраиваются отдельно. Приёмка сверяется с кодами и количеством исходного документа.</p>
+<form id="application-settings-form"><div id="application-settings-fields"></div><div class="wh-toolbar"><button id="settings-save" class="btn primary" disabled>Сохранить настройки</button><button id="settings-reload" class="btn" type="button">Загрузить текущие</button><button id="settings-defaults" class="btn" type="button">Исходные настройки</button><span id="settings-unsaved" role="status"></span></div></form>
+<details class="wh-settings"><summary>История изменений (последние 50)</summary><div id="settings-history"></div></details>
+</section>
 <section id="token-panel" class="wh-card" hidden>
 <h2>Токен True API</h2>
 <p>Запустите «Обновить токен ЧЗ.cmd» на компьютере с УКЭП и вставьте свежие UUID и SIGNATURE.</p>
@@ -82,5 +88,5 @@
 {% endif %}
 {% if not admin %}<dialog id="report-dialog"><h2>Сообщить ответственному</h2><p>Результат проверки и коды будут доступны ответственному в админке.</p><form id="report-form"><label>Комментарий <textarea id="report-message" rows="3" maxlength="2000" placeholder="Что нужно уточнить? Необязательно"></textarea></label><div class="wh-toolbar"><button class="btn primary">Отправить</button><button id="report-cancel" class="btn" type="button">Отмена</button></div></form></dialog>{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Исходный КМ остаётся в документе. Повторное считывание не увеличивает количество.</p><div class="wh-toolbar"><button class="btn primary" data-close="keep">Оставить</button><button class="btn" data-close="discard">Удалить повтор</button></div></dialog>
-<script src="/static/scanner-focus.js?v={{ build_id }}"></script><script src="/static/warehouse.js?v={{ build_id }}"></script>
+<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>
