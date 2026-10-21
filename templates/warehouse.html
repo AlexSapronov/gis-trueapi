@@ -2,12 +2,12 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% if admin %}Управление документами{% else %}Складские операции{% endif %} · Честный ЗНАК</title>
+<title>{% if admin %}Администрирование{% else %}Складские операции{% endif %} · Честный ЗНАК</title>
 <link rel="stylesheet" href="/static/style.css?v={{ build_id }}">
 <link rel="stylesheet" href="/static/warehouse.css?v={{ build_id }}">
 </head>
 <body data-admin="{{ 'true' if admin else 'false' }}" data-build="{{ build_id }}">
-<header class="wh-header"><div><h1>{% if admin %}Управление документами{% else %}Складские операции{% endif %}</h1>
+<header class="wh-header"><div><h1>{% if admin %}Администрирование{% else %}Складские операции{% endif %}</h1>
 <span id="connection" role="status">Подключение…</span></div><a href="/">Сверка КМ</a></header>
 <main class="wh-main">
 <p id="notice" role="status" aria-live="polite"></p>
@@ -15,8 +15,20 @@
 <form id="login" class="wh-card"><label>Ключ администратора <input id="admin-key" type="password" autocomplete="current-password" required></label><button class="btn primary">Войти</button></form>
 {% endif %}
 <div id="workspace" {% if admin %}hidden{% endif %}>
-<nav class="wh-toolbar"><button class="btn" data-kind="shipment">Отгрузки</button><button class="btn" data-kind="receipt">Приёмки</button><button id="list-refresh" class="btn">Обновить список</button>{% if admin %}<button id="logout" class="btn">Выйти</button>{% endif %}</nav>
+<nav class="wh-toolbar">{% if admin %}<button class="btn" id="token-tab">Токен</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button><button id="list-refresh" class="btn">Обновить список</button>{% if admin %}<button id="logout" class="btn">Выйти</button>{% endif %}</nav>
 {% if admin %}
+<section id="token-panel" class="wh-card" hidden>
+<h2>Токен True API</h2>
+<p>Запустите «Обновить токен ЧЗ.cmd» на компьютере с УКЭП и вставьте свежие UUID и SIGNATURE.</p>
+<form id="token-form">
+<label>Организация <select id="token-org" required></select></label>
+<p id="token-meta"></p>
+<label>UUID <input id="token-uuid" type="text" autocomplete="off" required></label>
+<label>SIGNATURE <textarea id="token-signature" rows="6" autocomplete="off" required></textarea></label>
+<button class="btn primary" id="token-submit">Обновить токен</button>
+<button class="btn" type="reset">Очистить</button>
+</form><p id="token-result" role="status" aria-live="polite"></p>
+</section>
 <details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
 <p>Заполните листы «Документ» и «Товары» стандартного шаблона. GTIN, ИНН и КМ указывайте как текст.</p>
 <button type="button" id="template" class="btn">Скачать шаблон</button>
@@ -29,7 +41,7 @@
 <button id="back" class="btn">← К списку</button><h2 id="doc-title"></h2><p id="doc-parties"></p>
 <p id="doc-status"></p><p id="doc-count"></p><p id="check-state" role="status"></p>
 {% if admin %}
-<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button></div>
+<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="delete-document" class="btn wh-danger">Удалить документ</button></div>
 <form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><p id="pn-fields"></p><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form>
 {% endif %}
 <div class="wh-table"><table><thead><tr><th>PN</th><th>GTIN</th><th>Требуется</th><th id="actual-label">Собрано</th><th>Осталось</th></tr></thead><tbody id="lines"></tbody></table></div>
@@ -41,6 +53,12 @@
 </section>
 </div>
 </main>
+{% if admin %}
+<dialog id="delete-dialog"><h2>Удалить документ?</h2><p id="delete-description"></p>
+<p>Документ исчезнет из списков администратора и склада. Работа по нему будет заблокирована. История останется сохранённой.</p>
+<form id="delete-form"><label>Для подтверждения введите номер документа <input id="delete-number" type="text" autocomplete="off" required></label>
+<div class="wh-toolbar"><button class="btn wh-danger" id="delete-confirm" disabled>Удалить документ</button><button class="btn" id="delete-cancel" type="button">Отмена</button></div></form></dialog>
+{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Исходный КМ остаётся в документе. Повторное считывание не увеличивает количество.</p><div class="wh-toolbar"><button class="btn primary" data-close="keep">Оставить</button><button class="btn" data-close="discard">Удалить повтор</button></div></dialog>
 <script src="/static/scanner-focus.js?v={{ build_id }}"></script><script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>

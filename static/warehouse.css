@@ -8,7 +8,7 @@ a { color:var(--primary); }
 .wh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:12px 0; }
 .wh-toolbar .btn, .wh-scan .btn { min-height:48px; }
 .wh-main label { display:block; margin:12px 0; }
-.wh-main input:not([type=checkbox]), .wh-main select { font-size:17px; max-width:100%; padding:12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); }
+.wh-main input:not([type=checkbox]), .wh-main select, .wh-main textarea { font-size:17px; max-width:100%; padding:12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); }
 #wh-scan { width:100%; font-family:monospace; }
 .wh-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
 .wh-doc { text-align:left; padding:18px; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:10px; cursor:pointer; font-size:16px; }
@@ -28,3 +28,7 @@ dialog::backdrop { background:#0008; }
 #pn-fields label { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-family:monospace; }
 #connection { font-size:14px; color:var(--muted); }
 @media(max-width:600px) { .wh-main { padding:10px; }.wh-card { padding:14px; }.wh-header { padding:14px; }.wh-header h1 { font-size:18px; }.wh-toolbar .btn { flex:1; } }
+
+.wh-main textarea { width:100%; font-family:monospace; resize:vertical; }
+.wh-danger { color:var(--err); border-color:var(--err); }
+dialog input { width:100%; font-size:18px; padding:12px; margin-top:8px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); }

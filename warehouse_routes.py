@@ -1,4 +1,4 @@
-"""Warehouse HTTP boundary; administrator secrets are accepted in a header only."""
+"""Warehouse HTTP boundary; administrator sessions are shared with token management."""
 from __future__ import annotations
 
 import asyncio
@@ -7,9 +7,10 @@ from urllib.parse import quote
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from pydantic import BaseModel, Field
 
+from admin_auth import authorized
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
@@ -22,19 +23,22 @@ class ScanBody(BaseModel):
     code: str = Field(min_length=1, max_length=4096)
 
 
-class EditBody(BaseModel):
+class DocumentVersion(BaseModel):
     version: int = Field(ge=0)
     revision: int = Field(ge=0)
+
+
+class EditBody(DocumentVersion):
     quantities: dict[str, Annotated[int, Field(strict=True, gt=0, le=2147483647)]] = Field(default_factory=dict)
     strict_owner: bool | None = None
     pns: dict[str, str] = Field(default_factory=dict)
 
 
-def install_warehouse(app, service_getter, store_getter, admin_check, templates):
+def install_warehouse(app, service_getter, store_getter, templates):
     router = APIRouter()
 
     def auth(request: Request):
-        if not admin_check(request.headers.get('X-Admin-Key')):
+        if not authorized(request, settings.admin_key):
             raise HTTPException(403, 'Доступ запрещён')
 
     def visible(document_id):
@@ -53,9 +57,17 @@ def install_warehouse(app, service_getter, store_getter, admin_check, templates)
         return templates.TemplateResponse(request=request, name='warehouse.html',
                                           context={'build_id': get_build_id(), 'admin': False})
 
-    @router.get('/admin/warehouse', response_class=HTMLResponse)
+    @router.get('/admin/warehouse')
+    async def legacy_admin_page(request: Request):
+        kind = 'receipt' if request.query_params.get('kind') == 'receipt' else 'shipment'
+        target = '/admin?kind=' + kind
+        if request.query_params.get('doc'):
+            target += '&doc=' + quote(request.query_params['doc'], safe='')
+        return RedirectResponse(target, status_code=307)
+
+    @router.get('/admin', response_class=HTMLResponse)
     async def admin_page(request: Request):
-        # This shell contains no data or secrets. All data/actions require the header.
+        # This shell contains no data or secrets. Data/actions require a session or API key.
         return templates.TemplateResponse(request=request, name='warehouse.html',
                                           context={'build_id': get_build_id(), 'admin': True})
 
@@ -132,6 +144,11 @@ def install_warehouse(app, service_getter, store_getter, admin_check, templates)
         if any(len(pn) > 1000 for pn in body.pns.values()):
             raise WarehouseError('PN слишком длинный')
         return store_getter().edit(document_id, body.version, body.strict_owner, body.pns, body.quantities, body.revision)
+
+    @admin.delete('/documents/{document_id}')
+    def delete_document(document_id: str, body: DocumentVersion):
+        store_getter().delete(document_id, body.version, body.revision)
+        return {'deleted': True}
 
     @admin.post('/documents/{document_id}/start')
     def start(document_id: str):

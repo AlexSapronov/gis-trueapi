@@ -468,3 +468,117 @@ def test_admin_key_unicode_is_rejected_and_token_page_contains_no_key(clients):
     assert page.status_code==200 and 'test-admin' not in page.text
     assert a.post('/admin/token?key=test-admin', data={'inn':ORG,'uuid':'uuid','signature':'signature'}).status_code==403
     assert a.post('/admin/token',headers={'X-Admin-Key':'test-admin'},data={'inn':ORG,'uuid':'uuid','signature':'signature'}).json()['ok']
+
+
+def test_admin_session_survives_refresh_and_covers_all_sections(clients):
+    a,b = clients
+    login = a.post('/api/admin/session',json={'key':'test-admin'})
+    assert login.status_code == 200
+    cookie = login.headers['set-cookie'].lower()
+    assert 'httponly' in cookie and 'samesite=strict' in cookie and 'max-age=28800' in cookie
+    assert 'test-admin' not in cookie
+    assert a.get('/api/admin/session').status_code == 200
+    assert a.get('/api/admin/warehouse/documents').status_code == 200
+    assert b.get('/api/admin/warehouse/documents').status_code == 403
+    assert a.get('/admin').status_code == 200
+    assert a.get('/admin/token').url.path == '/admin'
+    assert a.get('/admin/token').url.query == b'section=token'
+    r = a.post('/admin/token', headers={'X-Admin-Request':'1'},
+               data={'inn':ORG,'uuid':'uuid','signature':'signature'})
+    assert r.json()['ok']
+    assert a.delete('/api/admin/session',headers={'X-Admin-Request':'1'}).status_code == 200
+    assert a.get('/api/admin/warehouse/documents').status_code == 403
+
+
+def test_cookie_session_requires_csrf_header_for_writes(clients):
+    a,_ = clients
+    a.post('/api/admin/session',json={'key':'test-admin'})
+    for path,method,body in [('/api/admin/warehouse/documents/missing/start','POST',None),
+                             ('/api/admin/warehouse/documents/missing','DELETE',{'version':0,'revision':0})]:
+        assert a.request(method,path,json=body).status_code == 403
+    assert a.post('/admin/token',data={'inn':ORG,'uuid':'uuid','signature':'signature'}).status_code == 403
+    assert a.delete('/api/admin/session').status_code == 403
+    assert a.get('/api/admin/session').status_code == 200
+
+
+def test_session_expiration_tampering_and_key_rotation(clients, monkeypatch):
+    import admin_auth
+    a,_ = clients
+    a.post('/api/admin/session',json={'key':'test-admin'})
+    value = a.cookies.get(admin_auth.COOKIE_NAME)
+    assert admin_auth.valid_session(value,'test-admin')
+    assert not admin_auth.valid_session(value+'x','test-admin')
+    assert not admin_auth.valid_session('invalid','test-admin')
+    assert not admin_auth.valid_session(value,'change-me-in-production')
+    monkeypatch.setattr(main.settings,'admin_key','rotated-key')
+    assert a.get('/api/admin/session').status_code == 403
+    monkeypatch.setattr(main.settings,'admin_key','test-admin')
+    expires = int(value.split('.')[0])
+    monkeypatch.setattr(admin_auth.time,'time',lambda:expires + 1)
+    assert a.get('/api/admin/session').status_code == 403
+
+
+def test_session_fail_closed_and_https_cookie(clients,monkeypatch):
+    a,_ = clients
+    assert a.post('/api/admin/session',json={'key':'wrong'}).status_code == 403
+    assert a.post('/api/admin/session',json={'key':'неверный ключ'}).status_code == 403
+    https = TestClient(main.app,base_url='https://testserver')
+    assert '; Secure' in https.post('/api/admin/session',json={'key':'test-admin'}).headers['set-cookie']
+    monkeypatch.setattr(main.settings,'admin_key','change-me-in-production')
+    assert a.post('/api/admin/session',json={'key':'change-me-in-production'}).status_code == 403
+
+
+@pytest.mark.parametrize('kind',['shipment','receipt'])
+@pytest.mark.parametrize('status',['draft','active','completed'])
+def test_admin_document_deletion_hides_and_blocks_operations_but_keeps_history(store,svc,kind,status):
+    d = document(store,kind,start=status!='draft')
+    if status != 'draft': add(store,d)
+    if status == 'completed':
+        asyncio.run(check_document(store,svc,d['id']))
+        store.complete(d['id'])
+    d = store.get(d['id'])
+    store.delete(d['id'],d['version'],d['revision'])
+    assert not store.list(admin=True) and not store.list()
+    with pytest.raises(WarehouseError): store.get(d['id'])
+    with pytest.raises(WarehouseError): add(store,d)
+    with pytest.raises(WarehouseError): store.start(d['id'],reopen=True)
+    with pytest.raises(WarehouseError): store.complete(d['id'])
+    with pytest.raises(WarehouseError): store.edit(d['id'],d['version'],pns={GTIN:'PN'})
+    with store.connection() as c:
+        row=c.execute('SELECT deleted_at FROM warehouse_documents WHERE id=?',(d['id'],)).fetchone()
+        assert row['deleted_at']
+        if status != 'draft':
+            assert c.execute('SELECT count(*) FROM warehouse_scans WHERE document_id=?',(d['id'],)).fetchone()[0] == 1
+    assert not WarehouseStore(store.path).list(admin=True)
+
+
+def test_deletion_rejects_stale_confirmation_and_running_check(store):
+    d = document(store)
+    add(store,d)
+    with pytest.raises(WarehouseError,match='изменён'):
+        store.delete(d['id'],d['version'],d['revision'])
+    updated=store.get(d['id'])
+    check_id,_=store.begin_check(d['id'])
+    with pytest.raises(WarehouseError,match='Дождитесь'):
+        store.delete(d['id'],updated['version'],updated['revision'])
+    store.cancel_check(d['id'],check_id)
+    store.delete(d['id'],updated['version'],updated['revision'])
+
+
+def test_delete_api_requires_admin_and_stops_other_device(clients,store):
+    a,b=clients
+    d=document(store)
+    path='/api/admin/warehouse/documents/'+d['id']
+    body={'version':d['version'],'revision':d['revision']}
+    assert b.request('DELETE',path,json=body).status_code==403
+    a.post('/api/admin/session',json={'key':'test-admin'})
+    assert a.request('DELETE',path,json=body).status_code==403
+    result=a.request('DELETE',path,json=body,headers={'X-Admin-Request':'1'})
+    assert result.status_code==200 and result.json()['deleted']
+    public='/api/warehouse/documents/'+d['id']
+    assert b.get(public).status_code==404
+    assert b.post(public+'/scans',json={'code':code()}).status_code==404
+    assert b.post(public+'/check').status_code==404
+    assert b.post(public+'/complete').status_code==404
+    assert a.get(path).status_code==404
+    assert a.get(path+'/export').status_code==404
