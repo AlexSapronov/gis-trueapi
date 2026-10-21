@@ -108,30 +108,17 @@ def _check_admin(key: Optional[str]) -> bool:
         return False
     if not key:
         return False
-    return hmac.compare_digest(key, configured)
-
-
-def _extract_key(request: Request, form_key: Optional[str] = None) -> Optional[str]:
-    """Достаёт админ-ключ из заголовка X-Admin-Key, query ?key= или form key."""
-    hdr = request.headers.get("X-Admin-Key")
-    if hdr:
-        return hdr
-    q = request.query_params.get("key")
-    if q:
-        return q
-    return form_key
+    return hmac.compare_digest(key.encode("utf-8"), configured.encode("utf-8"))
 
 
 @app.get("/admin/token", response_class=HTMLResponse)
 async def admin_token_page(request: Request):
-    if not _check_admin(_extract_key(request)):
-        return HTMLResponse("Доступ запрещён", status_code=403)
+    # Public login shell; no secret is embedded into HTML or accepted through URL.
     orgs = [{"inn": o.inn, "name": o.name} for o in registry.all()]
-    key = _extract_key(request)
     return templates.TemplateResponse(
         request=request,
         name="admin_token.html",
-        context={"organizations": orgs, "admin_key": key or ""},
+        context={"organizations": orgs},
     )
 
 
@@ -141,9 +128,8 @@ async def admin_token_post(
     inn: str = Form(...),
     uuid: str = Form(...),
     signature: str = Form(...),
-    key: Optional[str] = Form(None),
 ):
-    provided = _extract_key(request, form_key=key)
+    provided = request.headers.get("X-Admin-Key")
     if not _check_admin(provided):
         return JSONResponse({"ok": False, "message": "Доступ запрещён"}, status_code=403)
     try:
@@ -152,6 +138,14 @@ async def admin_token_post(
         return JSONResponse({"ok": False, "inn": inn, "message": e.message})
     # НЕ возвращаем сам токен обратно в ответ
     return {"ok": True, "inn": inn.strip(), "message": "Токен обновлён"}
+
+
+# ---- Warehouse documents ------------------------------------------------
+from warehouse_store import WarehouseStore
+from warehouse_routes import install_warehouse
+
+warehouse = WarehouseStore(settings.warehouse_db)
+install_warehouse(app, lambda: svc, lambda: warehouse, _check_admin, templates)
 
 
 # ---- static ------------------------------------------------------------

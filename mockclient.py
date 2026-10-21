@@ -127,6 +127,9 @@ class MockTrueApiClient:
             )
         return {"items": items, "is_last": True, "next": None}
 
+    async def product_info(self, gtins: list[str], token: str) -> list[dict[str, Any]]:
+        return [{"gtin": g, "model": "MOCK-PN-" + g, "name": "Демо-товар"} for g in gtins]
+
     async def check(self, cises: list[str], token: str) -> dict[str, Any]:
         return {"result": True, "quantity": len(cises)}
 

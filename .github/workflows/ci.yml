@@ -33,4 +33,6 @@ jobs:
       - name: Check JS syntax
         run: |
           node --check static/app.js
+          node --check static/scanner-focus.js
+          node --check static/warehouse.js
           echo "app.js syntax OK"

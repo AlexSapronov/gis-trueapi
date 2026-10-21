@@ -24,6 +24,8 @@ class Settings:
         self.mode: str = os.getenv("GIS_MODE", "mock").strip().lower()
         self.base_url: str = os.getenv("GIS_BASE_URL", "https://markirovka.crpt.ru").rstrip("/")
         self.admin_key: str = os.getenv("ADMIN_KEY", "change-me-in-production")
+        self.warehouse_db: Path = Path(os.getenv("WAREHOUSE_DB", str(BASE_DIR / "data" / "warehouse.sqlite3")))
+        self.receipt_default_org: str = os.getenv("RECEIPT_DEFAULT_ORG", "").strip()
         self.tokens_file: Path = Path(
             os.getenv("TOKENS_FILE", str(BASE_DIR / "data" / "tokens.json"))
         )

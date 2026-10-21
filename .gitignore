@@ -28,3 +28,5 @@ error.log
 Thumbs.db
 .idea/
 .vscode/
+# Durable warehouse state (back up separately)
+data/*.sqlite3*

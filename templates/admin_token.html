@@ -21,7 +21,8 @@ button { margin-top:20px; padding:12px 20px; font-size:16px; background:#0a6cff;
 <div class="wrap">
 <h1>Обновление токена True API</h1>
 <form id="f">
-<input type="hidden" name="key" id="admin-key" value="{{ admin_key }}">
+<label for="admin-key">Ключ администратора</label>
+<input type="password" id="admin-key" autocomplete="current-password" required>
 <label for="org">Организация</label>
 <select id="org" name="inn">
 {% for o in organizations %}
@@ -47,6 +48,7 @@ f.addEventListener('submit', async (e) => {
   result.textContent = 'Обновление…';
   result.className = '';
   const fd = new FormData(f);
+  try {
   const r = await fetch('/admin/token', {
     method: 'POST',
     headers: { 'X-Admin-Key': document.getElementById('admin-key').value },
@@ -61,6 +63,7 @@ f.addEventListener('submit', async (e) => {
     result.textContent = 'Ошибка: ' + data.message;
     result.className = 'err';
   }
+  } catch (_) { result.textContent = 'Ошибка соединения с сервером'; result.className = 'err'; }
 });
 </script>
 </body>
