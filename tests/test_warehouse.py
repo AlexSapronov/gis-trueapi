@@ -580,5 +580,152 @@ def test_delete_api_requires_admin_and_stops_other_device(clients,store):
     assert b.post(public+'/scans',json={'code':code()}).status_code==404
     assert b.post(public+'/check').status_code==404
     assert b.post(public+'/complete').status_code==404
-    assert a.get(path).status_code==404
+    assert a.get(path).json()['deleted_at']
     assert a.get(path+'/export').status_code==404
+
+
+def test_document_filters_distinguish_scans_from_launch_status(store):
+    draft=document(store,start=False)
+    empty=document(store)
+    scanned=document(store);add(store,scanned)
+    assert {d['id'] for d in store.list(scan_state='unscanned')}=={empty['id']}
+    assert {d['id'] for d in store.list(scan_state='scanned')}=={scanned['id']}
+    assert {d['id'] for d in store.list(admin=True,status='draft')}=={draft['id']}
+    assert not store.list(status='draft')
+    assert len(store.list(org_inn=ORG))==2
+    assert not store.list(org_inn=ORG2)
+
+
+def test_admin_search_dates_and_trash_filters(store):
+    a=document(store)
+    b=document(store,start=False)
+    with store.connection(True) as c:
+        c.execute("UPDATE warehouse_documents SET number='Тест Альфа',recipient_name='Клиент Бета',date='2026-10-20' WHERE id=?",(a['id'],))
+    assert [d['id'] for d in store.list(admin=True,query='КЛИЕНТ бета')]==[a['id']]
+    assert [d['id'] for d in store.list(admin=True,query='альфа')]==[a['id']]
+    assert len(store.list(admin=True,date_from='2026-10-21',date_to='2026-10-21'))==1
+    assert not store.list(admin=True,query="%' OR 1=1 --")
+    store.delete(b['id'],b['version'],b['revision'])
+    assert [d['id'] for d in store.list(admin=True,trash=True)]==[b['id']]
+    assert [d['id'] for d in store.list(trash=True)]==[a['id']]  # worker cannot access trash
+
+
+@pytest.mark.parametrize('kind',['shipment','receipt'])
+@pytest.mark.parametrize('status',['draft','active','completed'])
+def test_restore_preserves_scans_and_original_status(store,svc,kind,status):
+    d=document(store,kind,start=status!='draft')
+    if status!='draft':add(store,d)
+    if status=='completed':
+        asyncio.run(check_document(store,svc,d['id']));store.complete(d['id'])
+    before=store.get(d['id']);store.delete(d['id'],before['version'],before['revision'])
+    trashed=store.get(d['id'],include_deleted=True)
+    assert not trashed['can_complete']
+    with pytest.raises(WarehouseError):store.restore(d['id'],before['version'],before['revision'])
+    restored=store.restore(d['id'],trashed['version'],trashed['revision'])
+    assert restored['status']==status and restored['scans']==before['scans']
+    assert not restored['deleted_at'] and not restored['can_complete']
+    assert not store.list(admin=True,trash=True)
+    if status=='completed' and kind=='shipment':assert export_shipment(restored)
+    with pytest.raises(WarehouseError):store.restore(d['id'],restored['version'],restored['revision'])
+
+
+def failed_check(store,svc):
+    d=document(store,quantity=200);add(store,d)
+    return asyncio.run(check_document(store,svc,d['id']))
+
+
+def test_problem_report_is_snapshot_with_operations_and_resolves_explicitly(store,svc):
+    d=failed_check(store,svc)
+    assert not d['result']['ok']
+    issue=store.report_issue(d['id'],d['version'],d['result_at'],'Не хватает товара')
+    assert store.get(d['id'])['reported_current_result']
+    assert store.list(admin=True,issue_state='open')[0]['id']==d['id']
+    assert not store.list(admin=True,issue_state='closed')
+    store.delete_scan(d['id'],d['scans'][0]['id'])
+    detail=store.issue(d['id'],issue['id'])
+    assert detail['snapshot']['scans']==d['scans']
+    assert detail['snapshot']['result']==d['result']
+    events=store.issue_events(d['id'],issue['id'])['events']
+    assert {'created','started','scan_added','check_started','checked','scan_removed','issue_reported'} <= {e['action'] for e in events}
+    removed=next(e for e in events if e['action']=='scan_removed')
+    assert removed['details']['raw_code']==d['scans'][0]['raw_code']
+    with pytest.raises(WarehouseError):store.resolve_issue(d['id'],issue['id'],' ')
+    store.resolve_issue(d['id'],issue['id'],'Склад заменил товар')
+    assert not store.get(d['id'])['open_issues']
+    assert store.list(admin=True,issue_state='closed')[0]['id']==d['id']
+    assert store.issue(d['id'],issue['id'])['resolution']=='Склад заменил товар'
+
+
+def test_report_deduplication_across_devices(store,svc):
+    d=failed_check(store,svc)
+    with ThreadPoolExecutor(2) as pool:
+        reports=list(pool.map(lambda _:WarehouseStore(store.path).report_issue(d['id'],d['version'],d['result_at']),range(2)))
+    assert sorted(r['duplicate'] for r in reports)==[False,True]
+    assert reports[0]['id']==reports[1]['id']
+    assert len(store.issues(d['id']))==1
+
+
+def test_report_rejects_stale_unchecked_and_successful_results(store,svc):
+    d=document(store)
+    with pytest.raises(WarehouseError):store.report_issue(d['id'],d['version'],'none')
+    add(store,d);ok=asyncio.run(check_document(store,svc,d['id']))
+    with pytest.raises(WarehouseError):store.report_issue(d['id'],ok['version'],ok['result_at'])
+    failed=failed_check(store,svc)
+    add(store,failed,code('INTRODUCEDQ50'))
+    with pytest.raises(WarehouseError):store.report_issue(failed['id'],failed['version'],failed['result_at'])
+    fresh=asyncio.run(check_document(store,svc,failed['id']))
+    with pytest.raises(WarehouseError):store.report_issue(failed['id'],fresh['version'],failed['result_at'])
+
+
+def test_successful_recheck_does_not_clear_responsible_attention(store,svc):
+    d=failed_check(store,svc)
+    report=store.report_issue(d['id'],d['version'],d['result_at'])
+    add(store,d,code('INTRODUCEDQ100B'))
+    good=asyncio.run(check_document(store,svc,d['id']))
+    assert good['can_complete'] and good['open_issues']==1
+    assert not store.issue(d['id'],report['id'])['resolved_at']
+    restarted=WarehouseStore(store.path)
+    assert restarted.get(d['id'])['open_issues']==1
+
+
+def test_problem_events_paginate_without_duplicates(store,svc):
+    d=failed_check(store,svc)
+    issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    first=store.issue_events(d['id'],issue['id'],limit=3)
+    second=store.issue_events(d['id'],issue['id'],before=first['next_before'],limit=3)
+    assert len(first['events'])==3
+    assert not {e['id'] for e in first['events']} & {e['id'] for e in second['events']}
+
+
+def test_filter_restore_and_problem_apis(clients,store,svc):
+    a,b=clients;h={'X-Admin-Key':'test-admin'}
+    d=failed_check(store,svc);path='/api/warehouse/documents/'+d['id'];admin='/api/admin/warehouse/documents/'+d['id']
+    assert b.get('/api/warehouse/documents?scan_state=invalid').status_code==422
+    assert a.get('/api/admin/warehouse/documents?date_from=2026-10-22&date_to=2026-10-21',headers=h).status_code==422
+    report=b.post(path+'/issues',json={'version':d['version'],'result_at':d['result_at'],'message':'Нужна помощь'})
+    assert report.status_code==200
+    issue=report.json()['id']
+    assert b.get(admin+'/issues').status_code==403
+    assert b.get(admin+'/issues/'+issue).status_code==403
+    assert a.get(admin+'/issues/'+issue,headers=h).json()['snapshot']['scans']==d['scans']
+    assert a.get(admin+'/issues/'+issue+'/events',headers=h).json()['events']
+    assert b.post(admin+'/issues/'+issue+'/resolve',json={'resolution':'Ок'}).status_code==403
+    fresh=store.get(d['id']);store.delete(d['id'],fresh['version'],fresh['revision'])
+    trashed=store.get(d['id'],include_deleted=True);body={'version':trashed['version'],'revision':trashed['revision']}
+    assert b.post(admin+'/restore',json=body).status_code==403
+    assert b.get('/api/warehouse/documents?trash=true').json()['documents']==[]
+    assert a.get('/api/admin/warehouse/documents?trash=true&issue_state=open',headers=h).json()['documents'][0]['id']==d['id']
+    assert a.post(admin+'/restore',headers=h,json=body).status_code==200
+    assert a.post(admin+'/issues/'+issue+'/resolve',headers=h,json={'resolution':'Разобрано'}).status_code==200
+
+
+def test_receipt_issue_keeps_missing_codes_without_any_true_api_call(store,svc):
+    async def forbidden(*args,**kwargs):pytest.fail('Receipt/reporting must stay local')
+    svc.client.info=forbidden;svc.client.product_info=forbidden
+    d=document(store,'receipt')
+    failed=asyncio.run(check_document(store,svc,d['id']))
+    report=store.report_issue(d['id'],failed['version'],failed['result_at'],'Ожидаемый товар не приехал')
+    detail=store.issue(d['id'],report['id'])
+    assert detail['snapshot']['result']['missing'][0]['cis']==scan_data(code())['cis']
+    assert detail['snapshot']['expected'][0]['raw_code']==code()
+    assert not detail['snapshot']['scans']

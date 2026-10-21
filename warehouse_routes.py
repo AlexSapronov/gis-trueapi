@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import date
 from urllib.parse import quote
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,31 @@ class EditBody(DocumentVersion):
     quantities: dict[str, Annotated[int, Field(strict=True, gt=0, le=2147483647)]] = Field(default_factory=dict)
     strict_owner: bool | None = None
     pns: dict[str, str] = Field(default_factory=dict)
+
+
+class WarehouseFilters(BaseModel):
+    kind: Literal['shipment','receipt'] | None = None
+    org_inn: str | None = Field(default=None,max_length=12)
+    scan_state: Literal['all','unscanned','scanned'] = 'all'
+    status: Literal['draft','active','completed'] | None = None
+
+
+class AdminFilters(WarehouseFilters):
+    query: str = Field(default='',max_length=300)
+    date_from: date | None = None
+    date_to: date | None = None
+    issue_state: Literal['all','open','closed','none'] = 'all'
+    trash: bool = False
+
+
+class ReportBody(BaseModel):
+    version: int = Field(ge=0)
+    result_at: str = Field(min_length=1,max_length=100)
+    message: str = Field(default='',max_length=2000)
+
+
+class ResolveBody(BaseModel):
+    resolution: str = Field(min_length=1,max_length=2000)
 
 
 def install_warehouse(app, service_getter, store_getter, templates):
@@ -72,8 +98,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
                                           context={'build_id': get_build_id(), 'admin': True})
 
     @router.get('/api/warehouse/documents')
-    def documents(kind: str | None = None):
-        return {'documents': store_getter().list(kind=kind)}
+    def documents(filters: Annotated[WarehouseFilters, Query()]):
+        return {'documents': store_getter().list(**filters.model_dump())}
 
     @router.get('/api/warehouse/documents/{document_id}')
     def document(document_id: str):
@@ -102,6 +128,11 @@ def install_warehouse(app, service_getter, store_getter, templates):
         visible(document_id)
         return store_getter().complete(document_id)
 
+    @router.post('/api/warehouse/documents/{document_id}/issues')
+    def report_issue(document_id: str, body: ReportBody):
+        visible(document_id)
+        return store_getter().report_issue(document_id,body.version,body.result_at,body.message)
+
     admin = APIRouter(prefix='/api/admin/warehouse', dependencies=[Depends(auth)])
 
     @admin.get('/settings')
@@ -110,8 +141,10 @@ def install_warehouse(app, service_getter, store_getter, templates):
                 'receipt_default_org': settings.receipt_default_org}
 
     @admin.get('/documents')
-    def admin_documents(kind: str | None = None):
-        return {'documents': store_getter().list(admin=True, kind=kind)}
+    def admin_documents(filters: Annotated[AdminFilters, Query()]):
+        if filters.date_from and filters.date_to and filters.date_from > filters.date_to:
+            raise WarehouseError('Начало периода позже окончания')
+        return {'documents': store_getter().list(admin=True, **filters.model_dump())}
 
     @admin.get('/templates/{kind}')
     def download_template(kind: str):
@@ -137,7 +170,7 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
-        return store_getter().get(document_id)
+        return store_getter().get(document_id,include_deleted=True)
 
     @admin.patch('/documents/{document_id}')
     def edit(document_id: str, body: EditBody):
@@ -149,6 +182,26 @@ def install_warehouse(app, service_getter, store_getter, templates):
     def delete_document(document_id: str, body: DocumentVersion):
         store_getter().delete(document_id, body.version, body.revision)
         return {'deleted': True}
+
+    @admin.post('/documents/{document_id}/restore')
+    def restore_document(document_id: str, body: DocumentVersion):
+        return store_getter().restore(document_id,body.version,body.revision)
+
+    @admin.get('/documents/{document_id}/issues')
+    def issues(document_id: str):
+        return {'issues':store_getter().issues(document_id)}
+
+    @admin.get('/documents/{document_id}/issues/{issue_id}')
+    def issue(document_id: str,issue_id: str):
+        return store_getter().issue(document_id,issue_id)
+
+    @admin.get('/documents/{document_id}/issues/{issue_id}/events')
+    def issue_events(document_id: str,issue_id: str,before: int | None = Query(None,ge=1)):
+        return store_getter().issue_events(document_id,issue_id,before)
+
+    @admin.post('/documents/{document_id}/issues/{issue_id}/resolve')
+    def resolve_issue(document_id: str,issue_id: str,body: ResolveBody):
+        return store_getter().resolve_issue(document_id,issue_id,body.resolution)
 
     @admin.post('/documents/{document_id}/start')
     def start(document_id: str):

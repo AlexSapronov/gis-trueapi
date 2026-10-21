@@ -32,3 +32,12 @@ dialog::backdrop { background:#0008; }
 .wh-main textarea { width:100%; font-family:monospace; resize:vertical; }
 .wh-danger { color:var(--err); border-color:var(--err); }
 dialog input { width:100%; font-size:18px; padding:12px; margin-top:8px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); }
+.wh-filters { display:flex; flex-wrap:wrap; gap:12px; align-items:end; }
+.wh-filters label { margin:0; flex:1 1 180px; font-size:14px; }
+.wh-filters label input,.wh-filters label select { width:100%; margin-top:5px; }
+.wh-problem { border:2px solid var(--warn); background:var(--warn-bg); }
+.wh-small { font-size:13px; min-height:36px; }
+.wh-link { border:0; padding:0; background:none; color:var(--primary); cursor:pointer; font:inherit; text-decoration:underline; }
+.wh-issue-choice { display:block; width:100%; text-align:left; margin:8px 0; white-space:normal; }
+.wh-code pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+dialog textarea { width:100%; padding:12px; font:inherit; border:1px solid var(--border); border-radius:8px; }
