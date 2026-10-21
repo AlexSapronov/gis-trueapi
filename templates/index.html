@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no">
 <title>Честный ЗНАК</title>
 <link rel="stylesheet" href="/static/style.css?v={{ build_id }}">
+<script src="/static/theme.js?v={{ build_id }}"></script>
 </head>
 <body>
 
@@ -24,7 +25,7 @@
   <div class="status-detail" id="status-detail"></div>
 </div>
 
-<nav class="mode-nav"><b>Сверка КМ</b> · <a href="/warehouse?kind=shipment">Отгрузка</a> · <a href="/warehouse?kind=receipt">Приёмка</a></nav>
+{% include '_mode_nav.html' %}
 
 <!-- ===== TABS ===== -->
 <nav class="tabbar" role="tablist">

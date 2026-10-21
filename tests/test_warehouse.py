@@ -729,3 +729,76 @@ def test_receipt_issue_keeps_missing_codes_without_any_true_api_call(store,svc):
     assert detail['snapshot']['result']['missing'][0]['cis']==scan_data(code())['cis']
     assert detail['snapshot']['expected'][0]['raw_code']==code()
     assert not detail['snapshot']['scans']
+
+
+def test_return_to_warehouse_preserves_check_and_does_not_block_work(store,svc):
+    d=failed_check(store,svc)
+    issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    add(store,d,code('INTRODUCEDQ100B'))
+    checked=asyncio.run(check_document(store,svc,d['id']))
+    assert checked['can_complete']
+    reply=store.return_to_warehouse(d['id'],issue['id'],'Исправлено, продолжайте','request1')
+    after=store.get(d['id'])
+    assert after['version']==checked['version'] and after['check_current'] and after['can_complete']
+    assert after['status']=='active' and after['open_issues']==0 and after['pending_returns']==1
+    assert after['warehouse_replies'][0]['message']=='Исправлено, продолжайте'
+    assert store.issue(d['id'],issue['id'])['resolved_at']
+    assert store.list()[0]['pending_returns']==1
+    # Completing is permitted before anyone acknowledges the reply.
+    assert store.complete(d['id'])['status']=='completed'
+    with pytest.raises(WarehouseError):store.return_to_warehouse(d['id'],issue['id'],'Ещё один ответ','completed')
+    assert store.acknowledge_return(d['id'],reply['id'])['acknowledged']
+    assert not store.get(d['id'])['pending_returns']
+    assert store.issue(d['id'],issue['id'])['returns'][0]['acknowledged_at']
+
+
+def test_return_and_ack_survive_restart_and_are_idempotent(store,svc):
+    d=failed_check(store,svc);issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    first=store.return_to_warehouse(d['id'],issue['id'],'Доберите товар','idempotent1')
+    with ThreadPoolExecutor(2) as pool:
+        repeated=list(pool.map(lambda _:WarehouseStore(store.path).return_to_warehouse(d['id'],issue['id'],'Доберите товар','idempotent1'),range(2)))
+    assert all(r['id']==first['id'] and r['duplicate'] for r in repeated)
+    assert len(WarehouseStore(store.path).get(d['id'])['warehouse_replies'])==1
+    with pytest.raises(WarehouseError):store.return_to_warehouse(d['id'],issue['id'],'Другой текст','idempotent1')
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(lambda _:WarehouseStore(store.path).acknowledge_return(d['id'],first['id']),range(2)))
+    assert not WarehouseStore(store.path).get(d['id'])['warehouse_replies']
+    actions=[e['action'] for e in store.issue_events(d['id'],issue['id'])['events']]
+    assert actions.count('returned_to_warehouse')==1 and actions.count('warehouse_return_acknowledged')==1
+
+
+def test_unread_reply_does_not_block_scans_and_can_reply_to_closed_issue(store,svc):
+    d=failed_check(store,svc);issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    store.resolve_issue(d['id'],issue['id'],'Проверено')
+    store.return_to_warehouse(d['id'],issue['id'],'Можно собирать дальше','already_closed')
+    add(store,d,code('INTRODUCEDQ100B'))
+    assert len(store.get(d['id'])['scans'])==2
+    assert store.get(d['id'])['pending_returns']==1
+    assert asyncio.run(check_document(store,svc,d['id']))['can_complete']
+
+
+def test_return_requires_comment_active_document_and_correct_issue(store,svc):
+    d=failed_check(store,svc);issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    other=document(store)
+    with pytest.raises(WarehouseError):store.return_to_warehouse(d['id'],issue['id'],' ','empty')
+    with pytest.raises(WarehouseError):store.return_to_warehouse(other['id'],issue['id'],'Текст','wrong_doc')
+    with pytest.raises(WarehouseError):store.acknowledge_return(d['id'],'missing')
+    fresh=store.get(d['id']);store.delete(d['id'],fresh['version'],fresh['revision'])
+    with pytest.raises(WarehouseError):store.return_to_warehouse(d['id'],issue['id'],'Текст','deleted')
+
+
+def test_return_api_authentication_and_reply_identity(clients,store,svc):
+    a,b=clients;h={'X-Admin-Key':'test-admin'}
+    d=failed_check(store,svc);issue=store.report_issue(d['id'],d['version'],d['result_at'])
+    endpoint='/api/admin/warehouse/documents/'+d['id']+'/issues/'+issue['id']+'/return'
+    body={'resolution':'Замените ошибочный КМ','request_id':'test-request'}
+    assert b.post(endpoint,json=body).status_code==403
+    a.post('/api/admin/session',json={'key':'test-admin'})
+    assert a.post(endpoint,json=body).status_code==403  # cookie alone is insufficient for a write
+    reply=a.post(endpoint,json=body,headers={'X-Admin-Request':'1'}).json()
+    public='/api/warehouse/documents/'+d['id']
+    assert b.get(public).json()['warehouse_replies'][0]['id']==reply['id']
+    other=document(store)
+    assert b.post('/api/warehouse/documents/'+other['id']+'/returns/'+reply['id']+'/acknowledge').status_code==404
+    assert b.post(public+'/returns/'+reply['id']+'/acknowledge').status_code==200
+    assert not b.get(public).json()['pending_returns']

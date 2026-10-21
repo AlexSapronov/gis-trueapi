@@ -9,7 +9,6 @@
     mode: 'mock',
     buildId: null,           // текущий build_id backend
     soundOn: localStorage.getItem('gis_sound') !== 'off', // default on
-    theme: localStorage.getItem('gis_theme'),             // null = авто
     activeTab: 'scan',
     lastScanAt: null,        // timestamp последнего скана
     reloadPending: false,    // уже запланирован reload (защита от повторного вызова)
@@ -32,25 +31,7 @@
         balanceResult = $('balance-result');
   const soundBtn = $('sound-btn'), themeBtn = $('theme-btn');
 
-  // ===== тема =====
-  function applyTheme() {
-    const chosen = S.theme;
-    let theme = chosen;
-    if (!chosen) {
-      theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-    }
-    document.documentElement.setAttribute('data-theme', theme);
-    themeBtn.textContent = theme === 'dark' ? '☀️' : '☾';
-    themeBtn.title = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
-  }
-  function toggleTheme() {
-    const cur = document.documentElement.getAttribute('data-theme') || 'light';
-    const next = cur === 'dark' ? 'light' : 'dark';
-    S.theme = next;
-    localStorage.setItem('gis_theme', next);
-    applyTheme();
-  }
-  themeBtn.addEventListener('click', toggleTheme);
+  GisTheme.bind(themeBtn);
 
   // ===== звук =====
   function updateSoundBtn() {
@@ -812,7 +793,6 @@
   balanceInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doBalance(); } });
 
   // ===== init =====
-  applyTheme();
   updateSoundBtn();
   renderStats(loadStats());
   focusScan();

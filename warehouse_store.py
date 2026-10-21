@@ -65,6 +65,12 @@ class WarehouseStore(WarehouseIssues):
               result_at TEXT NOT NULL,reported_at TEXT NOT NULL,message TEXT NOT NULL,snapshot TEXT NOT NULL,
               resolved_at TEXT,resolution TEXT);
             CREATE INDEX IF NOT EXISTS warehouse_issues_doc ON warehouse_issues(document_id,resolved_at);
+            CREATE TABLE IF NOT EXISTS warehouse_returns (
+              id TEXT PRIMARY KEY,document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              issue_id TEXT NOT NULL REFERENCES warehouse_issues(id),request_id TEXT NOT NULL,
+              message TEXT NOT NULL,created_at TEXT NOT NULL,acknowledged_at TEXT,
+              UNIQUE(document_id,request_id));
+            CREATE INDEX IF NOT EXISTS warehouse_returns_doc ON warehouse_returns(document_id,acknowledged_at);
             ''')
             if 'revision' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
@@ -171,8 +177,9 @@ class WarehouseStore(WarehouseIssues):
                 (SELECT count(*) FROM warehouse_scans s WHERE s.document_id=d.id) AS scan_count,
                 (SELECT count(*) FROM warehouse_issues i WHERE i.document_id=d.id) AS issue_count,
                 (SELECT count(*) FROM warehouse_issues i WHERE i.document_id=d.id AND i.resolved_at IS NULL) AS open_issues
+                ,(SELECT count(*) FROM warehouse_returns r WHERE r.document_id=d.id AND r.acknowledged_at IS NULL) AS pending_returns
                 FROM warehouse_documents d) WHERE '''
-            rows = c.execute(sql + ' AND '.join(clauses) + ' ORDER BY open_issues>0 DESC,created_at DESC,id', args)
+            rows = c.execute(sql + ' AND '.join(clauses) + ' ORDER BY pending_returns>0 DESC,open_issues>0 DESC,created_at DESC,id', args)
             result = []
             for r in rows:
                 d = dict(r)

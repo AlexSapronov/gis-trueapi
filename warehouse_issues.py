@@ -18,6 +18,9 @@ class WarehouseIssues:
             FROM warehouse_issues WHERE document_id=?''', (d['id'],)).fetchone()
         d['issue_count'], d['open_issues'] = row['total'], row['opened'] or 0
         d['reported_current_result'] = bool(c.execute('SELECT 1 FROM warehouse_issues WHERE document_id=? AND result_at=? AND resolved_at IS NULL', (d['id'],d['result_at'])).fetchone())
+        d['warehouse_replies'] = [dict(r) for r in c.execute('''SELECT id,issue_id,message,created_at
+            FROM warehouse_returns WHERE document_id=? AND acknowledged_at IS NULL ORDER BY created_at,id''',(d['id'],))]
+        d['pending_returns'] = len(d['warehouse_replies'])
 
     def restore(self, document_id, version, revision):
         from warehouse_store import WarehouseError
@@ -69,6 +72,8 @@ class WarehouseIssues:
                 raise WarehouseError('Обращение не найдено', 404)
             d = dict(row)
             d['snapshot'] = json.loads(d['snapshot'])
+            d['returns'] = [dict(r) for r in c.execute('''SELECT id,message,created_at,acknowledged_at
+                FROM warehouse_returns WHERE document_id=? AND issue_id=? ORDER BY created_at DESC,id''',(document_id,issue_id))]
             return d
 
     def issue_events(self, document_id, issue_id, before=None, limit=100):
@@ -96,3 +101,45 @@ class WarehouseIssues:
             c.execute('UPDATE warehouse_documents SET revision=revision+1,updated_at=? WHERE id=?',(ts,document_id))
             self._event(c,document_id,'issue_resolved',{'issue_id':issue_id,'resolution':resolution.strip()},actor='admin')
             return {'resolved':True}
+
+    def return_to_warehouse(self, document_id, issue_id, message, request_id):
+        """Send a durable reply; never lock scanning, change composition, or reopen a document."""
+        from warehouse_store import WarehouseError, now
+        message=message.strip()
+        if not message:
+            raise WarehouseError('Напишите складу, что было исправлено и что нужно сделать')
+        with self.connection(True) as c:
+            d=self._doc(c,document_id)
+            self._active(d)
+            issue=c.execute('SELECT * FROM warehouse_issues WHERE document_id=? AND id=?',(document_id,issue_id)).fetchone()
+            if not issue:
+                raise WarehouseError('Обращение не найдено',404)
+            previous=c.execute('SELECT * FROM warehouse_returns WHERE document_id=? AND request_id=?',(document_id,request_id)).fetchone()
+            if previous:
+                if previous['issue_id'] != issue_id or previous['message'] != message:
+                    raise WarehouseError('Этот запрос уже использован для другого ответа',409)
+                return {'id':previous['id'],'duplicate':True}
+            reply_id,ts=uuid.uuid4().hex,now()
+            c.execute('INSERT INTO warehouse_returns(id,document_id,issue_id,request_id,message,created_at) VALUES(?,?,?,?,?,?)',
+                      (reply_id,document_id,issue_id,request_id,message,ts))
+            if not issue['resolved_at']:
+                c.execute('UPDATE warehouse_issues SET resolved_at=?,resolution=? WHERE id=?',(ts,message,issue_id))
+                self._event(c,document_id,'issue_resolved',{'issue_id':issue_id,'resolution':message},actor='admin')
+            c.execute('UPDATE warehouse_documents SET revision=revision+1,updated_at=? WHERE id=?',(ts,document_id))
+            self._event(c,document_id,'returned_to_warehouse',{'issue_id':issue_id,'reply_id':reply_id,'message':message},actor='admin')
+            return {'id':reply_id,'duplicate':False}
+
+    def acknowledge_return(self, document_id, reply_id):
+        from warehouse_store import WarehouseError, now
+        with self.connection(True) as c:
+            self._doc(c,document_id)
+            row=c.execute('SELECT * FROM warehouse_returns WHERE document_id=? AND id=?',(document_id,reply_id)).fetchone()
+            if not row:
+                raise WarehouseError('Ответ не найден',404)
+            if row['acknowledged_at']:
+                return {'acknowledged':True}
+            ts=now()
+            c.execute('UPDATE warehouse_returns SET acknowledged_at=? WHERE id=?',(ts,reply_id))
+            c.execute('UPDATE warehouse_documents SET revision=revision+1,updated_at=? WHERE id=?',(ts,document_id))
+            self._event(c,document_id,'warehouse_return_acknowledged',{'reply_id':reply_id})
+            return {'acknowledged':True}

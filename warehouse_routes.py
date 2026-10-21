@@ -60,6 +60,10 @@ class ResolveBody(BaseModel):
     resolution: str = Field(min_length=1,max_length=2000)
 
 
+class ReturnBody(ResolveBody):
+    request_id: str = Field(min_length=1,max_length=64,pattern=r'^[a-zA-Z0-9_-]+$')
+
+
 def install_warehouse(app, service_getter, store_getter, templates):
     router = APIRouter()
 
@@ -133,6 +137,11 @@ def install_warehouse(app, service_getter, store_getter, templates):
         visible(document_id)
         return store_getter().report_issue(document_id,body.version,body.result_at,body.message)
 
+    @router.post('/api/warehouse/documents/{document_id}/returns/{reply_id}/acknowledge')
+    def acknowledge_return(document_id: str,reply_id: str):
+        visible(document_id)
+        return store_getter().acknowledge_return(document_id,reply_id)
+
     admin = APIRouter(prefix='/api/admin/warehouse', dependencies=[Depends(auth)])
 
     @admin.get('/settings')
@@ -202,6 +211,10 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @admin.post('/documents/{document_id}/issues/{issue_id}/resolve')
     def resolve_issue(document_id: str,issue_id: str,body: ResolveBody):
         return store_getter().resolve_issue(document_id,issue_id,body.resolution)
+
+    @admin.post('/documents/{document_id}/issues/{issue_id}/return')
+    def return_to_warehouse(document_id: str,issue_id: str,body: ReturnBody):
+        return store_getter().return_to_warehouse(document_id,issue_id,body.resolution,body.request_id)
 
     @admin.post('/documents/{document_id}/start')
     def start(document_id: str):

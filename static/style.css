@@ -532,3 +532,12 @@ textarea:focus { outline: none; border-color: var(--primary); }
   .status-inner { max-width: 860px; margin: 0 auto; }
   .desktop-only { display: block; }
 }
+/* Shared navigation and accessible interaction states across all modes. */
+.app-modes { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border); }
+.app-modes a { display:inline-flex; align-items:center; min-height:40px; padding:8px 14px; border-radius:9px; text-decoration:none; font-size:14px; font-weight:650; color:var(--muted); }
+.app-modes a:hover { background:var(--surface-2); color:var(--text); }
+.app-modes a.current { color:var(--primary); background:var(--neutral-bg); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+button:focus-visible,a:focus-visible,summary:focus-visible { outline:3px solid var(--primary); outline-offset:3px; }
+[data-busy="true"] { cursor:progress !important; opacity:.65; }
+@media(max-width:600px) { .app-modes { gap:2px; padding:6px; }.app-modes a { flex:1 1 auto; justify-content:center; padding:8px; font-size:12px; } }
