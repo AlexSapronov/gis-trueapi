@@ -11,7 +11,7 @@ from datetime import date, datetime
 import openpyxl
 import xlsxwriter
 
-from datamatrix import gtin_checksum_valid, parse, GS
+from datamatrix import gtin_checksum_valid, normalize_scanner_layout, parse, GS
 from organizations import registry
 from warehouse_store import WarehouseError
 
@@ -63,7 +63,7 @@ def read_excel_strings(content):
 
 
 def canonical_full(raw):
-    s = raw.strip(' \r\n')
+    s = normalize_scanner_layout(raw).strip(' \r\n')
     for prefix in (']d2', ']C1', ']e0', '^]'):
         if s.startswith(prefix):
             s = s[len(prefix):]
@@ -74,6 +74,7 @@ def canonical_full(raw):
 def scan_data(raw):
     if not isinstance(raw, str) or len(raw) > 4096:
         raise WarehouseError('Код должен быть строкой длиной до 4096 символов')
+    raw = normalize_scanner_layout(raw)
     p = parse(raw)
     full = canonical_full(raw)
     if not p.structure_valid or not full.startswith('01' + (p.gtin or '') + '21'):

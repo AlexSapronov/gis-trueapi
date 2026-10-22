@@ -161,7 +161,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
             c.create_function('casefold', 1, lambda value: (value or '').casefold(), deterministic=True)
             clauses, args = ['deleted_at IS NOT NULL' if admin and trash else 'deleted_at IS NULL'], []
             if not admin:
-                clauses.append("status != 'draft'")
+                clauses.append("status = 'active'")
             for field, value in [('kind',kind),('org_inn',org_inn),('status',status)]:
                 if value:
                     clauses.append(field+'=?'); args.append(value)

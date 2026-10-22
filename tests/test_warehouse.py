@@ -88,6 +88,33 @@ def test_atomic_duplicate_across_devices(store):
     assert store.get(d['id'])['version'] == d['version'] + 1
 
 
+@pytest.mark.asyncio
+async def test_russian_scan_matches_receipt_and_is_stored_as_english(store, svc):
+    english = ']d2010464063834521821AbC"d/ef\x1d91EE12\x1d92+Ab/Cd=='
+    russian = 'ъв2010464063834521821ФиСЭв.уа\x1d91УУ12\x1d92+Фи.Св=='
+    d = document(store, 'receipt', rows=[['PN', GTIN, english, 100]])
+    first = add(store, d, russian)
+    assert first['scan']['raw_code'] == english
+    assert add(store, d, english)['duplicate']
+    checked = await check_document(store, svc, d['id'])
+    assert checked['can_complete'] and checked['result']['ok']
+
+
+@pytest.mark.parametrize('kind', ['receipt', 'shipment'])
+@pytest.mark.asyncio
+async def test_completed_documents_hidden_from_warehouse_and_reopened_are_visible(store, svc, kind):
+    d = document(store, kind)
+    add(store, d)
+    await check_document(store, svc, d['id'])
+    assert any(row['id'] == d['id'] for row in store.list())
+    store.complete(d['id'])
+    assert not store.list()
+    assert not store.list(status='completed')
+    assert [row['id'] for row in store.list(admin=True, status='completed')] == [d['id']]
+    store.start(d['id'], reopen=True)
+    assert [row['id'] for row in store.list()] == [d['id']]
+
+
 def test_concurrent_distinct_scans_are_not_lost(store):
     d = document(store)
     with ThreadPoolExecutor(8) as pool:
