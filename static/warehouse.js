@@ -299,11 +299,8 @@
       }
     } else {
       input.disabled = d.status !== 'active';
-      $('scan-form').querySelector('button').disabled = d.status !== 'active';
       $('complete').textContent = d.kind === 'shipment' ? 'Завершить сборку' : 'Завершить приёмку';
       const features = d.runtime_settings?.values || {};
-      $('manual-input').hidden=features.manual_input===false;
-      if(features.manual_input===false){input.inputMode='none';$('manual-input').textContent='Ручной ввод';$('manual-input').setAttribute('aria-pressed','false');}
       $('report-message').required=!!features.report_comment_required;
       $('report-message').placeholder=features.report_comment_required ? 'Опишите расхождение' : 'Что нужно уточнить? Необязательно';
       $('report-issue').hidden=!(features.report_issues!==false && d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
@@ -337,7 +334,7 @@
       $('connection').textContent = 'Подключено'; $('connection').dataset.state='online';
     } catch (e) {
       if (e.status === 404 && current) {
-        if (!admin) { input.disabled = true; $('scan-form').querySelector('button').disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; $('report-issue').hidden=true; }
+        if (!admin) { input.disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; $('report-issue').hidden=true; }
         else { current = null; dirty = false; history.replaceState(null, '', '/admin?kind=' + kind); showSection(); await list(); }
         if (!admin) $('doc-status').textContent = 'Удалён администратором';
         message('Документ удалён администратором. Дальнейшая работа по нему недоступна.', true);
@@ -457,10 +454,6 @@
       await json('/api/warehouse/documents/'+current.id+'/returns/'+b.dataset.ackReturn+'/acknowledge',{method:'POST'});
       await refresh(); message('Ответ прочитан. Можно продолжать работу.');focus?.focus();
     });};
-    $('manual-input').onclick=()=>{
-      const manual=input.inputMode!=='text'; input.inputMode=manual?'text':'none';
-      $('manual-input').textContent=manual?'Режим сканера':'Ручной ввод';$('manual-input').setAttribute('aria-pressed',String(manual));input.focus();
-    };
     $('report-issue').onclick=()=>{reportSnapshot={id:current.id,version:current.version,result_at:current.result_at};$('report-message').value='';$('report-dialog').showModal();};
     $('report-cancel').onclick=()=>{$('report-dialog').close();reportSnapshot=null;focus?.focus();};
     $('report-form').onsubmit=e=>{e.preventDefault();action(async()=>{
@@ -469,7 +462,9 @@
       $('report-dialog').close();reportSnapshot=null;await refresh();message(result.duplicate?'Обращение уже отправлено':'Сообщено ответственному');focus?.focus();
     });};
     input.addEventListener('input', () => { savePending(); pendingState(); maybeReload(); });
-    $('scan-form').onsubmit = e => { e.preventDefault(); const code = input.value; input.value = ''; enqueue(code); };
+    const submitScan = () => { const code = input.value; input.value = ''; enqueue(code); };
+    $('scan-form').onsubmit = e => { e.preventDefault(); submitScan(); };
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitScan(); } });
     $('check').onclick = () => action(async () => {
       if (queue.length || input.value) throw new Error('Сначала сохраните все КМ и завершите ввод.');
       $('check').disabled = true; $('check-state').textContent = 'Проверка выполняется…';

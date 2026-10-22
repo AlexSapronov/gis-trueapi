@@ -71,7 +71,7 @@
 <details id="doc-settings" class="wh-settings"><summary>Реквизиты, PN и план документа</summary><form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><div id="pn-fields"></div><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form></details>
 {% endif %}
 {% if not admin %}
-<form id="scan-form" class="wh-scan"><label for="wh-scan">Сканируйте КМ</label><input inputmode="none" id="wh-scan" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код появится здесь"><button class="btn" type="submit">Добавить</button><button id="manual-input" class="btn" type="button" aria-pressed="false">Ручной ввод</button></form>
+<form id="scan-form" class="wh-scan"><label for="wh-scan">Сканируйте КМ</label><input inputmode="none" id="wh-scan" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код появится здесь"></form>
 <p id="scan-feedback" role="status" aria-live="polite"></p><p id="pending"></p><p id="check-state" class="wh-check-state" role="status"></p>
 <div class="wh-toolbar wh-worker-actions"><button id="check" class="btn primary">Проверить</button><button id="complete" class="btn" disabled hidden>Завершить</button><button id="report-issue" class="btn" hidden>Сообщить ответственному</button></div>
 <details id="worker-result" class="wh-disclosure" hidden><summary id="worker-result-label">Результат проверки</summary><div id="check-errors"></div></details>

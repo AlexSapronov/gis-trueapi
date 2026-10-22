@@ -89,6 +89,8 @@ with sync_playwright() as p:
  for page in [pc,mobile]:
   page.goto(BASE+'/warehouse?kind=shipment&doc='+doc)
   expect(page.locator('#wh-scan')).to_be_enabled()
+  expect(page.locator('#scan-form button')).to_have_count(0)
+  expect(page.locator('#wh-scan')).to_have_attribute('inputmode','none')
  def scan(page,raw):
   page.locator('#wh-scan').fill(raw);page.locator('#wh-scan').press('Enter')
  def check(page,finish=False):
@@ -226,8 +228,8 @@ with sync_playwright() as p:
  # Theme setting and manual/scanner input remain available on a narrow screen.
  mobile.locator('#theme-btn').click()
  expect(mobile.locator('html')).to_have_attribute('data-theme','dark')
- mobile.locator('#manual-input').click();expect(mobile.locator('#wh-scan')).to_have_attribute('inputmode','text')
- mobile.locator('#manual-input').click();expect(mobile.locator('#wh-scan')).to_have_attribute('inputmode','none')
+ expect(mobile.locator('#scan-form button')).to_have_count(0)
+ expect(mobile.locator('#wh-scan')).to_have_attribute('inputmode','none')
  mobile.screenshot(path=str(TEST_DIR / 'mobile-dark.png'),full_page=True)
  assert mobile.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile page overflows horizontally'
  check(pc);expect(pc.locator('#complete')).to_be_enabled()
@@ -314,8 +316,9 @@ with sync_playwright() as p:
  # Settings apply immediately to already-open warehouse clients.
  admin.locator('#settings-tab').click();expect(admin.locator('#busy-state')).to_be_hidden()
  expect(admin.locator('#application-settings')).to_be_visible()
+ expect(admin.locator('#setting-manual_input')).to_have_count(0)
  expect(admin.locator('#document-filters')).to_be_hidden()
- admin.locator('#setting-manual_input').uncheck()
+ admin.locator('#setting-report_issues').uncheck()
  admin.locator('#setting-worker_delete_scans').uncheck()
  admin.locator('#setting-auto_pn').uncheck()
  admin.locator('#setting-report_comment_required').check()
@@ -324,7 +327,7 @@ with sync_playwright() as p:
  admin.locator('#settings-save').click()
  expect(admin.locator('#settings-meta')).to_contain_text('Версия 1')
  expect(admin.locator('#settings-save')).to_be_disabled()
- expect(mobile.locator('#manual-input')).to_be_hidden(timeout=7000)
+ expect(mobile.locator('#scan-form button')).to_have_count(0)
  expect(mobile.locator('[data-delete]')).to_have_count(0,timeout=7000)
  expect(mobile.locator('#wh-scan')).to_be_enabled()
  scan(mobile,code(50,'RESTORE'));expect(mobile.locator('#duplicate')).to_be_visible()
@@ -343,7 +346,7 @@ with sync_playwright() as p:
  other.goto(BASE+'/admin?section=settings')
  other.locator('#admin-key').fill(os.environ['ADMIN_KEY']);other.locator('#login button').click()
  expect(other.locator('#settings-meta')).to_contain_text('Версия 1')
- admin.locator('#setting-manual_input').check();admin.locator('#settings-save').click()
+ admin.locator('#setting-report_issues').check();admin.locator('#settings-save').click()
  expect(admin.locator('#settings-meta')).to_contain_text('Версия 2')
  other.locator('#setting-auto_pn').check();other.locator('#settings-save').click()
  expect(other.locator('#notice')).to_contain_text('другим администратором')
@@ -356,7 +359,7 @@ with sync_playwright() as p:
  other.once('dialog', lambda d:d.accept());other.locator('#settings-defaults').click()
  expect(other.locator('#settings-save')).to_be_enabled()
  other.locator('#settings-save').click();expect(other.locator('#settings-meta')).to_contain_text('Версия 3')
- expect(mobile.locator('#manual-input')).to_be_visible(timeout=7000)
+ expect(mobile.locator('#scan-form button')).to_have_count(0)
  other.reload();expect(other.locator('#settings-meta')).to_contain_text('Версия 3')
  expect(other.locator('#setting-verdict_emitted')).to_have_value('warning')
  other.close()

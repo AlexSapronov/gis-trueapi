@@ -61,7 +61,7 @@ summary { cursor:pointer; font-weight:650; line-height:1.5; }
 .wh-table tbody tr:hover { background:var(--surface-2); }
 .wh-table-hint { margin:0; font-size:12px; }
 .wh-link { border:0; padding:0; background:none; color:var(--primary); cursor:pointer; font:inherit; text-decoration:underline; text-underline-offset:3px; }
-.wh-scan { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; padding:18px; border-radius:12px; background:var(--surface-2); }
+.wh-scan { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; padding:18px; border-radius:12px; background:var(--surface-2); }
 .wh-scan h3,.wh-scan label,.wh-scan small { grid-column:1/-1; margin:0; }
 #wh-scan { margin:0; font:16px monospace; min-width:0; }
 .wh-code { padding:14px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; line-height:1.5; font-size:14px; }
@@ -84,7 +84,7 @@ dialog::backdrop { background:#0008; }dialog h2 { font-size:22px; margin-top:0; 
  .wh-tabs { gap:4px; padding:6px; margin-bottom:20px; }.wh-tabs .btn { padding:9px 10px; font-size:13px; }
  .wh-nav-spacer { flex-basis:100%; height:0; }.wh-toolbar .btn { flex:1 1 auto; }
  .wh-filters { gap:12px; }.wh-filters label { font-size:12px; }.wh-filters input,.wh-filters select { font-size:14px; padding:10px; }
- #pn-fields { grid-template-columns:1fr; }.wh-scan { grid-template-columns:1fr 1fr; padding:14px; }
+ #pn-fields { grid-template-columns:1fr; }.wh-scan { grid-template-columns:minmax(0,1fr); padding:14px; }
  #wh-scan { grid-column:1/-1; }.wh-main .wh-back { flex:0 0 auto; }
  .wh-table th,.wh-table td { padding:11px; }.wh-table td:first-child { max-width:145px; overflow:hidden; text-overflow:ellipsis; }
 }
@@ -155,6 +155,5 @@ body[data-admin="false"] .wh-main { max-width:940px; }
  .wh-worker-progress #doc-count { font-size:22px; }
  .wh-worker-progress { padding:12px 0 10px; }
  .wh-worker-document .wh-scan { padding:10px; }
- .wh-worker-document .wh-scan .btn { min-height:44px; }
  .wh-table th:first-child,.wh-table td:first-child { min-width:100px; max-width:145px; overflow:visible; text-overflow:clip; }
 }
