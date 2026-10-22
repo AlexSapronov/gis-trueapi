@@ -23,6 +23,7 @@ class ApplicationSettings(BaseModel):
     report_comment_required: bool = Field(False, title='Комментарий склада обязателен', description='При отправке обращения сотрудник должен описать расхождение.')
     strict_owner_default: bool = Field(True, title='Строгое соответствие организации по умолчанию', description='Только для новых отгрузок. В карточке документа правило можно изменить отдельно.')
     receipt_default_org: str = Field('', max_length=12, title='Организация приёмки по умолчанию', description='Подставляется в новый шаблон и форму импорта. Организацию в файле не заменяет.')
+    receipt_missing_codes_threshold: int = Field(20, ge=0, le=10000, title='Порог показа отсутствующих КМ при приёмке', description='Показывать список, только если отсутствующих КМ меньше этого числа. Общее количество видно всегда. 0 — всегда скрывать список.')
     shipment_statuses: list[Status] = Field(default_factory=lambda: ['INTRODUCED'], min_length=1, max_length=3, title='Допустимые статусы отгрузки', description='Для всех незавершённых отгрузок. После изменения потребуется повторная проверка.')
     check_timeout_seconds: int = Field(540, ge=30, le=540, title='Ожидание проверки, секунд', description='Максимальное время проверки документа через True API: от 30 до 540 секунд.')
     verdict_emitted: Verdict = Field('warning', title='Эмитирован (EMITTED)', description='Вердикт в одиночной и пакетной сверке КМ.')

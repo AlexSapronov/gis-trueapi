@@ -107,6 +107,13 @@
   function setupFilterOrgs(orgs) {
     $('filter-org').innerHTML = '<option value="">Все организации</option>' + orgs.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
   }
+  function renderMissingCodes(missing = []) {
+    if (!missing.length) return '';
+    const threshold = current?.runtime_settings?.values.receipt_missing_codes_threshold ?? 20;
+    return `<h3>Отсутствующие КМ: ${missing.length}</h3>` + (missing.length < threshold
+      ? missing.map(m => `<p class="wh-code"><code>${esc(m.cis)}</code></p>`).join('')
+      : '<p class="wh-muted">Список скрыт: количество отсутствующих КМ достигло порога показа, заданного в настройках.</p>');
+  }
   function renderScans() {
     if (!current) return;
     const details = new Map((current.result?.codes || []).map(c => [c.scan_id,c]));
@@ -142,7 +149,7 @@
     const snap=issue.snapshot, result=snap.result, rawCodes=new Map(snap.scans.map(s=>[s.id,s.raw_code]));
     const rows=result.rows.filter(r => r.remaining !== 0).map(r => `<p>${esc(r.gtin)}: требуется ${r.required}, проверено ${r.actual}, осталось ${r.remaining}</p>`).join('');
     const codes=result.codes.map(c => `<details class="wh-code"><summary>${c.errors.length ? 'Ошибка · ' : ''}${esc(c.cis)}</summary><p>${esc(c.owner_name || c.owner_inn || '')} ${esc(c.status || '')} · ${c.quantity ?? 'Количество неизвестно'}</p><p class="wh-bad">${esc(c.errors.join('; '))}</p><pre>${esc(rawCodes.get(c.scan_id) || '')}</pre></details>`).join('');
-    const missing=(result.missing || []).map(c => `<p class="wh-bad">Отсутствует КМ: ${esc(c.cis)}</p>`).join('');
+    const missing=renderMissingCodes(result.missing);
     $('issue-detail').innerHTML=`<h4>Проверка от ${esc(stamp(issue.result_at))} · версия ${issue.version}</h4><p>${esc(issue.message || 'Без комментария')}</p><p class="${issue.resolved_at ? 'wh-good' : 'wh-bad'}">${issue.resolved_at ? 'Разобрано: ' + esc(issue.resolution) : 'Требует внимания'}</p>${(issue.returns || []).map(r=>`<div class="wh-reply-history"><b>Передано на склад · ${esc(stamp(r.created_at))}</b><p>${esc(r.message)}</p><small>${r.acknowledged_at ? 'Склад ознакомился: '+esc(stamp(r.acknowledged_at)) : 'Ожидает ознакомления склада'}</small></div>`).join('')}${rows}${missing}<details open><summary>Коды в обращении: ${snap.scans.length}</summary>${codes}</details>`;
     $('resolve-form').hidden=false; $('resolve-issue').hidden=!!issue.resolved_at;
     $('return-warehouse').disabled=current.status!=='active'||!!current.deleted_at||current.runtime_settings?.values.return_to_warehouse===false;
@@ -239,7 +246,7 @@
     const actual = new Map((result?.rows || []).map(r => [r.gtin,r]));
     $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? 'wh-bad' : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
     renderScans();
-    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + (result.missing.length ? `<h3>Отсутствующие КМ: ${result.missing.length}</h3>` + result.missing.map(m => `<p class="wh-code"><code>${esc(m.cis)}</code></p>`).join('') : '') : '';
+    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
     if (admin) {
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed';
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';

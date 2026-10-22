@@ -829,6 +829,8 @@ def test_settings_persist_and_conflicting_admin_cannot_overwrite(store):
     {'shipment_statuses': ['INTRODUCED', 'INTRODUCED']},
     {'verdict_unknown': 'ok'}, {'check_timeout_seconds': 29},
     {'check_timeout_seconds': 541}, {'manual_input': 'false'}, {'invented': True},
+    {'receipt_missing_codes_threshold': -1}, {'receipt_missing_codes_threshold': 10001},
+    {'receipt_missing_codes_threshold': 1.5}, {'receipt_missing_codes_threshold': True},
 ])
 def test_settings_api_rejects_invalid_values_without_mutation(clients, store, patch):
     a, _ = clients
@@ -838,6 +840,19 @@ def test_settings_api_rejects_invalid_values_without_mutation(clients, store, pa
     assert r.status_code == 422
     assert store.application_settings() == old
     assert store.settings_history() == []
+
+
+@pytest.mark.parametrize('threshold', [0, 20, 10000])
+@pytest.mark.asyncio
+async def test_receipt_missing_display_threshold_preserves_check_and_full_result(store, svc, threshold):
+    d = document(store, 'receipt')
+    checked = await check_document(store, svc, d['id'])
+    configure(store, receipt_missing_codes_threshold=threshold)
+    current = WarehouseStore(store.path).get(d['id'])
+    assert current['runtime_settings']['values']['receipt_missing_codes_threshold'] == threshold
+    assert current['result'] == checked['result']
+    assert len(current['result']['missing']) == 1
+    assert current['check_current'] and not current['can_complete']
 
 
 def test_settings_session_csrf_and_concurrent_save(clients, store):
