@@ -56,6 +56,7 @@ with sync_playwright() as p:
  for page in [admin,pc,mobile]:
   page.on('pageerror',lambda e: errors.append(str(e)))
  admin.goto(BASE+'/admin')
+ assert admin.locator('[data-mode="admin"]').count() == 0
  admin.locator('#admin-key').fill(os.environ['ADMIN_KEY']); admin.locator('#login button').click()
  expect(admin.locator('#workspace')).to_be_visible()
  expect(admin.locator('#token-panel')).to_be_visible()
@@ -263,7 +264,8 @@ with sync_playwright() as p:
  admin.locator('#token-tab').click();expect(admin.locator('#token-panel')).to_be_visible()
  admin.locator('#logout').click();expect(admin.locator('#login')).to_be_visible()
  admin.reload();expect(admin.locator('#login')).to_be_visible()
- pc.goto(BASE+'/');pc.locator('#scan-input').fill(code(100));pc.locator('#scan-input').press('Enter')
+ pc.goto(BASE+'/');assert pc.locator('[data-mode="admin"]').count() == 0
+ pc.locator('#scan-input').fill(code(100));pc.locator('#scan-input').press('Enter')
  expect(pc.locator('#scan-result')).to_contain_text('В обороте')
  mobile.goto(BASE+'/');expect(mobile.locator('html')).to_have_attribute('data-theme','dark')
  mobile.locator('#theme-btn').click();expect(mobile.locator('html')).to_have_attribute('data-theme','light')

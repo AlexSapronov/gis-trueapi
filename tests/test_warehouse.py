@@ -855,6 +855,15 @@ def test_settings_session_csrf_and_concurrent_save(clients, store):
     assert 'admin_key' not in payload['runtime']['values']
 
 
+def test_admin_navigation_link_is_hidden_but_direct_admin_page_remains_available(clients):
+    client, _ = clients
+    for path in ('/', '/warehouse?kind=shipment', '/admin'):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert 'data-mode="admin"' not in response.text
+    assert 'id="login"' in client.get('/admin').text
+
+
 @pytest.mark.asyncio
 async def test_runtime_verdict_applies_single_batch_but_never_masks_api_or_structure_errors(store, svc):
     svc.policy_getter = lambda: store.application_settings()['values']

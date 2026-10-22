@@ -2,5 +2,4 @@
 <a href="/" data-mode="verify" class="{{ 'current' if request.url.path == '/' else '' }}">Сверка КМ</a>
 <a href="/warehouse?kind=receipt" data-mode="receipt" class="{{ 'current' if request.url.path == '/warehouse' and request.query_params.get('kind') == 'receipt' else '' }}">Приёмка</a>
 <a href="/warehouse?kind=shipment" data-mode="shipment" class="{{ 'current' if request.url.path == '/warehouse' and request.query_params.get('kind') != 'receipt' else '' }}">Отгрузка</a>
-<a href="/admin" data-mode="admin" class="{{ 'current' if request.url.path.startswith('/admin') else '' }}">Админка</a>
 </nav>
