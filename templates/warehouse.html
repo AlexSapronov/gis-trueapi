@@ -59,8 +59,11 @@
 </form>
 <section id="document-list" class="wh-list" aria-label="Список документов"></section>
 <section id="document" class="wh-card" hidden>
-<div class="wh-doc-heading"><button id="back" class="btn wh-back">← К списку</button><span id="doc-badge" class="wh-badge"></span></div><h2 id="doc-title"></h2><p id="doc-parties" class="wh-muted"></p>
+{% if admin %}<div class="wh-doc-heading"><button id="back" class="btn wh-back">← К списку</button><span id="doc-badge" class="wh-badge"></span></div><h2 id="doc-title"></h2><p id="doc-parties" class="wh-muted"></p>
 <p id="doc-status" class="wh-muted"></p><p id="doc-count" class="wh-progress"></p><p id="check-state" class="wh-check-state" role="status"></p>
+{% else %}<div class="wh-worker-heading"><button id="back" class="btn wh-back" aria-label="К списку документов">←</button><div><h2 id="doc-title"></h2><p id="worker-org"></p></div></div>
+<div class="wh-worker-progress"><p id="doc-count"></p><span id="worker-plan"></span></div>
+{% endif %}
 <div id="warehouse-replies" class="wh-replies" aria-live="polite"></div>
 <p id="issue-state" class="wh-stale" role="status"></p>
 {% if admin %}
@@ -68,12 +71,16 @@
 <details id="doc-settings" class="wh-settings"><summary>Реквизиты, PN и план документа</summary><form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><div id="pn-fields"></div><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form></details>
 {% endif %}
 {% if not admin %}
-<form id="scan-form" class="wh-scan"><h3>Сканирование</h3><label for="wh-scan">DataMatrix</label><input inputmode="none" id="wh-scan" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Сканируйте код…"><button class="btn primary">Добавить КМ</button><button id="manual-input" class="btn" type="button" aria-pressed="false">Ручной ввод</button><small class="wh-muted">Сканы сохраняются сразу. Количество и соответствие обновляются по кнопке «Проверить».</small></form>
-<p id="scan-feedback" role="status" aria-live="polite"></p><p id="pending"></p><div class="wh-toolbar"><button id="check" class="btn primary">Проверить</button><button id="complete" class="btn primary" disabled>Завершить</button><button id="report-issue" class="btn wh-small" hidden>Сообщить ответственному</button></div>
+<form id="scan-form" class="wh-scan"><label for="wh-scan">Сканируйте КМ</label><input inputmode="none" id="wh-scan" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Код появится здесь"><button class="btn" type="submit">Добавить</button><button id="manual-input" class="btn" type="button" aria-pressed="false">Ручной ввод</button></form>
+<p id="scan-feedback" role="status" aria-live="polite"></p><p id="pending"></p><p id="check-state" class="wh-check-state" role="status"></p>
+<div class="wh-toolbar wh-worker-actions"><button id="check" class="btn primary">Проверить</button><button id="complete" class="btn" disabled hidden>Завершить</button><button id="report-issue" class="btn" hidden>Сообщить ответственному</button></div>
+<details id="worker-result" class="wh-disclosure" hidden><summary id="worker-result-label">Результат проверки</summary><div id="check-errors"></div></details>
+<details id="composition-details" class="wh-disclosure"><summary>Состав документа <span id="product-count"></span></summary>
 {% endif %}
 <h3>Состав документа</h3><p class="wh-muted wh-table-hint">Нажмите GTIN, чтобы посмотреть связанные КМ.</p><div class="wh-table" tabindex="0" aria-label="Состав документа"><table><thead><tr><th>PN</th><th>GTIN</th><th>Требуется</th><th id="actual-label">Собрано</th><th>Осталось</th></tr></thead><tbody id="lines"></tbody></table></div>
-
-<div id="check-errors"></div><details id="scan-details"><summary>Общий список КМ <span id="scan-total"></span></summary><div class="wh-toolbar"><label>Поиск КМ / GTIN <input id="scan-query" type="search" autocomplete="off"></label><label><input id="scan-errors-only" type="checkbox"> Только ошибки</label><span id="scan-found"></span></div><div id="scans"></div></details>
+{% if not admin %}</details>{% else %}<div id="check-errors"></div>{% endif %}
+<details id="scan-details" class="wh-disclosure"><summary>Список КМ <span id="scan-total"></span></summary><div class="wh-toolbar"><label>Поиск КМ / GTIN <input id="scan-query" type="search" autocomplete="off"></label><label><input id="scan-errors-only" type="checkbox"> Только ошибки</label><span id="scan-found"></span></div><div id="scans"></div></details>
+{% if not admin %}<details id="document-meta" class="wh-disclosure"><summary>О документе</summary><p><span id="doc-badge" class="wh-badge"></span></p><p id="doc-parties" class="wh-muted"></p><p id="doc-status" class="wh-muted"></p></details>{% endif %}
 {% if admin %}
 <section id="issues-panel" class="wh-card" hidden><h3>Обращения склада</h3><button id="issues-refresh" class="btn">Обновить обращения</button><div id="issues-list"></div><div id="issue-detail"></div><form id="resolve-form" hidden><label>Результат разбора / комментарий складу <textarea id="issue-resolution" rows="3" maxlength="2000" required></textarea></label><div class="wh-toolbar"><button class="btn" type="submit" id="resolve-issue">Закрыть обращение</button><button class="btn primary" type="button" id="return-warehouse">Вернуть на склад</button><button class="btn" type="reset">Очистить</button></div><p id="return-hint" class="wh-muted"></p></form><h4 id="events-title" hidden>Действия по документу</h4><div id="issue-events"></div><button id="events-more" class="btn" hidden>Показать более ранние действия</button></section>
 {% endif %}
