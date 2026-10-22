@@ -51,7 +51,8 @@ async def shipment_results(service, doc):
         for i, alt in zip(unresolved, alternatives):
             if not alt.error_category and alt.owner_inn:
                 results[i] = alt
-    totals = {line['gtin']: 0 for line in doc['lines']}
+    marked = [line for line in doc['lines'] if line['gtin']]
+    totals = {line['gtin']: 0 for line in marked}
     details, pns = [], {}
     for scan, r in zip(scans, results):
         reasons = []
@@ -85,14 +86,15 @@ async def shipment_results(service, doc):
                             status=r.status, owner_inn=r.owner_inn, owner_name=r.owner_name,
                             quantity=quantity, errors=reasons, api=r.as_dict(include_raw_api=True)))
     rows = [dict(gtin=l['gtin'], required=l['quantity'], actual=totals[l['gtin']],
-                 remaining=l['quantity'] - totals[l['gtin']]) for l in doc['lines']]
-    ok = bool(scans) and not any(d['errors'] for d in details) and all(r['remaining'] == 0 for r in rows)
+                 remaining=l['quantity'] - totals[l['gtin']]) for l in marked]
+    ok = (bool(scans) or not marked) and not any(d['errors'] for d in details) and all(r['remaining'] == 0 for r in rows)
     return dict(ok=ok, rows=rows, codes=details, missing=[], checked_count=len(scans)), pns
 
 
 def receipt_results(doc):
     expected = {e['cis']: e for e in doc['expected']}
-    totals = {l['gtin']: 0 for l in doc['lines']}
+    marked = [line for line in doc['lines'] if line['gtin']]
+    totals = {l['gtin']: 0 for l in marked}
     accepted, details = set(), []
     for scan in doc['scans']:
         e, errors = expected.get(scan['cis']), []
@@ -107,8 +109,8 @@ def receipt_results(doc):
                             quantity=e['quantity'] if e else None, errors=errors))
     missing = [dict(cis=e['cis'], gtin=e['gtin']) for cis, e in expected.items() if cis not in accepted]
     rows = [dict(gtin=l['gtin'], required=l['quantity'], actual=totals[l['gtin']],
-                 remaining=l['quantity'] - totals[l['gtin']]) for l in doc['lines']]
-    return dict(ok=bool(expected) and not missing and not any(d['errors'] for d in details),
+                 remaining=l['quantity'] - totals[l['gtin']]) for l in marked]
+    return dict(ok=(bool(expected) or not marked) and not missing and not any(d['errors'] for d in details),
                 rows=rows, codes=details, missing=missing, checked_count=len(doc['scans']), accepted_count=len(accepted))
 
 
@@ -119,7 +121,7 @@ async def check_document(store, service, document_id):
         async with asyncio.timeout(policy['check_timeout_seconds']):
             if doc['kind'] == 'shipment':
                 result, pns = await shipment_results(service, doc)
-                missing = [l['gtin'] for l in doc['lines'] if not l['pn'] and l['gtin'] not in pns]
+                missing = [l['gtin'] for l in doc['lines'] if l['gtin'] and not l['pn'] and l['gtin'] not in pns]
                 resolved, warnings = await resolve_pns(service, missing, doc['org_inn']) if missing and policy['auto_pn'] else ({}, [])
                 if policy['auto_pn']:
                     store.fill_pns(document_id, {**pns, **resolved})

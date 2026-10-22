@@ -41,12 +41,12 @@ class WarehouseFilters(BaseModel):
     org_inn: str | None = Field(default=None,max_length=12)
     scan_state: Literal['all','unscanned','scanned'] = 'all'
     status: Literal['draft','active','completed'] | None = None
-
-
-class AdminFilters(WarehouseFilters):
     query: str = Field(default='',max_length=300)
     date_from: date | None = None
     date_to: date | None = None
+
+
+class AdminFilters(WarehouseFilters):
     issue_state: Literal['all','open','closed','none'] = 'all'
     trash: bool = False
 
@@ -104,6 +104,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     @router.get('/api/warehouse/documents')
     def documents(filters: Annotated[WarehouseFilters, Query()]):
+        if filters.date_from and filters.date_to and filters.date_from > filters.date_to:
+            raise WarehouseError('Начало периода позже окончания')
         return {'documents': store_getter().list(**filters.model_dump())}
 
     @router.get('/api/warehouse/documents/{document_id}')
@@ -178,7 +180,7 @@ def install_warehouse(app, service_getter, store_getter, templates):
         if kind == 'shipment' and values['auto_pn']:
             try:
                 async with asyncio.timeout(90):
-                    pns, warnings = await resolve_pns(service_getter(), [l['gtin'] for l in lines if not l['pn']], header['org_inn'])
+                    pns, warnings = await resolve_pns(service_getter(), [l['gtin'] for l in lines if l['gtin'] and not l['pn']], header['org_inn'])
             except TimeoutError:
                 pns, warnings = {}, ['Получение PN заняло слишком много времени. Заполните PN вручную.']
             for line in lines:

@@ -998,3 +998,65 @@ async def test_check_timeout_and_receipt_template_use_saved_settings(clients, st
     book = openpyxl.load_workbook(io.BytesIO(response.content))
     metadata = {r[0]:r[1] for r in book['Документ'].iter_rows(min_row=2,values_only=True)}
     assert metadata['ИНН организации'] == ORG2
+
+
+@pytest.mark.parametrize('kind', ['receipt', 'shipment'])
+@pytest.mark.asyncio
+async def test_full_invoice_unmarked_rows_survive_restart_without_affecting_check(store, svc, kind):
+    marked = ['PN-1', GTIN, code(), 100] if kind == 'receipt' else ['PN-1', GTIN, 100]
+    unmarked = [['BOLT', '', '', 5], ['BOLT', None, None, 7]] if kind == 'receipt' else [['BOLT', '', 5], ['BOLT', None, 7]]
+    d = document(store, kind, rows=[marked, *unmarked])
+    add(store, d)
+    restarted = WarehouseStore(store.path)
+    assert [(l['pn'], l['quantity']) for l in restarted.get(d['id'])['lines'] if not l['gtin']] == [('BOLT', 5), ('BOLT', 7)]
+    checked = await check_document(restarted, svc, d['id'])
+    assert checked['can_complete']
+    assert checked['result']['rows'] == [dict(gtin=GTIN, required=100, actual=100, remaining=0)]
+    restarted.complete(d['id'])
+    if kind == 'shipment':
+        book = openpyxl.load_workbook(io.BytesIO(export_shipment(restarted.get(d['id']))))
+        assert book.active.max_row == 2
+        assert book.active['A2'].value == 'PN-1'
+
+
+@pytest.mark.parametrize('kind', ['receipt', 'shipment'])
+@pytest.mark.asyncio
+async def test_invoice_without_marked_goods_does_not_invent_scanned_quantity(store, svc, kind):
+    rows = [['BOLT', '', '', 7]] if kind == 'receipt' else [['BOLT', '', 7]]
+    d = document(store, kind, rows=rows)
+    checked = await check_document(store, svc, d['id'])
+    assert checked['can_complete'] and checked['result']['rows'] == []
+    # An unexpected scanned code still fails even when all invoice rows are unmarked.
+    add(store, d)
+    checked = await check_document(store, svc, d['id'])
+    assert not checked['can_complete'] and checked['result']['codes'][0]['errors']
+
+
+@pytest.mark.parametrize('kind,rows,reason', [
+    ('shipment', [['', '', 5]], 'PN'),
+    ('shipment', [['BOLT', '04640638345219', 5]], 'контрольной'),
+    ('shipment', [['BOLT', '', 0]], 'Количество'),
+    ('receipt', [['BOLT', '', code(), 5]], 'КМ без GTIN'),
+])
+def test_unmarked_import_does_not_silently_discard_bad_data(kind, rows, reason):
+    with pytest.raises(WarehouseError, match=reason):
+        import_xlsx(workbook(kind, rows), kind)
+
+
+def test_worker_number_and_date_filters_combine_without_exposing_hidden_documents(clients, store):
+    a, worker = clients
+    active = document(store)
+    other = document(store)
+    draft = document(store, start=False)
+    with store.connection(True) as c:
+        c.execute("UPDATE warehouse_documents SET number='НКЛ/АБ-123',date='2026-10-20' WHERE id=?", (active['id'],))
+        c.execute("UPDATE warehouse_documents SET number='НКЛ/АБ-123',date='2026-10-19' WHERE id=?", (other['id'],))
+        c.execute("UPDATE warehouse_documents SET number='НКЛ/АБ-123',date='2026-10-20' WHERE id=?", (draft['id'],))
+    path = '/api/warehouse/documents'
+    result = worker.get(path, params={'query':'аб-12', 'date_from':'2026-10-20', 'date_to':'2026-10-20', 'org_inn':ORG, 'scan_state':'unscanned'})
+    assert result.status_code == 200
+    assert [d['id'] for d in result.json()['documents']] == [active['id']]
+    assert worker.get(path, params={'query':'Получатель'}).json()['documents'] == []
+    assert worker.get(path, params={'query':"%' OR 1=1 --"}).json()['documents'] == []
+    assert worker.get(path, params={'date_from':'2026-10-22','date_to':'2026-10-21'}).status_code == 422
+    assert worker.get(path, params={'date_from':'invalid'}).status_code == 422
