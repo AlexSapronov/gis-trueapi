@@ -21,6 +21,22 @@ from typing import Optional
 # GS (Group Separator) = FNC1 в GS1 Data Matrix
 GS = "\x1d"
 
+# Physical Windows keyboard keys, including Shift punctuation. Convert a whole
+# scan only when Russian layout is detectable; valid ASCII codes stay unchanged.
+_RU_KEYS = 'ёйцукенгшщзхъфывапролджэячсмитьбю'
+_EN_KEYS = "`qwertyuiop[]asdfghjkl;'zxcvbnm,."
+_EN_SHIFT_KEYS = '~QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>'
+_RU_TO_EN = str.maketrans({
+    **dict(zip(_RU_KEYS, _EN_KEYS)),
+    **dict(zip(_RU_KEYS.upper(), _EN_SHIFT_KEYS)),
+    '"': '@', '№': '#', ';': '$', ':': '^', '?': '&', '.': '/', ',': '?', '/': '|',
+})
+
+
+def normalize_scanner_layout(raw: str) -> str:
+    """Restore English keys from a scan entered with the Russian layout."""
+    return raw.translate(_RU_TO_EN) if re.search(r'[А-Яа-яЁё№]', raw) else raw
+
 # AI 01 + 14 цифр + AI 21. Serial начинается сразу после match.end().
 _PATTERN_01_21 = re.compile(r"01(\d{14})21")
 
@@ -111,7 +127,7 @@ def parse(raw: str) -> ParsedCode:
         raw = ""
 
     result = ParsedCode(raw_code=raw)
-    s = raw.strip()
+    s = normalize_scanner_layout(raw).strip()
 
     if not s:
         result.structure_valid = False

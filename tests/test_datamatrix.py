@@ -1,7 +1,27 @@
 """Unit-тесты Data Matrix parser."""
 import pytest
 
-from datamatrix import parse, gtin_checksum_valid, GS
+from datamatrix import parse, gtin_checksum_valid, normalize_scanner_layout, GS
+
+
+@pytest.mark.parametrize('russian, english', [
+    ('ёйцукенгшщзхъфывапролджэячсмитьбю', "`qwertyuiop[]asdfghjkl;'zxcvbnm,."),
+    ('ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ', '~QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>'),
+    ('ф"№;:?.,/\\123+-=\x1d', 'a@#$^&/?|\\123+-=\x1d'),
+    ('ASCII"?:;.,/#@[]{}<>\\\x1d', 'ASCII"?:;.,/#@[]{}<>\\\x1d'),
+])
+def test_russian_scanner_keyboard_keys(russian, english):
+    assert normalize_scanner_layout(russian) == english
+
+
+def test_russian_layout_normalizes_serial_crypto_and_aim_prefix():
+    english = ']d2010464063834521821AbC"d/ef\x1d91EE12\x1d92+Ab/Cd=='
+    russian = 'ъв2010464063834521821ФиСЭв.уа\x1d91УУ12\x1d92+Фи.Св=='
+    actual, expected = parse(russian), parse(english)
+    assert actual.structure_valid
+    assert actual.api_cis == expected.api_cis
+    assert actual.tail == expected.tail
+    assert actual.has_crypto == expected.has_crypto
 
 
 # GTIN из ТЗ: 04640638345218 — валидный GTIN-14.

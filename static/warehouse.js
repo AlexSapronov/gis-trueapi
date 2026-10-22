@@ -10,8 +10,9 @@
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
-  let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshing = false, queueError = false;
+  let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshPromise = null, queueError = false;
   let duplicateTarget = null, duplicateDeleting = false;
+  let completionTarget = null, completionBusy = false;
   let editVersion = null, editRevision = null, editLines = [];
   let pendingReload = false, buildId = document.body.dataset.build, noticeTimer;
   const input = $('wh-scan');
@@ -214,9 +215,21 @@
     $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc ${d.open_issues ? 'wh-problem' : ''} ${d.pending_returns ? 'wh-returned' : ''}" data-doc="${esc(d.id)}"><span class="wh-badge" data-status="${d.deleted_at ? 'deleted' : esc(d.status)}">${d.deleted_at ? 'В корзине' : esc(status(d))}</span><b>№ ${esc(d.number)}</b><span class="wh-muted">${esc(d.date)} · ${esc(d.org_name)}</span>${d.recipient_name ? `<span>→ ${esc(d.recipient_name)}</span>` : ''}${d.pending_returns ? `<span class="wh-good">${admin ? 'Ответ передан · ждёт ознакомления' : 'Ответственный ответил — можно продолжать'}</span>` : ''}${d.open_issues ? `<span class="wh-bad">Проблемный · обращений: ${d.open_issues}</span>` : ''}<span>${d.scan_count} КМ · ${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span>${d.kind === 'shipment' ? `<span class="wh-muted">${d.strict_owner ? 'Строгое соответствие организации' : 'КМ наших организаций'}</span>` : ''}<span class="wh-muted">Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<div class="wh-card"><h3>Документы не найдены</h3><p class="wh-muted">Измените условия поиска или сбросьте фильтры.</p></div>';
 
   }
+  async function returnToDocuments(text) {
+    if (!admin && current && (queue.length || input.value)) {
+      savePending(); queue = []; input.value = '';
+      text += ' Неподтверждённые сканы сохранены в браузере для этого документа.';
+    }
+    current = null; dirty = false; section = 'documents';
+    document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+    $('document').hidden = true; $('document-list').hidden = false;
+    history.replaceState(null, '', location.pathname + '?kind=' + kind);
+    showSection(); await list(); message(text);
+  }
   async function open(id) {
     if (queue.length || flushing || input?.value) { message('Сначала сохраните ожидающие КМ и завершите ввод.', true); return; }
     const d = await json(apiBase + '/documents/' + id);
+    if (!admin && d.status === 'completed') { await returnToDocuments('Документ уже завершён. Выберите следующий документ.'); return; }
     current = d; dirty = false; queue = []; section = 'documents'; selectedIssue=null; eventsBefore=null;
     $('scan-query').value=''; $('scan-errors-only').checked=false;
     if (admin) { $('issues-panel').hidden=true; $('events-title').hidden=true; $('events-more').hidden=true; $('issue-detail').innerHTML=''; $('issue-events').innerHTML=''; $('issue-resolution').value=''; $('resolve-form').hidden=true; }
@@ -275,12 +288,17 @@
       $('report-issue').hidden=!(features.report_issues!==false && d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
       $('report-issue').disabled=!!d.reported_current_result; $('report-issue').textContent=d.reported_current_result ? 'Уже сообщено' : 'Сообщить ответственному';
       updateDuplicateActions();
+      updateCompletionPrompt();
       pendingState();
     }
   }
-  async function refresh() {
-    if (refreshing || (admin && !authenticated)) return;
-    refreshing = true;
+  function refresh(force = false) {
+    if (refreshPromise) return force ? refreshPromise.then(() => refresh()) : refreshPromise;
+    if (admin && !authenticated) return Promise.resolve();
+    refreshPromise = refreshDocument().finally(() => { refreshPromise = null; });
+    return refreshPromise;
+  }
+  async function refreshDocument() {
     try {
       if (admin && section === 'settings') return;
       if (admin && section === 'token') await tokenStatus();
@@ -289,7 +307,10 @@
         if (current?.id === id) {
           const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.open_issues,d.issue_count,d.pending_returns,d.runtime_settings?.revision]);
           const changed = signature(current) !== signature(next);
-          current = next; if (changed) {render(); if(admin&&selectedIssue&&!$('issues-panel').hidden)await openIssue(selectedIssue.id,true);}
+          current = next;
+          if (!admin && next.status === 'completed') {
+            await returnToDocuments('Документ завершён. Выберите следующий документ.');
+          } else if (changed) {render(); if(admin&&selectedIssue&&!$('issues-panel').hidden)await openIssue(selectedIssue.id,true);}
         }
       } else await list();
       $('connection').textContent = 'Подключено'; $('connection').dataset.state='online';
@@ -304,7 +325,6 @@
       if(e.status===403 && admin){$('connection').textContent='Сессия завершена — войдите снова';$('connection').dataset.state='pending';}
       else {$('connection').textContent='Синхронизация недоступна: '+e.message;$('connection').dataset.state='offline';}
     }
-    finally { refreshing = false; }
   }
   function enqueue(code) {
     if (!code) return;
@@ -315,10 +335,12 @@
   }
   async function flush() {
     if (flushing || !queue.length || !current || $('duplicate').open) return;
+    const documentId = current.id, pendingQueue = queue;
     flushing = true; queueError = false; pendingState();
     try {
-      while (queue.length) {
-        const data = await json('/api/warehouse/documents/' + current.id + '/scans', {method:'POST', body:{code:queue[0]}});
+      while (queue.length && current?.id === documentId && queue === pendingQueue) {
+        const data = await json('/api/warehouse/documents/' + documentId + '/scans', {method:'POST', body:{code:queue[0]}});
+        if (current?.id !== documentId || queue !== pendingQueue) break;
         queue.shift(); savePending(); pendingState();
         if (data.duplicate) {
           duplicateTarget = {documentId:current.id, scanId:data.scan.id};
@@ -332,8 +354,10 @@
       }
       await refresh();
     } catch (e) {
-      message(e.message + '\nКод остался в очереди. Нажмите «Повторить отправку» или удалите неподтверждённый код.', true);
-      queueError = true;
+      if (current?.id === documentId && queue === pendingQueue) {
+        message(e.message + '\nКод остался в очереди. Нажмите «Повторить отправку» или удалите неподтверждённый код.', true);
+        queueError = true;
+      }
     } finally {
       flushing = false;
       pendingState();
@@ -367,6 +391,29 @@
   $('duplicate').addEventListener('close', () => {
     duplicateTarget = null; updateDuplicateActions(); pendingState(); flush(); focus?.focus(); maybeReload();
   });
+  function completionCurrent() {
+    return completionTarget && current?.id === completionTarget.id && current.can_complete &&
+      current.version === completionTarget.version && current.result_at === completionTarget.resultAt &&
+      !queue.length && !input.value && !flushing;
+  }
+  function updateCompletionPrompt() {
+    if (admin) return;
+    if (completionTarget && !completionBusy && !completionCurrent()) {
+      $('complete-dialog').close(); completionTarget = null;
+      message('Документ изменился. Перед завершением выполните актуальную проверку.', true);
+    }
+    $('complete-confirm').disabled = completionBusy || !completionCurrent();
+    $('complete-later').disabled = completionBusy;
+  }
+  function promptCompletion() {
+    if (!current?.can_complete || queue.length || input.value || flushing) return;
+    completionTarget = {id:current.id, version:current.version, resultAt:current.result_at};
+    const operation = current.kind === 'receipt' ? 'приёмку' : 'сборку';
+    $('complete-description').textContent = `Все КМ проверены, ошибок нет, количество совпадает. Завершить ${operation}?`;
+    $('complete-confirm').textContent = `Завершить ${operation}`;
+    $('complete-error').textContent = '';
+    updateCompletionPrompt(); $('complete-dialog').showModal();
+  }
   $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
     if (queue.length || flushing || input?.value || dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
@@ -404,11 +451,23 @@
     $('check').onclick = () => action(async () => {
       if (queue.length || input.value) throw new Error('Сначала сохраните все КМ и завершите ввод.');
       $('check').disabled = true; $('check-state').textContent = 'Проверка выполняется…';
-      await json('/api/warehouse/documents/' + current.id + '/check', {method:'POST'}); await refresh();
+      await json('/api/warehouse/documents/' + current.id + '/check', {method:'POST'}); await refresh(true);
+      promptCompletion();
     });
-    $('complete').onclick = () => action(async () => {
-      if (queue.length || input.value) throw new Error('Сначала сохраните все КМ.');
-      await json('/api/warehouse/documents/' + current.id + '/complete', {method:'POST'}); await refresh();
+    $('complete').onclick = promptCompletion;
+    $('complete-later').onclick = () => { if (!completionBusy) $('complete-dialog').close(); };
+    $('complete-dialog').addEventListener('cancel', e => { if (completionBusy) e.preventDefault(); });
+    $('complete-dialog').addEventListener('close', () => { completionTarget = null; focus?.focus(); maybeReload(); });
+    $('complete-confirm').onclick = () => action(async () => {
+      await refresh(true);
+      if (!completionCurrent()) return;
+      const id = completionTarget.id;
+      completionBusy = true; updateCompletionPrompt();
+      try {
+        await json('/api/warehouse/documents/' + id + '/complete', {method:'POST'});
+        await returnToDocuments('Документ завершён. Выберите следующий документ.');
+      } catch (e) { $('complete-error').textContent = e.message; await refresh(); }
+      finally { completionBusy = false; updateCompletionPrompt(); }
     });
     $('scans').onclick = e => { const b = e.target.closest('[data-delete]'); if (b && confirm('Удалить ранее добавленный КМ из документа?')) action(async () => { await json('/api/warehouse/documents/' + current.id + '/scans/' + b.dataset.delete, {method:'DELETE'}); await refresh(); }); };
     window.addEventListener('beforeunload', e => { savePending(); if (queue.length || input.value) { e.preventDefault(); e.returnValue=''; } });
