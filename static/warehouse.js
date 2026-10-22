@@ -11,6 +11,7 @@
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshing = false, queueError = false;
+  let duplicateTarget = null, duplicateDeleting = false;
   let editVersion = null, editRevision = null, editLines = [];
   let pendingReload = false, buildId = document.body.dataset.build, noticeTimer;
   const input = $('wh-scan');
@@ -107,6 +108,13 @@
   function setupFilterOrgs(orgs) {
     $('filter-org').innerHTML = '<option value="">Все организации</option>' + orgs.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
   }
+  function renderMissingCodes(missing = []) {
+    if (!missing.length) return '';
+    const threshold = current?.runtime_settings?.values.receipt_missing_codes_threshold ?? 20;
+    return `<h3 class="wh-stale">Ещё не отсканированы КМ: ${missing.length}</h3>` + (missing.length < threshold
+      ? missing.map(m => `<p class="wh-code wh-stale"><code>${esc(m.cis)}</code></p>`).join('')
+      : '<p class="wh-muted">Список скрыт: количество отсутствующих КМ достигло порога показа, заданного в настройках.</p>');
+  }
   function renderScans() {
     if (!current) return;
     const details = new Map((current.result?.codes || []).map(c => [c.scan_id,c]));
@@ -142,7 +150,7 @@
     const snap=issue.snapshot, result=snap.result, rawCodes=new Map(snap.scans.map(s=>[s.id,s.raw_code]));
     const rows=result.rows.filter(r => r.remaining !== 0).map(r => `<p>${esc(r.gtin)}: требуется ${r.required}, проверено ${r.actual}, осталось ${r.remaining}</p>`).join('');
     const codes=result.codes.map(c => `<details class="wh-code"><summary>${c.errors.length ? 'Ошибка · ' : ''}${esc(c.cis)}</summary><p>${esc(c.owner_name || c.owner_inn || '')} ${esc(c.status || '')} · ${c.quantity ?? 'Количество неизвестно'}</p><p class="wh-bad">${esc(c.errors.join('; '))}</p><pre>${esc(rawCodes.get(c.scan_id) || '')}</pre></details>`).join('');
-    const missing=(result.missing || []).map(c => `<p class="wh-bad">Отсутствует КМ: ${esc(c.cis)}</p>`).join('');
+    const missing=renderMissingCodes(result.missing);
     $('issue-detail').innerHTML=`<h4>Проверка от ${esc(stamp(issue.result_at))} · версия ${issue.version}</h4><p>${esc(issue.message || 'Без комментария')}</p><p class="${issue.resolved_at ? 'wh-good' : 'wh-bad'}">${issue.resolved_at ? 'Разобрано: ' + esc(issue.resolution) : 'Требует внимания'}</p>${(issue.returns || []).map(r=>`<div class="wh-reply-history"><b>Передано на склад · ${esc(stamp(r.created_at))}</b><p>${esc(r.message)}</p><small>${r.acknowledged_at ? 'Склад ознакомился: '+esc(stamp(r.acknowledged_at)) : 'Ожидает ознакомления склада'}</small></div>`).join('')}${rows}${missing}<details open><summary>Коды в обращении: ${snap.scans.length}</summary>${codes}</details>`;
     $('resolve-form').hidden=false; $('resolve-issue').hidden=!!issue.resolved_at;
     $('return-warehouse').disabled=current.status!=='active'||!!current.deleted_at||current.runtime_settings?.values.return_to_warehouse===false;
@@ -225,21 +233,22 @@
   function render() {
     if (!current) return;
     const d = current, result = d.result;
+    const incompleteReceipt = d.kind === 'receipt' && result?.missing.length > 0 && !result.codes.some(c => c.errors.length);
     $('doc-badge').textContent=d.deleted_at?'В корзине':status(d); $('doc-badge').dataset.status=d.deleted_at?'deleted':d.status;
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + ' от ' + d.date;
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     $('doc-count').textContent = `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '');
-    const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : 'Проверено. Есть расхождения.';
+    const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : incompleteReceipt ? 'Приёмка ещё не заполнена. Продолжайте сканирование.' : 'Проверено. Есть расхождения.';
     $('check-state').textContent = state;
-    $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
+    $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking || incompleteReceipt ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
     $('warehouse-replies').innerHTML=(d.warehouse_replies || []).map(r=>`<section class="wh-reply"><span class="wh-eyebrow">Ответственный ответил · ${esc(stamp(r.created_at))}</span><h3>${admin?'Ответ передан на склад':'Можно продолжать работу'}</h3><p>${esc(r.message)}</p>${admin?'<small>Ожидает ознакомления склада</small>':`<button class="btn primary" data-ack-return="${esc(r.id)}">${d.status==='active'?'Продолжить работу':'Ответ прочитан'}</button>`}</section>`).join('');
     $('issue-state').textContent = d.open_issues ? '⚠ Сообщено ответственному · открытых обращений: ' + d.open_issues : (d.issue_count ? 'Обращения разобраны' : '');
     $('actual-label').textContent = d.kind === 'shipment' ? 'Собрано' : 'Принято';
     const actual = new Map((result?.rows || []).map(r => [r.gtin,r]));
-    $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? 'wh-bad' : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
+    $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? (d.kind === 'receipt' && r.remaining > 0 ? 'wh-stale' : 'wh-bad') : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
     renderScans();
-    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + (result.missing.length ? `<h3>Отсутствующие КМ: ${result.missing.length}</h3>` + result.missing.map(m => `<p class="wh-code"><code>${esc(m.cis)}</code></p>`).join('') : '') : '';
+    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
     if (admin) {
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed';
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
@@ -265,6 +274,7 @@
       $('report-message').placeholder=features.report_comment_required ? 'Опишите расхождение' : 'Что нужно уточнить? Необязательно';
       $('report-issue').hidden=!(features.report_issues!==false && d.status==='active' && d.check_current && d.result && !d.result.ok && !d.checking);
       $('report-issue').disabled=!!d.reported_current_result; $('report-issue').textContent=d.reported_current_result ? 'Уже сообщено' : 'Сообщить ответственному';
+      updateDuplicateActions();
       pendingState();
     }
   }
@@ -304,16 +314,20 @@
     queue.push(code); queueError = false; savePending(); pendingState(); flush();
   }
   async function flush() {
-    if (flushing || !queue.length || !current) return;
+    if (flushing || !queue.length || !current || $('duplicate').open) return;
     flushing = true; queueError = false; pendingState();
     try {
       while (queue.length) {
         const data = await json('/api/warehouse/documents/' + current.id + '/scans', {method:'POST', body:{code:queue[0]}});
         queue.shift(); savePending(); pendingState();
         if (data.duplicate) {
-          $('duplicate-info').textContent = `GTIN: ${data.scan.gtin}. Ранее отсканирован: ${stamp(data.scan.scanned_at)}`;
-          if (!$('duplicate').open) $('duplicate').showModal();
+          duplicateTarget = {documentId:current.id, scanId:data.scan.id};
+          $('duplicate-info').textContent = `КМ: ${data.scan.cis}. Ранее отсканирован: ${stamp(data.scan.scanned_at)}`;
+          $('duplicate-error').textContent = '';
+          updateDuplicateActions();
+          $('duplicate').showModal();
           message('Повторный КМ не добавлен. Исходный КМ сохранён.');
+          break;
         } else message('КМ сохранён на сервере');
       }
       await refresh();
@@ -324,9 +338,35 @@
       flushing = false;
       pendingState();
       focus?.focus(); maybeReload();
+      if (queue.length && !queueError && !$('duplicate').open) flush();
     }
   }
-  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $('duplicate').close(); focus?.focus(); maybeReload(); });
+  function updateDuplicateActions() {
+    $('duplicate-keep').disabled = duplicateDeleting;
+    $('duplicate-remove').hidden = current?.runtime_settings?.values.worker_delete_scans === false;
+    $('duplicate-remove').disabled = duplicateDeleting || !duplicateTarget || current?.id !== duplicateTarget.documentId || current?.status !== 'active' || !!current?.deleted_at;
+  }
+  $('duplicate-keep').onclick = () => {
+    if (duplicateDeleting) return;
+    message('КМ оставлен в документе. Продолжайте сканирование.');
+    $('duplicate').close();
+  };
+  $('duplicate-remove').onclick = () => action(async () => {
+    const target = duplicateTarget;
+    if (!target || duplicateDeleting) return;
+    duplicateDeleting = true; updateDuplicateActions();
+    try {
+      const updated = await json('/api/warehouse/documents/' + target.documentId + '/scans/' + target.scanId, {method:'DELETE'});
+      if (current?.id === target.documentId) { current = updated; render(); }
+      message('КМ удалён из документа. Продолжайте сканирование.');
+      $('duplicate').close();
+    } catch (e) { $('duplicate-error').textContent = e.message || 'Не удалось удалить КМ. Повторите попытку.'; }
+    finally { duplicateDeleting = false; updateDuplicateActions(); focus?.focus(); }
+  });
+  $('duplicate').addEventListener('cancel', e => { if (duplicateDeleting) e.preventDefault(); });
+  $('duplicate').addEventListener('close', () => {
+    duplicateTarget = null; updateDuplicateActions(); pendingState(); flush(); focus?.focus(); maybeReload();
+  });
   $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
     if (queue.length || flushing || input?.value || dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
