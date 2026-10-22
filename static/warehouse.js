@@ -13,6 +13,7 @@
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshPromise = null, queueError = false;
   let duplicateTarget = null, duplicateDeleting = false;
   let completionTarget = null, completionBusy = false;
+  let workerResultSeen = null;
   let editVersion = null, editRevision = null, editLines = [];
   let pendingReload = false, buildId = document.body.dataset.build, noticeTimer;
   const input = $('wh-scan');
@@ -166,6 +167,7 @@
     $('connection').textContent = 'Войдите в админку'; $('connection').dataset.state='pending';
   }
   function showSection() {
+    document.body.classList.toggle('wh-worker-document', !admin && !!current);
     $('document-filters').hidden = !!current || (admin && section !== 'documents');
     $('list-heading').hidden=$('document-filters').hidden;
     $('list-title').textContent=(admin && $('filter-trash').value==='true' ? 'Корзина · ' : '') + (kind==='shipment' ? 'Отгрузки' : 'Приёмки');
@@ -231,6 +233,7 @@
     const d = await json(apiBase + '/documents/' + id);
     if (!admin && d.status === 'completed') { await returnToDocuments('Документ уже завершён. Выберите следующий документ.'); return; }
     current = d; dirty = false; queue = []; section = 'documents'; selectedIssue=null; eventsBefore=null;
+    if (!admin) { workerResultSeen = null; $('composition-details').open = false; $('document-meta').open = false; $('scan-details').open = false; }
     $('scan-query').value=''; $('scan-errors-only').checked=false;
     if (admin) { $('issues-panel').hidden=true; $('events-title').hidden=true; $('events-more').hidden=true; $('issue-detail').innerHTML=''; $('issue-events').innerHTML=''; $('issue-resolution').value=''; $('resolve-form').hidden=true; }
     $('document').hidden = false; $('document-list').hidden = true;
@@ -248,11 +251,20 @@
     const d = current, result = d.result;
     const incompleteReceipt = d.kind === 'receipt' && result?.missing.length > 0 && !result.codes.some(c => c.errors.length);
     $('doc-badge').textContent=d.deleted_at?'В корзине':status(d); $('doc-badge').dataset.status=d.deleted_at?'deleted':d.status;
-    $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + ' от ' + d.date;
+    $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + (admin ? ' от ' + d.date : '');
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
-    $('doc-count').textContent = `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '');
-    const state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : incompleteReceipt ? 'Приёмка ещё не заполнена. Продолжайте сканирование.' : 'Проверено. Есть расхождения.';
+    $('doc-count').textContent = admin ? `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '') : `Считано: ${d.scans.length} КМ`;
+    let state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : incompleteReceipt ? 'Приёмка ещё не заполнена. Продолжайте сканирование.' : 'Проверено. Есть расхождения.';
+    if (!admin) {
+      state = d.checking ? 'Проверяем КМ…' : !result ? '' : !d.check_current ? 'Есть изменения. Проверьте ещё раз.' : result.ok ? 'Всё совпадает.' : incompleteReceipt ? 'Продолжайте сканирование.' : 'Есть ошибки в КМ. Проверьте результат ниже.';
+      $('worker-org').textContent = d.org_name;
+      $('worker-plan').textContent = d.kind === 'receipt' ? `По документу: ${d.expected.length} КМ` : `Товаров: ${d.lines.length}`;
+      $('product-count').textContent = `(${d.lines.length})`;
+      $('doc-status').textContent = `Дата: ${d.date} · ${$('doc-status').textContent}`;
+      $('complete').hidden = !d.can_complete;
+      $('check-state').hidden = !state;
+    }
     $('check-state').textContent = state;
     $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking || incompleteReceipt ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
     $('warehouse-replies').innerHTML=(d.warehouse_replies || []).map(r=>`<section class="wh-reply"><span class="wh-eyebrow">Ответственный ответил · ${esc(stamp(r.created_at))}</span><h3>${admin?'Ответ передан на склад':'Можно продолжать работу'}</h3><p>${esc(r.message)}</p>${admin?'<small>Ожидает ознакомления склада</small>':`<button class="btn primary" data-ack-return="${esc(r.id)}">${d.status==='active'?'Продолжить работу':'Ответ прочитан'}</button>`}</section>`).join('');
@@ -262,6 +274,15 @@
     $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? (d.kind === 'receipt' && r.remaining > 0 ? 'wh-stale' : 'wh-bad') : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
     renderScans();
     $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
+    if (!admin) {
+      const errors = result?.codes.filter(c => c.errors.length).length || 0;
+      const missing = result?.missing.length || 0;
+      $('worker-result').hidden = !result;
+      $('worker-result-label').textContent = !d.check_current ? 'Предыдущая проверка' : errors ? `Ошибочные КМ: ${errors}` : missing ? `Ещё не считано: ${missing} КМ` : 'Результат проверки';
+      const resultKey = d.id + ':' + d.result_at;
+      if (workerResultSeen !== resultKey) { $('worker-result').open = !!errors; workerResultSeen = resultKey; }
+      if (errors) $('check-errors').insertAdjacentHTML('afterbegin', `<button class="btn wh-danger" data-show-errors>Показать ошибочные КМ (${errors})</button>`);
+    }
     if (admin) {
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed';
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
@@ -427,6 +448,7 @@
   $('document-filters').addEventListener('input',e=>{ if(e.target.type!=='search')return; clearTimeout(filterTimer); filterTimer=setTimeout(()=>{saveFilters();action(list);},300); });
   $('document-filters').addEventListener('reset',()=>{ if(loadingFilters)return; setTimeout(()=>{saveFilters();action(list);},0); });
   $('scan-query').oninput=renderScans; $('scan-errors-only').onchange=renderScans;
+  $('check-errors').onclick = e => { if (e.target.closest('[data-show-errors]')) { $('scan-query').value = ''; $('scan-errors-only').checked = true; $('scan-details').open = true; renderScans(); $('scan-details').scrollIntoView({block:'nearest'}); } };
   $('lines').onclick=e=>{const b=e.target.closest('[data-product]');if(b){$('scan-query').value=b.dataset.product;$('scan-details').open=true;renderScans();}};
   $('back').onclick = () => document.querySelector(`[data-kind="${kind}"]`).click();
   $('list-refresh').onclick = () => action(refresh);

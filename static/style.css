@@ -4,20 +4,20 @@
   --bg: #eef1f5;
   --surface: #ffffff;
   --surface-2: #f5f7fa;
-  --text: #1b1f23;
-  --muted: #6b7280;
-  --border: #d5dbe3;
-  --primary: #0a6cff;
+  --text: #111827;
+  --muted: #475569;
+  --border: #8392a5;
+  --primary: #075ad3;
   --primary-ink: #ffffff;
 
   /* статусы */
-  --ok: #15803d;
+  --ok: #116b33;
   --ok-bg: #e7f6ec;
   --ok-border: #a8d8b8;
   --err: #c0392b;
   --err-bg: #fdecea;
   --err-border: #f3b1ab;
-  --warn: #b26a00;
+  --warn: #8a4b00;
   --warn-bg: #fff4e5;
   --warn-border: #f0c98a;
   --neutral-bg: #eef1f5;
@@ -27,19 +27,19 @@
 }
 
 [data-theme="dark"] {
-  --bg: #0f141a;
-  --surface: #1a212b;
-  --surface-2: #222c38;
-  --text: #e8ecf1;
-  --muted: #9aa4b0;
-  --border: #2e3a48;
-  --primary: #4d9bff;
+  --bg: #080f18;
+  --surface: #15202d;
+  --surface-2: #243449;
+  --text: #f8fafc;
+  --muted: #c4cfdb;
+  --border: #61738a;
+  --primary: #80b7ff;
   --primary-ink: #0a0f14;
 
   --ok: #4ade80;
   --ok-bg: #12301c;
   --ok-border: #2c6b40;
-  --err: #f87171;
+  --err: #ff9898;
   --err-bg: #3a1516;
   --err-border: #7a3131;
   --warn: #fbbf24;
@@ -537,7 +537,8 @@ textarea:focus { outline: none; border-color: var(--primary); }
 .app-modes a { display:inline-flex; align-items:center; min-height:40px; padding:8px 14px; border-radius:9px; text-decoration:none; font-size:14px; font-weight:650; color:var(--muted); }
 .app-modes a:hover { background:var(--surface-2); color:var(--text); }
 .app-modes a.current { color:var(--primary); background:var(--neutral-bg); }
-button:disabled { opacity:.45; cursor:not-allowed; }
+button:disabled { opacity:1; cursor:not-allowed; }
+.btn:disabled,.btn.primary:disabled { background:var(--surface-2); color:var(--muted); border-color:var(--border); }
 button:focus-visible,a:focus-visible,summary:focus-visible { outline:3px solid var(--primary); outline-offset:3px; }
 [data-busy="true"] { cursor:progress !important; opacity:.65; }
 @media(max-width:600px) { .app-modes { gap:2px; padding:6px; }.app-modes a { flex:1 1 auto; justify-content:center; padding:8px; font-size:12px; } }
