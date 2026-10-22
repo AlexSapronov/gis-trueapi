@@ -7,7 +7,7 @@ window.AdminSettings = {
     let config, dirty = false;
     const form = $('application-settings-form');
     const groups = [
-      ['Функции склада', ['report_issues','return_to_warehouse','worker_delete_scans','manual_input','auto_pn','report_comment_required']],
+      ['Функции склада', ['report_issues','return_to_warehouse','worker_delete_scans','auto_pn','report_comment_required']],
       ['Правила документов', ['strict_owner_default','receipt_default_org','receipt_missing_codes_threshold','shipment_statuses','check_timeout_seconds']],
       ['Вердикты сверки КМ', ['verdict_emitted','verdict_applied','verdict_introduced','verdict_unknown']]
     ];

@@ -18,7 +18,8 @@ class ApplicationSettings(BaseModel):
     report_issues: bool = Field(True, title='Сообщить ответственному', description='Склад может отправлять обращения по расхождениям.')
     return_to_warehouse: bool = Field(True, title='Возврат на склад', description='Ответственный может передавать складу комментарии по обращениям. Сканирование не блокируется.')
     worker_delete_scans: bool = Field(True, title='Удаление сканов складом', description='Сотрудник может удалять КМ из незавершённого документа.')
-    manual_input: bool = Field(True, title='Ручной ввод на складе', description='Показывать кнопку экранной клавиатуры. Сканер продолжает работать.')
+    # Retain the old key so saved settings/history remain readable after upgrade.
+    manual_input: bool = Field(True, deprecated=True, title='Ручной ввод на складе', description='Устаревший параметр. Склад использует аппаратный сканер.')
     auto_pn: bool = Field(True, title='Получать PN из True API', description='Автоматически дополнять PN моделью/артикулом при импорте и проверке отгрузки.')
     report_comment_required: bool = Field(False, title='Комментарий склада обязателен', description='При отправке обращения сотрудник должен описать расхождение.')
     strict_owner_default: bool = Field(True, title='Строгое соответствие организации по умолчанию', description='Только для новых отгрузок. В карточке документа правило можно изменить отдельно.')
