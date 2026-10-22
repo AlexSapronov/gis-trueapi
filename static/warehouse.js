@@ -91,8 +91,9 @@
   function filterValues() {
     const values = {kind, scan_state:$('filter-scans').value};
     if ($('filter-org').value) values.org_inn = $('filter-org').value;
+    [['query','filter-query'],['date_from','filter-from'],['date_to','filter-to']].forEach(([field,id]) => { if ($(id).value) values[field] = $(id).value; });
     if (admin) {
-      [['query','filter-query'],['status','filter-status'],['date_from','filter-from'],['date_to','filter-to']].forEach(([field,id]) => { if ($(id).value) values[field] = $(id).value; });
+      if ($('filter-status').value) values.status = $('filter-status').value;
       values.issue_state = $('filter-issues').value; values.trash = $('filter-trash').value;
     }
     return values;
@@ -235,6 +236,7 @@
     current = d; dirty = false; queue = []; section = 'documents'; selectedIssue=null; eventsBefore=null;
     if (!admin) { workerResultSeen = null; $('composition-details').open = false; $('document-meta').open = false; $('scan-details').open = false; }
     $('scan-query').value=''; $('scan-errors-only').checked=false;
+    $('hide-completed').checked = false; $('show-unmarked').checked = false;
     if (admin) { $('issues-panel').hidden=true; $('events-title').hidden=true; $('events-more').hidden=true; $('issue-detail').innerHTML=''; $('issue-events').innerHTML=''; $('issue-resolution').value=''; $('resolve-form').hidden=true; }
     $('document').hidden = false; $('document-list').hidden = true;
     if ($('import-box')) $('import-box').hidden = true;
@@ -245,6 +247,28 @@
     }
     render(); showSection(); focus?.focus();
     if (queue.length) flush();
+  }
+  function renderLines() {
+    if (!current) return;
+    const d = current, result = d.result;
+    const actual = new Map((result?.rows || []).map(r => [r.gtin, r]));
+    const errors = new Set((result?.codes || []).filter(c => c.errors.length).map(c => c.gtin));
+    const missing = new Set((result?.missing || []).map(c => c.gtin));
+    const unmarked = d.lines.filter(l => !l.gtin).length;
+    $('unmarked-filter').hidden = !unmarked;
+    $('unmarked-hint').hidden = !unmarked || !$('show-unmarked').checked;
+    const visible = d.lines.filter(l => {
+      if (!l.gtin) return $('show-unmarked').checked;
+      const r = actual.get(l.gtin);
+      const completed = d.check_current && !d.checking && r && r.remaining === 0 && !errors.has(l.gtin) && !missing.has(l.gtin);
+      return !$('hide-completed').checked || !completed;
+    });
+    $('line-count').textContent = `Показано: ${visible.length} из ${d.lines.length}` + (unmarked ? ` · Без маркировки: ${unmarked}` : '');
+    $('lines').innerHTML = visible.map(l => {
+      const r = l.gtin ? actual.get(l.gtin) : null;
+      const identity = l.gtin ? `<button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button>` : '<span class="wh-muted">Без маркировки</span>';
+      return `<tr><td>${esc(l.pn || 'Не определён')}</td><td>${identity}</td><td>${l.quantity}</td><td>${!l.gtin ? '—' : r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? (d.kind === 'receipt' && r.remaining > 0 ? 'wh-stale' : 'wh-bad') : ''}">${!l.gtin ? '—' : r ? r.remaining : 'Не проверено'}</td></tr>`;
+    }).join('') || '<tr><td colspan="5">Нет строк по выбранным фильтрам. Измените отбор над таблицей.</td></tr>';
   }
   function render() {
     if (!current) return;
@@ -270,8 +294,7 @@
     $('warehouse-replies').innerHTML=(d.warehouse_replies || []).map(r=>`<section class="wh-reply"><span class="wh-eyebrow">Ответственный ответил · ${esc(stamp(r.created_at))}</span><h3>${admin?'Ответ передан на склад':'Можно продолжать работу'}</h3><p>${esc(r.message)}</p>${admin?'<small>Ожидает ознакомления склада</small>':`<button class="btn primary" data-ack-return="${esc(r.id)}">${d.status==='active'?'Продолжить работу':'Ответ прочитан'}</button>`}</section>`).join('');
     $('issue-state').textContent = d.open_issues ? '⚠ Сообщено ответственному · открытых обращений: ' + d.open_issues : (d.issue_count ? 'Обращения разобраны' : '');
     $('actual-label').textContent = d.kind === 'shipment' ? 'Собрано' : 'Принято';
-    const actual = new Map((result?.rows || []).map(r => [r.gtin,r]));
-    $('lines').innerHTML = d.lines.map(l => { const r = actual.get(l.gtin); return `<tr><td>${esc(l.pn || 'Не определён')}</td><td><button class="wh-link" data-product="${esc(l.gtin)}">${esc(l.gtin)}</button></td><td>${l.quantity}</td><td>${r ? r.actual : 'Не проверено'}</td><td class="${r?.remaining ? (d.kind === 'receipt' && r.remaining > 0 ? 'wh-stale' : 'wh-bad') : ''}">${r ? r.remaining : 'Не проверено'}</td></tr>`; }).join('');
+    renderLines();
     renderScans();
     $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
     if (!admin) {
@@ -294,7 +317,7 @@
         editVersion = d.version; editRevision = d.revision; editLines = d.lines.map(l => ({...l}));
         $('strict').checked = !!d.strict_owner;
         const sourceName={excel:'Из Excel',manual:'Введён вручную',trueapi:'Карточка товара'};
-        $('pn-fields').innerHTML = d.lines.map(l => `<section class="wh-edit-line"><strong>${esc(l.gtin)}</strong><label>PN / артикул<input data-pn="${esc(l.gtin)}" value="${esc(l.pn)}" maxlength="1000" ${d.deleted_at ? 'disabled' : ''} placeholder="Модель / артикул"></label><label>Плановое количество, шт.<input type="number" min="1" max="2147483647" step="1" data-quantity="${esc(l.gtin)}" value="${l.quantity}" ${d.deleted_at || d.kind !== 'shipment' || d.status === 'completed' ? 'disabled' : ''}></label><small>${esc(sourceName[l.pn_source] || 'PN не определён')}</small></section>`).join('');
+        $('pn-fields').innerHTML = d.lines.filter(l => l.gtin).map(l => `<section class="wh-edit-line"><strong>${esc(l.gtin)}</strong><label>PN / артикул<input data-pn="${esc(l.gtin)}" value="${esc(l.pn)}" maxlength="1000" ${d.deleted_at ? 'disabled' : ''} placeholder="Модель / артикул"></label><label>Плановое количество, шт.<input type="number" min="1" max="2147483647" step="1" data-quantity="${esc(l.gtin)}" value="${l.quantity}" ${d.deleted_at || d.kind !== 'shipment' || d.status === 'completed' ? 'disabled' : ''}></label><small>${esc(sourceName[l.pn_source] || 'PN не определён')}</small></section>`).join('');
 
       }
     } else {
@@ -427,7 +450,8 @@
     if (!current?.can_complete || queue.length || input.value || flushing) return;
     completionTarget = {id:current.id, version:current.version, resultAt:current.result_at};
     const operation = current.kind === 'receipt' ? 'приёмку' : 'сборку';
-    $('complete-description').textContent = `Все КМ проверены, ошибок нет, количество совпадает. Завершить ${operation}?`;
+    $('complete-dialog').querySelector('h2').textContent = current.lines.some(l => l.gtin) ? 'Всё совпадает' : 'Проверка КМ не требуется';
+    $('complete-description').textContent = current.lines.some(l => l.gtin) ? `Все КМ проверены, ошибок нет, количество совпадает. Завершить ${operation}?` : `В документе нет позиций с маркировкой. Количество немаркируемых товаров приложением не проверяется. Завершить ${operation}?`;
     $('complete-confirm').textContent = `Завершить ${operation}`;
     $('complete-error').textContent = '';
     updateCompletionPrompt(); $('complete-dialog').showModal();
@@ -441,9 +465,11 @@
     history.replaceState(null, '', location.pathname + '?kind=' + kind); await list();
   }));
   $('document-filters').onsubmit=e=>e.preventDefault();
-  $('document-filters').addEventListener('change',()=>{ saveFilters(); action(list); });
-  $('document-filters').addEventListener('input',e=>{ if(e.target.type!=='search')return; clearTimeout(filterTimer); filterTimer=setTimeout(()=>{saveFilters();action(list);},300); });
-  $('document-filters').addEventListener('reset',()=>{ if(loadingFilters)return; setTimeout(()=>{saveFilters();action(list);},0); });
+  const applyListFilters = () => { saveFilters(); $('notice').textContent = ''; action(list); };
+  $('document-filters').addEventListener('change',applyListFilters);
+  $('document-filters').addEventListener('input',e=>{ if(e.target.type!=='search')return; clearTimeout(filterTimer); filterTimer=setTimeout(applyListFilters,300); });
+  $('document-filters').addEventListener('reset',()=>{ if(loadingFilters)return; clearTimeout(filterTimer); setTimeout(applyListFilters,0); });
+  $('hide-completed').onchange = renderLines; $('show-unmarked').onchange = renderLines;
   $('scan-query').oninput=renderScans; $('scan-errors-only').onchange=renderScans;
   $('check-errors').onclick = e => { if (e.target.closest('[data-show-errors]')) { $('scan-query').value = ''; $('scan-errors-only').checked = true; $('scan-details').open = true; renderScans(); $('scan-details').scrollIntoView({block:'nearest'}); } };
   $('lines').onclick=e=>{const b=e.target.closest('[data-product]');if(b){$('scan-query').value=b.dataset.product;$('scan-details').open=true;renderScans();}};

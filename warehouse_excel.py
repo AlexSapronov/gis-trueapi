@@ -102,7 +102,7 @@ def positive_integer(value):
 def text_cell(cell, label, required=True, strings=None):
     if cell.data_type == 'f':
         raise ValueError(f'{label}: формулы не допускаются')
-    value = strings.get(cell.coordinate, cell.value) if strings is not None else cell.value
+    value = strings.get(getattr(cell, 'coordinate', None), cell.value) if strings is not None else cell.value
     if value is None and not required:
         return ''
     if not isinstance(value, str) or (required and not value.strip()):
@@ -203,12 +203,20 @@ def import_xlsx(content, kind, org_override=None):
             if all(c.value is None for c in row):
                 continue
             try:
-                pn, gtin = text_cell(row[0], 'PN', False, original_strings.get('Товары', {})), text_cell(row[1], 'GTIN', strings=original_strings.get('Товары', {}))
-                if not gtin_checksum_valid(gtin):
+                pn, gtin = text_cell(row[0], 'PN', False, original_strings.get('Товары', {})), text_cell(row[1], 'GTIN', False, strings=original_strings.get('Товары', {}))
+                if gtin and not gtin_checksum_valid(gtin):
                     raise ValueError('GTIN должен содержать 14 цифр с верной контрольной цифрой')
                 if row[-1].data_type == 'f':
                     raise ValueError('Количество: формулы не допускаются')
                 qty = positive_integer(row[-1].value)
+                if not gtin:
+                    if not pn:
+                        raise ValueError('Для позиции без маркировки заполните PN')
+                    if kind == 'receipt' and text_cell(row[2], 'Код маркировки', False, original_strings.get('Товары', {})).strip():
+                        raise ValueError('Указан КМ без GTIN: заполните GTIN или удалите КМ для немаркируемого товара')
+                    # Keep invoice rows separate, including repeated unmarked PN.
+                    lines[f'unmarked:{n}'] = dict(gtin='', pn=pn, pn_source='excel', quantity=qty)
+                    continue
                 if gtin in lines and lines[gtin]['pn'] and pn and lines[gtin]['pn'] != pn:
                     raise ValueError('У одного GTIN указаны разные PN')
                 if kind == 'receipt':
@@ -236,7 +244,7 @@ def import_xlsx(content, kind, org_override=None):
 def export_shipment(doc):
     if doc['kind'] != 'shipment' or doc['status'] != 'completed':
         raise WarehouseError('Выгрузка доступна только после завершения отгрузки', 409)
-    pns = {l['gtin']: l['pn'] for l in doc['lines']}
+    pns = {l['gtin']: l['pn'] for l in doc['lines'] if l['gtin']}
     if any(not v for v in pns.values()):
         raise WarehouseError('Заполните PN для всех позиций перед выгрузкой')
     if any(not s['has_crypto'] for s in doc['scans']):

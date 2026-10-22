@@ -49,6 +49,10 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
               cis TEXT NOT NULL, raw_code TEXT NOT NULL, full_code TEXT NOT NULL,
               gtin TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
               PRIMARY KEY(document_id, cis));
+            CREATE TABLE IF NOT EXISTS warehouse_unmarked_lines (
+              id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              pn TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0));
+            CREATE INDEX IF NOT EXISTS warehouse_unmarked_doc ON warehouse_unmarked_lines(document_id);
             CREATE TABLE IF NOT EXISTS warehouse_scans (
               id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               cis TEXT NOT NULL, raw_code TEXT NOT NULL, full_code TEXT NOT NULL,
@@ -124,6 +128,10 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
                  header['org_inn'], header['org_name'], header.get('recipient_name', ''),
                  header.get('recipient_inn', ''), int(header.get('strict_owner', True)), ts, ts))
             for line in lines:
+                if not line['gtin']:
+                    c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',
+                              (uuid.uuid4().hex, document_id, line['pn'], line['quantity']))
+                    continue
                 c.execute('INSERT INTO warehouse_lines VALUES (?,?,?,?,?)',
                           (document_id, line['gtin'], line['pn'], line['pn_source'], line['quantity']))
             for e in expected:
@@ -137,6 +145,9 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
         self._issue_counts(c, d)
         d['lines'] = [dict(r) for r in c.execute(
             'SELECT gtin,pn,pn_source,quantity FROM warehouse_lines WHERE document_id=? ORDER BY gtin', (document_id,))]
+        d['lines'] += [dict(r) for r in c.execute(
+            "SELECT id AS line_id,'' AS gtin,pn,'excel' AS pn_source,quantity FROM warehouse_unmarked_lines WHERE document_id=? ORDER BY rowid",
+            (document_id,))]
         d['scans'] = [dict(r) for r in c.execute(
             'SELECT * FROM warehouse_scans WHERE document_id=? ORDER BY scanned_at,id', (document_id,))]
         d['expected'] = [dict(r) for r in c.execute(
@@ -167,14 +178,17 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
                     clauses.append(field+'=?'); args.append(value)
             if scan_state != 'all':
                 clauses.append('scan_count=0' if scan_state=='unscanned' else 'scan_count>0')
-            if admin:
-                if query.strip():
+            if query.strip():
+                if admin:
                     clauses.append("instr(casefold(number || ' ' || recipient_name || ' ' || recipient_inn || ' ' || org_name || ' ' || org_inn),?)>0")
-                    args.append(query.strip().casefold())
-                if date_from:
-                    clauses.append('date>=?'); args.append(str(date_from))
-                if date_to:
-                    clauses.append('date<=?'); args.append(str(date_to))
+                else:
+                    clauses.append('instr(casefold(number),?)>0')
+                args.append(query.strip().casefold())
+            if date_from:
+                clauses.append('date>=?'); args.append(str(date_from))
+            if date_to:
+                clauses.append('date<=?'); args.append(str(date_to))
+            if admin:
                 if issue_state != 'all':
                     clauses.append({'open':'open_issues>0','closed':'issue_count>0 AND open_issues=0','none':'issue_count=0'}[issue_state])
             sql = '''SELECT * FROM (SELECT d.*,
