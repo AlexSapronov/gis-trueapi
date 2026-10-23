@@ -14,8 +14,9 @@ from app_settings import RuntimeSettings
 
 
 class WarehouseError(Exception):
-    def __init__(self, message, status=422):
+    def __init__(self, message, status=422, code=None):
         self.message, self.status = message, status
+        self.code = code
         super().__init__(message)
 
 
@@ -237,6 +238,12 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
                                  (document_id, scan['cis'])).fetchone()
             if existing:
                 return {'duplicate': True, 'scan': dict(existing)}
+            if not c.execute('SELECT 1 FROM warehouse_lines WHERE document_id=? AND gtin=?',
+                             (document_id, scan['gtin'])).fetchone():
+                raise WarehouseError(
+                    f"GTIN {scan['gtin']} отсутствует в составе документа. "
+                    'КМ не добавлен. Проверьте товар и продолжайте сканирование.',
+                    code='gtin_not_in_document')
             row = {**scan, 'id': uuid.uuid4().hex, 'scanned_at': now()}
             c.execute('INSERT INTO warehouse_scans VALUES (?,?,?,?,?,?,?,?)',
                       (row['id'], document_id, row['cis'], row['raw_code'], row['full_code'],

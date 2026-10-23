@@ -81,7 +81,10 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @app.exception_handler(WarehouseError)
     async def warehouse_error(request, exc):
         from fastapi.responses import JSONResponse
-        return JSONResponse({'message': exc.message}, status_code=exc.status)
+        body = {'message': exc.message}
+        if exc.code:
+            body['code'] = exc.code
+        return JSONResponse(body, status_code=exc.status)
 
     @router.get('/warehouse', response_class=HTMLResponse)
     async def warehouse_page(request: Request):

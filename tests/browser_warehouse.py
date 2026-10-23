@@ -448,6 +448,15 @@ with sync_playwright() as p:
   admin.locator('#start').click()
   mobile.goto(BASE+'/warehouse?kind='+invoice_kind+'&doc='+invoice_id)
   expect(mobile.locator('#wh-scan')).to_be_enabled()
+  # Reject an unrelated product immediately, without blocking the scan queue.
+  wrong_gtin=code(100,'WRONG').replace(GTIN,'04646063126927')
+  with mobile.expect_response(lambda r:r.url.endswith('/scans') and r.request.method=='POST') as rejected:
+   scan(mobile,wrong_gtin)
+  assert rejected.value.status==422
+  expect(mobile.locator('#scan-feedback')).to_contain_text('GTIN 04646063126927 отсутствует')
+  expect(mobile.locator('#scan-feedback')).to_have_class('wh-bad')
+  expect(mobile.locator('#pending')).to_have_text('')
+  expect(mobile.locator('#doc-count')).to_contain_text('Считано: 0 КМ')
   mobile.locator('#composition-details summary').click()
   expect(mobile.locator('#lines')).not_to_contain_text('BOLT')
   mobile.locator('#show-unmarked').check()

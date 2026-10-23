@@ -218,9 +218,37 @@ def test_sum_quantity_not_number_of_codes(store, svc, quantities, expected, ok):
 def test_extra_gtin_blocks_even_when_planned_quantity_matches(store, svc):
     d = document(store)
     add(store, d)
-    add(store, d, code('INTRODUCEDQ100').replace(GTIN, '04646063126927'))
+    # Keep validating unexpected scans already saved by older application versions.
+    extra = scan_data(code().replace(GTIN, '04646063126927'))
+    with store.connection(True) as c:
+        c.execute('INSERT INTO warehouse_scans VALUES (?,?,?,?,?,?,?,?)',
+                  ('legacy-extra', d['id'], extra['cis'], extra['raw_code'], extra['full_code'],
+                   extra['gtin'], int(extra['has_crypto']), d['updated_at']))
     result = asyncio.run(check_document(store, svc, d['id']))
     assert not result['can_complete']
+
+
+@pytest.mark.parametrize('kind', ['receipt', 'shipment'])
+def test_scan_rejects_unplanned_gtin_without_changing_current_check(clients, store, svc, kind):
+    worker, _ = clients
+    d = document(store, kind)
+    add(store, d)
+    before = asyncio.run(check_document(store, svc, d['id']))
+    with store.connection() as c:
+        events = c.execute('SELECT count(*) FROM warehouse_events').fetchone()[0]
+    response = worker.post('/api/warehouse/documents/' + d['id'] + '/scans',
+                           json={'code': code().replace(GTIN, '04646063126927')})
+    assert response.status_code == 422
+    assert response.json()['code'] == 'gtin_not_in_document'
+    assert '04646063126927' in response.json()['message']
+    assert store.get(d['id']) == before
+    with store.connection() as c:
+        assert c.execute('SELECT count(*) FROM warehouse_events').fetchone()[0] == events
+    # The document remains usable and duplicates retain their existing actions.
+    assert worker.post('/api/warehouse/documents/' + d['id'] + '/scans',
+                       json={'code': code()}).json()['duplicate']
+    assert worker.post('/api/warehouse/documents/' + d['id'] + '/scans',
+                       json={'code': code('NEXT')}).status_code == 200
 
 
 def test_api_failure_blocks_completion(store, svc):
@@ -1026,10 +1054,10 @@ async def test_invoice_without_marked_goods_does_not_invent_scanned_quantity(sto
     d = document(store, kind, rows=rows)
     checked = await check_document(store, svc, d['id'])
     assert checked['can_complete'] and checked['result']['rows'] == []
-    # An unexpected scanned code still fails even when all invoice rows are unmarked.
-    add(store, d)
-    checked = await check_document(store, svc, d['id'])
-    assert not checked['can_complete'] and checked['result']['codes'][0]['errors']
+    # No marked GTINs means no scanned KM can be added.
+    with pytest.raises(WarehouseError, match='отсутствует в составе документа'):
+        add(store, d)
+    assert store.get(d['id']) == checked
 
 
 @pytest.mark.parametrize('kind,rows,reason', [
