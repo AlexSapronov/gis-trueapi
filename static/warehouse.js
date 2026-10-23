@@ -42,7 +42,7 @@
       let d; try { d = await response.json(); } catch (_) { d = {}; }
       if (admin && response.status === 403 && path !== '/api/admin/session') requireLogin();
       const error = new Error(d.message || (typeof d.detail === 'string' ? d.detail : `Ошибка ${response.status}`));
-      error.status = response.status; throw error;
+      error.status = response.status; error.code = d.code; throw error;
     }
     return response;
   }
@@ -380,7 +380,17 @@
     flushing = true; queueError = false; pendingState();
     try {
       while (queue.length && current?.id === documentId && queue === pendingQueue) {
-        const data = await json('/api/warehouse/documents/' + documentId + '/scans', {method:'POST', body:{code:queue[0]}});
+        let data;
+        try {
+          data = await json('/api/warehouse/documents/' + documentId + '/scans', {method:'POST', body:{code:queue[0]}});
+        } catch (e) {
+          if (e.status !== 422 || e.code !== 'gtin_not_in_document') throw e;
+          if (current?.id !== documentId || queue !== pendingQueue) break;
+          // The server explicitly rejected this scan; it must not block later scans.
+          queue.shift(); savePending(); pendingState();
+          message(e.message, true);
+          continue;
+        }
         if (current?.id !== documentId || queue !== pendingQueue) break;
         queue.shift(); savePending(); pendingState();
         if (data.duplicate) {
