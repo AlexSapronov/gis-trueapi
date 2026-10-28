@@ -495,8 +495,8 @@ def test_admin_import_receipt_three_columns_stores_expected_codes(clients, store
     assert receipt['kind'] == 'receipt'
     assert receipt['lines'][0]['gtin'] == GTIN
     assert receipt['lines'][0]['quantity'] == 100
-    assert len(receipt['expected_codes']) == 1
-    assert receipt['expected_codes'][0]['raw_code'] == raw
+    assert len(receipt['expected']) == 1
+    assert receipt['expected'][0]['raw_code'] == raw
 
 
 def test_template_format_and_invalid_file():
