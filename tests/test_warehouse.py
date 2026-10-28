@@ -411,6 +411,94 @@ def test_receipt_gtin_mismatch_and_no_sender_required():
         import_xlsx(workbook('receipt',[['PN','04646063126927',code(),100]]),'receipt')
 
 
+
+def receipt_three_columns(rows, columns=None):
+    metadata = [('Поле', 'Значение'), ('Номер документа', 'Тест/КМ-001'),
+                ('Дата документа', '2026-10-21'), ('ИНН организации', ORG)]
+    return make_xlsx({'Документ': metadata,
+                      'Товары': [columns or ['КМ', 'PN', 'Количество']] + rows})
+
+
+def test_receipt_template_uses_km_pn_quantity_and_text_preservation():
+    book = openpyxl.load_workbook(io.BytesIO(template('receipt')))
+    assert [c.value for c in book['Товары'][1]] == ['КМ', 'PN', 'Количество']
+    assert book['Товары'].column_dimensions['A'].number_format == '@'
+    assert book['Товары'].column_dimensions['B'].number_format == '@'
+
+
+def test_receipt_three_columns_derives_gtin_from_each_km_and_sums_quantities():
+    other_gtin = '04646063126927'
+    raw = code('A')
+    second = code('B')
+    other = code('C').replace(GTIN, other_gtin)
+    header, lines, expected = import_xlsx(
+        receipt_three_columns([[raw, 'PN-1', 10], [second, 'PN-1', 20],
+                               [other, 'PN-2', 7]]), 'receipt')
+    assert header['kind'] == 'receipt'
+    assert lines == [
+        {'gtin': GTIN, 'pn': 'PN-1', 'pn_source': 'excel', 'quantity': 30},
+        {'gtin': other_gtin, 'pn': 'PN-2', 'pn_source': 'excel', 'quantity': 7},
+    ]
+    assert [item['gtin'] for item in expected] == [GTIN, GTIN, other_gtin]
+    assert [item['quantity'] for item in expected] == [10, 20, 7]
+    assert [item['raw_code'] for item in expected] == [raw, second, other]
+
+
+def test_receipt_three_columns_allows_alias_headers_and_unmarked_rows():
+    raw = code('R1')
+    content = receipt_three_columns(
+        [[raw, '', 100], [None, 'BOLT-1', 7], [None, 'BOLT-1', 8]],
+        columns=['Код маркировки', 'PN', 'Кол-во'])
+    _, lines, expected = import_xlsx(content, 'receipt')
+    assert expected[0]['gtin'] == GTIN
+    assert len(expected) == 1
+    assert lines == [
+        {'gtin': GTIN, 'pn': '', 'pn_source': '', 'quantity': 100},
+        {'gtin': '', 'pn': 'BOLT-1', 'pn_source': 'excel', 'quantity': 7},
+        {'gtin': '', 'pn': 'BOLT-1', 'pn_source': 'excel', 'quantity': 8},
+    ]
+
+
+@pytest.mark.parametrize('rows,contains', [
+    ([[code('A'), 'PN', 1], [']d2' + code('A'), 'PN', 1]], 'строка 3.*Дубликат'),
+    ([[code('A'), 'PN-1', 1], [code('B'), 'PN-2', 1]], 'строка 3.*разные PN'),
+    ([[code('A').replace(GTIN, '04640638345219'), 'PN', 1]], 'строка 2.*контрольн'),
+    ([['not-a-datamatrix', 'PN', 1]], 'строка 2.*структур'),
+    ([[' ', 'PN', 1]], 'строка 2.*Пустой код'),
+    ([[None, None, 1]], 'строка 2.*PN'),
+    ([[code('A'), 'PN', 0]], 'строка 2.*Количество'),
+    ([[123456789, 'PN', 1]], 'строка 2.*текстовую'),
+])
+def test_receipt_three_column_validation_keeps_row_context(rows, contains):
+    with pytest.raises(WarehouseError, match=contains):
+        import_xlsx(receipt_three_columns(rows), 'receipt')
+
+
+def test_receipt_three_column_rejects_formula_km():
+    book = openpyxl.load_workbook(io.BytesIO(receipt_three_columns([[code('A'), 'PN', 1]])))
+    book['Товары']['A2'] = '=CONCAT("01", "x")'
+    out = io.BytesIO()
+    book.save(out)
+    with pytest.raises(WarehouseError, match='строка 2.*формулы'):
+        import_xlsx(out.getvalue(), 'receipt')
+
+
+def test_admin_import_receipt_three_columns_stores_expected_codes(clients, store):
+    a, _ = clients
+    raw = code('FROMEXCEL')
+    response = a.post('/api/admin/warehouse/documents',
+                      headers={'X-Admin-Key': 'test-admin'},
+                      data={'kind': 'receipt'},
+                      files={'file': ('receipt.xlsx', receipt_three_columns([[raw, 'PN', 100]]))})
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt['kind'] == 'receipt'
+    assert receipt['lines'][0]['gtin'] == GTIN
+    assert receipt['lines'][0]['quantity'] == 100
+    assert len(receipt['expected_codes']) == 1
+    assert receipt['expected_codes'][0]['raw_code'] == raw
+
+
 def test_template_format_and_invalid_file():
     for kind in ('shipment','receipt'):
         book = openpyxl.load_workbook(io.BytesIO(template(kind)))
