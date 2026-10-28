@@ -38,8 +38,8 @@
 </form><p id="token-result" role="status" aria-live="polite"></p>
 </section>
 <details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
-<p>Заполните листы «Документ» и «Товары» стандартного шаблона. GTIN, ИНН и КМ указывайте как текст.</p>
-<p>Можно загрузить полный состав накладной. Для товара без маркировки оставьте GTIN и КМ пустыми, заполните PN и количество (в приёмке — столбец «Количество в КМ»). Такие позиции показываются справочно и не проверяются по КМ.</p>
+<p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
+<p id="import-unmarked-hint">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
 <button type="button" id="template" class="btn">Скачать шаблон</button>
 <form id="import-form"><label>Наша организация <select id="import-org"><option value="">Из файла</option></select></label>
 <label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label><button class="btn primary">Загрузить документ</button></form>
