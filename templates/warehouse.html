@@ -42,6 +42,9 @@
 <p id="import-unmarked-hint">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
 <button type="button" id="template" class="btn">Скачать шаблон</button>
 <form id="import-form"><label>Наша организация <select id="import-org"><option value="">Из файла</option></select></label>
+<div id="import-datamatrix-meta" hidden><p class="wh-muted">Для однолистного файла DataMatrix без реквизитов укажите номер и дату накладной здесь и выберите организацию. Для стандартных шаблонов поля не нужны.</p>
+<label>Номер накладной <input id="import-number" type="text" maxlength="300" autocomplete="off" placeholder="Для файла DataMatrix"></label>
+<label>Дата накладной <input id="import-date" type="date"></label></div>
 <label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label><button class="btn primary">Загрузить документ</button></form>
 </details>
 {% endif %}
