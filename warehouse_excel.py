@@ -110,6 +110,35 @@ def text_cell(cell, label, required=True, strings=None):
     return value.strip() if label != 'Код маркировки' else value
 
 
+def shipment_gtin_cell(cell, strings=None):
+    """Read Excel text/numeric GTIN and normalize GTIN-13 to canonical GTIN-14.
+
+    Excel drops a leading zero from numeric cells. Restore it for 13-digit
+    values, but never guess missing digits or alter a supplied 14-digit GTIN.
+    """
+    if cell.data_type == 'f':
+        raise ValueError('GTIN: формулы не допускаются')
+    value = strings.get(getattr(cell, 'coordinate', None), cell.value) if strings is not None else cell.value
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        digits = value.strip()
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError('GTIN должен быть целым числом без дробной части')
+        digits = str(int(value))
+    else:
+        raise ValueError('GTIN должен содержать 13 или 14 цифр (текст или число Excel)')
+    if not digits:
+        return ''
+    if not re.fullmatch(r'[0-9]{13,14}', digits):
+        raise ValueError('GTIN должен содержать 13 или 14 цифр (текст или число Excel)')
+    gtin = digits.zfill(14)
+    if not gtin_checksum_valid(gtin):
+        raise ValueError('GTIN: ошибка контрольной цифры')
+    return gtin
+
+
 def make_xlsx(sheets):
     stream = io.BytesIO()
     book = xlsxwriter.Workbook(stream, {'in_memory': True, 'strings_to_formulas': False, 'strings_to_urls': False})
@@ -225,9 +254,12 @@ def import_xlsx(content, kind, org_override=None):
                     gtin = code['gtin'] if code else ''
                 else:
                     pn = text_cell(row[0], 'PN', False, strings)
-                    gtin = text_cell(row[1], 'GTIN', False, strings)
-                    if gtin and not gtin_checksum_valid(gtin):
-                        raise ValueError('GTIN должен содержать 14 цифр с верной контрольной цифрой')
+                    if kind == 'shipment':
+                        gtin = shipment_gtin_cell(row[1], strings)
+                    else:
+                        gtin = text_cell(row[1], 'GTIN', False, strings)
+                        if gtin and not gtin_checksum_valid(gtin):
+                            raise ValueError('GTIN должен содержать 14 цифр с верной контрольной цифрой')
                     code = (scan_data(text_cell(row[2], 'Код маркировки', strings=strings))
                             if legacy_receipt and gtin else None)
                 if row[-1].data_type == 'f':

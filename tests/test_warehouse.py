@@ -386,12 +386,74 @@ def test_resolve_only_documented_model_and_never_product_name(svc):
 
 @pytest.mark.parametrize('rows,contains', [
     ([['PN',GTIN,0]],'Количество'),([['PN',GTIN,1.2]],'Количество'),
-    ([['PN',int(GTIN),100]],'Текст'),([['PN','04640638345219',100]],'контрольной'),
+    ([['PN','04640638345219',100]],'контрольной'),
     ([['PN',GTIN,100],['OTHER',GTIN,100]],'разные PN'),
 ])
 def test_import_row_errors(rows, contains):
     with pytest.raises(WarehouseError, match=contains):
         import_xlsx(workbook(rows=rows),'shipment')
+
+
+@pytest.mark.parametrize('value', [
+    GTIN,                  # existing 14-digit text with its leading zero
+    GTIN[1:],              # 13-digit text without the leading zero
+    int(GTIN),             # number from Excel after the leading zero was lost
+    float(int(GTIN)),      # numeric Excel cells may be exposed as floats
+])
+def test_shipment_gtin_restores_leading_zero_from_text_or_number(value):
+    _, lines, expected = import_xlsx(workbook(rows=[['PN-1', value, 100]]), 'shipment')
+    assert lines == [dict(gtin=GTIN, pn='PN-1', pn_source='excel', quantity=100)]
+    assert expected == []
+
+
+@pytest.mark.parametrize('value', ['12345678901231', 12345678901231])
+def test_shipment_gtin_without_leading_zero_is_preserved(value):
+    _, lines, _ = import_xlsx(workbook(rows=[['PN-14', value, 25]]), 'shipment')
+    assert lines[0]['gtin'] == '12345678901231'
+
+
+def test_shipment_mixed_numeric_and_text_gtins_merge_to_same_product():
+    _, lines, _ = import_xlsx(workbook(rows=[
+        ['PN-1', GTIN, 3],
+        ['PN-1', int(GTIN), 5],
+        ['PN-1', GTIN[1:], 7],
+        ['PN-2', 12345678901231, 11],
+    ]), 'shipment')
+    assert lines == [
+        dict(gtin=GTIN, pn='PN-1', pn_source='excel', quantity=15),
+        dict(gtin='12345678901231', pn='PN-2', pn_source='excel', quantity=11),
+    ]
+
+
+@pytest.mark.parametrize('value,reason', [
+    (123456789012, '13 или 14'),
+    ('123456789012', '13 или 14'),
+    ('123456789012345', '13 или 14'),
+    (123456789012345, '13 или 14'),
+    ('4.640638345218E12', '13 или 14'),
+    ('04640638345219', 'контрольной'),
+    (4640638345219, 'контрольной'),
+    (123.5, 'целым числом'),
+    (True, '13 или 14'),
+    ('not-a-GTIN', '13 или 14'),
+])
+def test_shipment_rejects_invalid_gtins_with_row_number(value, reason):
+    with pytest.raises(WarehouseError, match='строка 2.*' + reason):
+        import_xlsx(workbook(rows=[['PN-1', value, 1]]), 'shipment')
+
+
+def test_shipment_formula_in_gtin_cell_is_rejected():
+    book = openpyxl.load_workbook(io.BytesIO(workbook()))
+    book['Товары']['B2'] = '=4640638345218'
+    out = io.BytesIO()
+    book.save(out)
+    with pytest.raises(WarehouseError, match='строка 2.*формулы'):
+        import_xlsx(out.getvalue(), 'shipment')
+
+
+def test_legacy_receipt_gtin_still_requires_exact_text():
+    with pytest.raises(WarehouseError, match='строка 2.*текстовую'):
+        import_xlsx(workbook('receipt', [['PN', int(GTIN), code(), 100]]), 'receipt')
 
 
 def test_repeated_gtin_rows_merged():
