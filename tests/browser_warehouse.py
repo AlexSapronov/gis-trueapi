@@ -261,7 +261,7 @@ with sync_playwright() as p:
  admin.screenshot(path=str(TEST_DIR / 'admin-list.png'),full_page=True)
  # Receipt: a separate browser resumes a previously started operation.
  receipt=str(TEST_DIR / 'receipt.xlsx')
- open(receipt,'wb').write(make_xlsx({'Документ':header[:4],'Товары':[['PN','GTIN','Код маркировки','Количество в КМ'],['PN',GTIN,code(100,'R'),100]]}))
+ open(receipt,'wb').write(make_xlsx({'Документ':header[:4],'Товары':[['КМ','PN','Количество'],[code(100,'R'),'PN',100]]}))
  admin.locator('[data-kind=receipt]').click();admin.locator('#import-box summary').click() if not admin.locator('#import-box').evaluate('(el)=>el.open') else None
  admin.locator('#import-file').set_input_files(receipt);admin.locator('#import-form button').click()
  expect(admin.locator('#doc-title')).to_contain_text('Приёмка')
