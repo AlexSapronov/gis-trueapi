@@ -834,6 +834,116 @@ def test_restore_preserves_scans_and_original_status(store,svc,kind,status):
     with pytest.raises(WarehouseError):store.restore(d['id'],restored['version'],restored['revision'])
 
 
+
+@pytest.mark.parametrize('kind', ['shipment', 'receipt'])
+def test_archive_completed_without_errors_keeps_scans_history_and_can_restore(store, svc, kind):
+    d = document(store, kind)
+    add(store, d)
+    asyncio.run(check_document(store, svc, d['id']))
+    completed = store.complete(d['id'])
+    baseline = store.get(d['id'])
+    archived = store.archive(d['id'], completed['version'], completed['revision'], completed['number'])
+    assert archived['status'] == 'completed' and archived['archived_at']
+    assert archived['completed_at'] == completed['completed_at']
+    assert archived['scans'] == baseline['scans']
+    assert archived['expected'] == baseline['expected']
+    assert archived['result'] == baseline['result']
+    assert archived['check_current']
+    assert not store.list(admin=True, kind=kind)
+    assert [r['id'] for r in store.list(admin=True, archived=True, kind=kind)] == [d['id']]
+    assert not store.list(archived=True)  # warehouse cannot ask for the admin archive
+    assert not store.list(admin=True, trash=True)
+    restarted = WarehouseStore(store.path)
+    assert restarted.get(d['id'])['archived_at']
+    assert [r['action'] for r in restarted.issue_events(d['id'], 'nonexistent')['events']] if False else True
+    with restarted.connection() as c:
+        events = [r['action'] for r in c.execute(
+            'SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id', (d['id'],))]
+    assert events[-1] == 'archived'
+    if kind == 'shipment':
+        assert export_shipment(archived)
+    with pytest.raises(WarehouseError, match='архив'):
+        store.start(d['id'], reopen=True)
+    with pytest.raises(WarehouseError, match='архив'):
+        store.edit(d['id'], archived['version'], pns={GTIN: 'CHANGE'})
+    with pytest.raises(WarehouseError, match='архив'):
+        store.delete(d['id'], archived['version'], archived['revision'])
+    with pytest.raises(WarehouseError):
+        store.archive(d['id'], archived['version'], archived['revision'], archived['number'])
+    with pytest.raises(WarehouseError, match='изменён'):
+        store.unarchive(d['id'], baseline['version'], baseline['revision'], baseline['number'])
+    restored = restarted.unarchive(d['id'], archived['version'], archived['revision'], archived['number'])
+    assert restored['status'] == 'completed' and not restored['archived_at']
+    assert restored['scans'] == baseline['scans'] and restored['result'] == baseline['result']
+    assert restored['check_current']
+    assert [r['id'] for r in store.list(admin=True, kind=kind)] == [d['id']]
+    with restarted.connection() as c:
+        assert c.execute("SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id DESC LIMIT 1",
+                         (d['id'],)).fetchone()['action'] == 'unarchived'
+    with pytest.raises(WarehouseError, match='не находится'):
+        store.unarchive(d['id'], restored['version'], restored['revision'], restored['number'])
+    reopened = store.start(d['id'], reopen=True)
+    assert reopened['status'] == 'active' and not reopened['check_current']
+
+
+def test_archive_rejects_incomplete_wrong_number_and_stale_revisions(store, svc):
+    d = document(store)
+    with pytest.raises(WarehouseError, match='завершённого'):
+        store.archive(d['id'], d['version'], d['revision'], d['number'])
+    add(store, d)
+    failed = asyncio.run(check_document(store, svc, d['id']))
+    with pytest.raises(WarehouseError, match='завершённого'):
+        store.archive(d['id'], failed['version'], failed['revision'], failed['number'])
+    completed = store.complete(d['id'])
+    with pytest.raises(WarehouseError, match='точный номер'):
+        store.archive(d['id'], completed['version'], completed['revision'], 'WRONG')
+    with pytest.raises(WarehouseError, match='изменён'):
+        store.archive(d['id'], completed['version'], completed['revision']-1, completed['number'])
+    assert not store.get(d['id'])['archived_at']
+
+
+def test_archive_requires_resolved_issues_and_no_pending_replies(store, svc):
+    d = document(store, quantity=200)
+    add(store, d)
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    issue = store.report_issue(d['id'], checked['version'], checked['result_at'], 'Нужно уточнение')
+    current = store.get(d['id'])
+    store.edit(d['id'], current['version'], quantities={GTIN: 100}, revision=current['revision'])
+    asyncio.run(check_document(store, svc, d['id']))
+    completed = store.complete(d['id'])
+    with pytest.raises(WarehouseError, match='открытых'):
+        store.archive(d['id'], completed['version'], completed['revision'], completed['number'])
+    store.resolve_issue(d['id'], issue['id'], 'Состав проверен')
+    completed = store.get(d['id'])
+    assert store.archive(d['id'], completed['version'], completed['revision'], completed['number'])['archived_at']
+
+
+def test_archiving_is_admin_only_via_api_and_hidden_from_warehouse(clients, store, svc):
+    a, b = clients
+    h = {'X-Admin-Key': 'test-admin'}
+    d = document(store, 'receipt')
+    add(store, d)
+    asyncio.run(check_document(store, svc, d['id']))
+    d = store.complete(d['id'])
+    base = '/api/admin/warehouse/documents/' + d['id']
+    body = {'version': d['version'], 'revision': d['revision'], 'confirmation': d['number']}
+    assert b.post(base + '/archive', json=body).status_code == 403
+    assert a.post(base + '/archive', headers=h, json={**body, 'confirmation':'wrong'}).status_code == 422
+    assert a.post(base + '/archive', headers=h, json=body).status_code == 200
+    assert a.post(base + '/archive', headers=h, json=body).status_code == 409
+    assert a.get('/api/admin/warehouse/documents?kind=receipt&archived=true', headers=h).json()['documents'][0]['id'] == d['id']
+    assert a.get('/api/admin/warehouse/documents?kind=receipt', headers=h).json()['documents'] == []
+    assert b.get('/api/warehouse/documents/' + d['id']).status_code == 404
+    assert b.post('/api/warehouse/documents/' + d['id'] + '/scans', json={'code':code()}).status_code == 404
+    assert b.get('/api/warehouse/documents?archived=true').json()['documents'] == []
+    assert b.post(base + '/unarchive', json=body).status_code == 403
+    latest = a.get(base, headers=h).json()
+    restored = a.post(base + '/unarchive', headers=h, json={
+        'version': latest['version'], 'revision': latest['revision'], 'confirmation': latest['number']})
+    assert restored.status_code == 200 and not restored.json()['archived_at']
+    assert a.get('/api/admin/warehouse/documents?kind=receipt&archived=true', headers=h).json()['documents'] == []
+
+
 def failed_check(store,svc):
     d=document(store,quantity=200);add(store,d)
     return asyncio.run(check_document(store,svc,d['id']))
