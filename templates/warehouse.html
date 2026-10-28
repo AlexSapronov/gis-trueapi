@@ -58,7 +58,7 @@
 <label>Дата с <input id="filter-from" type="date"></label><label>Дата по <input id="filter-to" type="date"></label>
 {% if admin %}
 <label>Обращения склада <select id="filter-issues"><option value="all">Все</option><option value="open">Проблемные</option><option value="closed">Разобраны</option><option value="none">Без обращений</option></select></label>
-<label>Раздел <select id="filter-trash"><option value="false">Документы</option><option value="true">Корзина</option></select></label>
+<label>Раздел <select id="filter-trash"><option value="false">Документы</option><option value="archive">Архив</option><option value="true">Корзина</option></select></label>
 {% endif %}
 <button class="btn" type="reset">Сбросить фильтры</button><span id="filter-count" role="status"></span>
 </form>
@@ -72,7 +72,7 @@
 <div id="warehouse-replies" class="wh-replies" aria-live="polite"></div>
 <p id="issue-state" class="wh-stale" role="status"></p>
 {% if admin %}
-<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="delete-document" class="btn wh-danger">Удалить документ</button><button id="restore-document" class="btn primary" hidden>Восстановить из корзины</button><button id="show-issues" class="btn" hidden>Разобрать обращения</button></div>
+<div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="archive-document" class="btn">В архив</button><button id="unarchive-document" class="btn primary" hidden>Вернуть из архива</button><button id="delete-document" class="btn wh-danger">Удалить документ</button><button id="restore-document" class="btn primary" hidden>Восстановить из корзины</button><button id="show-issues" class="btn" hidden>Разобрать обращения</button></div>
 <details id="doc-settings" class="wh-settings"><summary>Реквизиты, PN и план документа</summary><form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><div id="pn-fields"></div><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form></details>
 {% endif %}
 {% if not admin %}
@@ -93,6 +93,10 @@
 </div>
 </main>
 {% if admin %}
+<dialog id="archive-dialog"><h2 id="archive-title">Отправить накладную в архив?</h2><p id="archive-description"></p>
+<p>Архив сохраняет КМ, результаты проверки и историю. Накладная исчезнет из обычного реестра, а все изменения будут запрещены до возврата администратором.</p>
+<form id="archive-form"><label>Для подтверждения введите номер накладной <input id="archive-number" type="text" autocomplete="off" required></label>
+<div class="wh-toolbar"><button class="btn primary" id="archive-confirm" disabled>Подтвердить</button><button class="btn" id="archive-cancel" type="button">Отмена</button></div></form></dialog>
 <dialog id="delete-dialog"><h2>Удалить документ?</h2><p id="delete-description"></p>
 <p>Документ исчезнет из списков администратора и склада. Работа по нему будет заблокирована. История останется сохранённой.</p>
 <form id="delete-form"><label>Для подтверждения введите номер документа <input id="delete-number" type="text" autocomplete="off" required></label>
