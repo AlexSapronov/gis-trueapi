@@ -182,6 +182,7 @@
     $('import-format-hint').textContent = kind === 'receipt'
       ? 'Приёмка: лист «Товары» содержит КМ / PN / Количество. GTIN автоматически извлекается из КМ. КМ, PN и ИНН на листе «Документ» храните как текст.'
       : 'Отгрузка: лист «Товары» содержит PN / GTIN / Количество. GTIN можно указать текстом или числом Excel: для 13 цифр добавится ведущий 0, 14 цифр сохранятся. ИНН храните как текст.';
+    $('import-datamatrix-meta').hidden = kind !== 'receipt';
     $('import-unmarked-hint').textContent = kind === 'receipt'
       ? 'Для товара без маркировки оставьте КМ пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.'
       : 'Для товара без маркировки оставьте GTIN пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.';
@@ -636,9 +637,14 @@
     $('template').onclick = () => action(() => download(apiBase + '/templates/' + kind, 'template.xlsx'));
     $('import-form').onsubmit = e => { e.preventDefault(); action(async () => {
       if (!$('import-file').files[0]) return;
-      const form = new FormData(); form.set('kind', kind); form.set('org_inn', $('import-org').value); form.set('file', $('import-file').files[0]);
+      const form = new FormData(); form.set('kind', kind); form.set('org_inn', $('import-org').value);
+      if (kind === 'receipt') {
+        form.set('document_number', $('import-number').value.trim());
+        form.set('document_date', $('import-date').value);
+      }
+      form.set('file', $('import-file').files[0]);
       const d = await json(apiBase + '/documents', {method:'POST',body:form});
-      $('import-box').open=false; $('import-file').value='';
+      $('import-box').open=false; $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
       await open(d.id); message((d.import_warnings || []).join('\n') || 'Документ загружен');
     }); };
     $('start').onclick = () => action(async () => { await json(apiBase + '/documents/' + current.id + '/start', {method:'POST'}); await refresh(); });
