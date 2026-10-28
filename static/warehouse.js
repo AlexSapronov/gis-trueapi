@@ -174,6 +174,12 @@
     $('list-title').textContent=(admin && $('filter-trash').value==='true' ? 'Корзина · ' : '') + (kind==='shipment' ? 'Отгрузки' : 'Приёмки');
     document.querySelectorAll('[data-mode]').forEach(a=>{a.classList.toggle('current',a.dataset.mode===(admin?'admin':kind));if(a.classList.contains('current'))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     if (!admin) return;
+    $('import-format-hint').textContent = kind === 'receipt'
+      ? 'Приёмка: лист «Товары» содержит КМ / PN / Количество. GTIN автоматически извлекается из КМ. КМ, PN и ИНН на листе «Документ» храните как текст.'
+      : 'Отгрузка: лист «Товары» содержит PN / GTIN / Количество. GTIN и ИНН храните как текст.';
+    $('import-unmarked-hint').textContent = kind === 'receipt'
+      ? 'Для товара без маркировки оставьте КМ пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.'
+      : 'Для товара без маркировки оставьте GTIN пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.';
     const token = section === 'token', settings = section === 'settings', other = token || settings;
     $('application-settings').hidden = !settings;
     $('settings-tab').classList.toggle('primary', settings);

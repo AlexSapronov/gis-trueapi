@@ -122,6 +122,10 @@ def make_xlsx(sheets):
         ws.set_column(1, 1, 24, text)
         ws.set_column(2, 2, 75, text)
         ws.set_column(3, 3, 22, text)
+        if name == 'Товары' and rows and rows[0][0] == 'КМ':
+            ws.set_column(0, 0, 75, text)
+            ws.set_column(1, 1, 28, text)
+            ws.set_column(2, 2, 22, text)
         for r, row in enumerate(rows):
             for col, value in enumerate(row):
                 fmt = head if r == 0 else text
@@ -142,7 +146,7 @@ def template(kind, default_org=''):
               ('ИНН организации', default_org)]
     if kind == 'shipment':
         header += [('Получатель', ''), ('ИНН получателя', '')]
-    columns = ['PN', 'GTIN', 'Количество'] if kind == 'shipment' else ['PN', 'GTIN', 'Код маркировки', 'Количество в КМ']
+    columns = ['PN', 'GTIN', 'Количество'] if kind == 'shipment' else ['КМ', 'PN', 'Количество']
     return make_xlsx({'Документ': header, 'Товары': [columns]})
 
 
@@ -192,27 +196,47 @@ def import_xlsx(content, kind, org_override=None):
                       org_inn=inn, org_name=org.name, recipient_name=meta.get('Получатель', ''),
                       recipient_inn=meta.get('ИНН получателя', ''))
         ws = book['Товары']
-        columns = ['PN', 'GTIN', 'Количество'] if kind == 'shipment' else ['PN', 'GTIN', 'Код маркировки', 'Количество в КМ']
-        first = next(ws.iter_rows(min_row=1, max_row=1, max_col=len(columns)))
-        if [c.value for c in first] != columns:
-            raise WarehouseError('Товары, строка 1: ожидаются столбцы ' + ' / '.join(columns))
+        shipment_columns = ['PN', 'GTIN', 'Количество']
+        legacy_receipt_columns = ['PN', 'GTIN', 'Код маркировки', 'Количество в КМ']
+        first = next(ws.iter_rows(min_row=1, max_row=1, max_col=4 if kind == 'receipt' else 3))
+        headers = [c.value for c in first]
+        legacy_receipt = kind == 'receipt' and headers == legacy_receipt_columns
+        modern_receipt = (kind == 'receipt' and headers[0] in ('КМ', 'Код маркировки')
+                          and headers[1] == 'PN' and headers[2] in ('Количество', 'Кол-во')
+                          and headers[3] is None)
+        if kind == 'shipment':
+            if headers != shipment_columns:
+                raise WarehouseError('Товары, строка 1: ожидаются столбцы ' + ' / '.join(shipment_columns))
+        elif not (legacy_receipt or modern_receipt):
+            raise WarehouseError('Товары, строка 1: ожидаются столбцы КМ / PN / Количество')
+        columns_count = 4 if legacy_receipt else 3
+        strings = original_strings.get('Товары', {})
         lines, expected, seen = {}, [], set()
-        for n, row in enumerate(ws.iter_rows(min_row=2, max_col=len(columns)), 2):
+        for n, row in enumerate(ws.iter_rows(min_row=2, max_col=columns_count), 2):
             if n > MAX_ROWS + 1:
                 raise WarehouseError('В файле больше 50000 строк')
             if all(c.value is None for c in row):
                 continue
             try:
-                pn, gtin = text_cell(row[0], 'PN', False, original_strings.get('Товары', {})), text_cell(row[1], 'GTIN', False, strings=original_strings.get('Товары', {}))
-                if gtin and not gtin_checksum_valid(gtin):
-                    raise ValueError('GTIN должен содержать 14 цифр с верной контрольной цифрой')
+                if kind == 'receipt' and modern_receipt:
+                    raw_code = text_cell(row[0], 'Код маркировки', False, strings)
+                    pn = text_cell(row[1], 'PN', False, strings)
+                    code = scan_data(raw_code) if raw_code else None
+                    gtin = code['gtin'] if code else ''
+                else:
+                    pn = text_cell(row[0], 'PN', False, strings)
+                    gtin = text_cell(row[1], 'GTIN', False, strings)
+                    if gtin and not gtin_checksum_valid(gtin):
+                        raise ValueError('GTIN должен содержать 14 цифр с верной контрольной цифрой')
+                    code = (scan_data(text_cell(row[2], 'Код маркировки', strings=strings))
+                            if legacy_receipt and gtin else None)
                 if row[-1].data_type == 'f':
                     raise ValueError('Количество: формулы не допускаются')
                 qty = positive_integer(row[-1].value)
                 if not gtin:
                     if not pn:
                         raise ValueError('Для позиции без маркировки заполните PN')
-                    if kind == 'receipt' and text_cell(row[2], 'Код маркировки', False, original_strings.get('Товары', {})).strip():
+                    if legacy_receipt and text_cell(row[2], 'Код маркировки', False, strings).strip():
                         raise ValueError('Указан КМ без GTIN: заполните GTIN или удалите КМ для немаркируемого товара')
                     # Keep invoice rows separate, including repeated unmarked PN.
                     lines[f'unmarked:{n}'] = dict(gtin='', pn=pn, pn_source='excel', quantity=qty)
@@ -220,7 +244,6 @@ def import_xlsx(content, kind, org_override=None):
                 if gtin in lines and lines[gtin]['pn'] and pn and lines[gtin]['pn'] != pn:
                     raise ValueError('У одного GTIN указаны разные PN')
                 if kind == 'receipt':
-                    code = scan_data(text_cell(row[2], 'Код маркировки', strings=original_strings.get('Товары', {})))
                     if code['gtin'] != gtin:
                         raise ValueError('GTIN не соответствует коду маркировки')
                     if code['cis'] in seen:
