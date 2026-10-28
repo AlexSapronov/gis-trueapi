@@ -180,9 +180,11 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     @admin.post('/documents')
     async def create_document(kind: str = Form(...), org_inn: str = Form(''),
+                              document_number: str = Form(''), document_date: str = Form(''),
                               file: UploadFile = File(...)):
         content = await file.read(MAX_FILE_SIZE + 1)
-        header, lines, expected = await asyncio.to_thread(import_xlsx, content, kind, org_inn or None)
+        header, lines, expected = await asyncio.to_thread(
+            import_xlsx, content, kind, org_inn or None, document_number or None, document_date or None)
         warnings = []
         values = store_getter().application_settings()['values']
         if kind == 'shipment' and values['auto_pn']:
