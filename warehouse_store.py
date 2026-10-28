@@ -39,7 +39,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
               version INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
               check_id TEXT, check_until REAL, result TEXT,
-              result_version INTEGER, result_at TEXT, deleted_at TEXT);
+              result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT);
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -80,8 +80,11 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
             ''')
             if 'revision' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
-            if 'deleted_at' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
+            columns = {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}
+            if 'deleted_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
+            if 'archived_at' not in columns:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
             self.init_settings(c)
         c.close()
 
@@ -110,6 +113,8 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
 
     @staticmethod
     def _active(d):
+        if d['archived_at']:
+            raise WarehouseError('Документ находится в архиве', 409)
         if d['status'] != 'active':
             raise WarehouseError('Документ не запущен или уже завершён', 409)
 
@@ -157,7 +162,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
         d['runtime_settings'] = self._settings(c)
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
         d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
-        d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['checking'] and
+        d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['archived_at'] and not d['checking'] and
                              d['check_current'] and d['result']['ok'])
         d.pop('check_id', None)
         d.pop('check_until', None)
@@ -168,10 +173,16 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
             return self._snapshot(c, document_id, include_deleted)
 
     def list(self, admin=False, kind=None, org_inn=None, scan_state='all', status=None,
-             query='', date_from=None, date_to=None, issue_state='all', trash=False):
+             query='', date_from=None, date_to=None, issue_state='all', trash=False, archived=False):
         with self.connection() as c:
             c.create_function('casefold', 1, lambda value: (value or '').casefold(), deterministic=True)
-            clauses, args = ['deleted_at IS NOT NULL' if admin and trash else 'deleted_at IS NULL'], []
+            if admin and trash:
+                section = 'deleted_at IS NOT NULL'
+            elif admin and archived:
+                section = 'deleted_at IS NULL AND archived_at IS NOT NULL'
+            else:
+                section = 'deleted_at IS NULL AND archived_at IS NULL'
+            clauses, args = [section], []
             if not admin:
                 clauses.append("status = 'active'")
             for field, value in [('kind',kind),('org_inn',org_inn),('status',status)]:
@@ -212,6 +223,8 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
         """Remove from active use, retaining the document and audit data in SQLite."""
         with self.connection(True) as c:
             d = self._doc(c, document_id)
+            if d['archived_at']:
+                raise WarehouseError('Сначала верните документ из архива', 409)
             if d['version'] != version or d['revision'] != revision:
                 raise WarehouseError('Документ изменён другим сотрудником. Обновите карточку и повторите удаление.', 409)
             if d['check_id'] and (d['check_until'] or 0) > time.time():
@@ -223,6 +236,8 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
     def start(self, document_id, reopen=False):
         with self.connection(True) as c:
             d = self._doc(c, document_id)
+            if d['archived_at']:
+                raise WarehouseError('Сначала верните документ из архива', 409)
             if d['status'] != ('completed' if reopen else 'draft'):
                 raise WarehouseError('Недопустимый переход статуса', 409)
             c.execute('''UPDATE warehouse_documents SET status='active',started_at=?,
@@ -267,6 +282,8 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
     def edit(self, document_id, version, strict_owner=None, pns=None, quantities=None, revision=None):
         with self.connection(True) as c:
             d = self._doc(c, document_id)
+            if d['archived_at']:
+                raise WarehouseError('Сначала верните документ из архива', 409)
             if d['version'] != version or (revision is not None and d['revision'] != revision):
                 raise WarehouseError('Документ изменён другим сотрудником. Обновите карточку.', 409)
             # PN may be supplied before export even after completion. It does not affect reconciliation.
@@ -325,6 +342,9 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
 
     def fill_pns(self, document_id, pns):
         with self.connection(True) as c:
+            d = self._doc(c, document_id)
+            if d['archived_at']:
+                raise WarehouseError('Документ находится в архиве', 409)
             changed = 0
             for gtin, pn in pns.items():
                 changed += c.execute("UPDATE warehouse_lines SET pn=?,pn_source='trueapi' WHERE document_id=? AND gtin=? AND pn=''",
@@ -340,4 +360,43 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
             c.execute("UPDATE warehouse_documents SET status='completed',revision=revision+1,completed_at=?,updated_at=? WHERE id=?",
                       (now(), now(), document_id))
             self._event(c, document_id, 'completed')
+        return self.get(document_id)
+
+    def archive(self, document_id, version, revision, confirmation):
+        """Archive a completed, error-free document without external GIS MT changes."""
+        with self.connection(True) as c:
+            d = self._snapshot(c, document_id)
+            if confirmation != d['number']:
+                raise WarehouseError('Для подтверждения введите точный номер накладной')
+            if d['version'] != version or d['revision'] != revision:
+                raise WarehouseError('Документ изменён. Обновите карточку.', 409)
+            if d['archived_at']:
+                raise WarehouseError('Документ уже находится в архиве', 409)
+            result = d['result']
+            if (d['status'] != 'completed' or not d['check_current'] or d['checking']
+                    or not result or not result.get('ok')
+                    or result.get('missing')
+                    or any(code.get('errors') for code in result.get('codes', []))
+                    or d['open_issues'] or d['pending_returns']):
+                raise WarehouseError('Архив доступен только для завершённого документа без расхождений и открытых обращений', 409)
+            ts = now()
+            c.execute('''UPDATE warehouse_documents SET archived_at=?, revision=revision+1,
+                         updated_at=? WHERE id=?''', (ts, ts, document_id))
+            self._event(c, document_id, 'archived', actor='admin')
+        return self.get(document_id)
+
+    def unarchive(self, document_id, version, revision, confirmation):
+        """Restore to completed documents, leaving reopening for scans explicit."""
+        with self.connection(True) as c:
+            d = self._doc(c, document_id)
+            if confirmation != d['number']:
+                raise WarehouseError('Для подтверждения введите точный номер накладной')
+            if d['version'] != version or d['revision'] != revision:
+                raise WarehouseError('Документ изменён. Обновите карточку.', 409)
+            if not d['archived_at']:
+                raise WarehouseError('Документ не находится в архиве', 409)
+            ts = now()
+            c.execute('''UPDATE warehouse_documents SET archived_at=NULL, revision=revision+1,
+                         updated_at=? WHERE id=?''', (ts, document_id))
+            self._event(c, document_id, 'unarchived', actor='admin')
         return self.get(document_id)

@@ -179,7 +179,7 @@ def template(kind, default_org=''):
     return make_xlsx({'Документ': header, 'Товары': [columns]})
 
 
-def import_xlsx(content, kind, org_override=None):
+def import_xlsx(content, kind, org_override=None, document_number=None, document_date=None):
     if kind not in ('shipment', 'receipt'):
         raise WarehouseError('Неизвестный тип документа')
     if len(content) > MAX_FILE_SIZE:
@@ -195,19 +195,30 @@ def import_xlsx(content, kind, org_override=None):
     except Exception as exc:
         raise WarehouseError('Не удалось прочитать XLSX-файл') from exc
     try:
-        if not {'Документ', 'Товары'} <= set(book.sheetnames):
-            raise WarehouseError('Используйте шаблон: нужны листы «Документ» и «Товары»')
+        standard_sheets = {'Документ', 'Товары'} <= set(book.sheetnames)
+        flat_datamatrix = kind == 'receipt' and not standard_sheets and 'DataMatrix' in book.sheetnames
+        if not standard_sheets and not flat_datamatrix:
+            raise WarehouseError('Используйте шаблон: листы «Документ» и «Товары» или лист «DataMatrix» для приёмки')
         meta = {}
-        for row in book['Документ'].iter_rows(min_row=2, max_row=20, max_col=2):
-            key = row[0].value
-            if key is not None:
-                try:
-                    if key == 'Дата документа' and isinstance(row[1].value, (date, datetime)):
-                        meta[key] = row[1].value.date().isoformat() if isinstance(row[1].value, datetime) else row[1].value.isoformat()
-                    else:
-                        meta[key] = text_cell(row[1], str(key), required=False, strings=original_strings.get('Документ', {}))
-                except ValueError as exc:
-                    raise WarehouseError(f'Документ, строка {row[0].row}: {exc}') from exc
+        if flat_datamatrix:
+            if not document_number or not document_number.strip() or not document_date or not org_override:
+                raise WarehouseError('Для файла DataMatrix укажите номер, дату накладной и нашу организацию в форме загрузки')
+            if len(document_number.strip()) > 300:
+                raise WarehouseError('Номер накладной слишком длинный')
+            meta = {'Номер документа': document_number.strip(),
+                    'Дата документа': document_date,
+                    'ИНН организации': org_override}
+        else:
+            for row in book['Документ'].iter_rows(min_row=2, max_row=20, max_col=2):
+                key = row[0].value
+                if key is not None:
+                    try:
+                        if key == 'Дата документа' and isinstance(row[1].value, (date, datetime)):
+                            meta[key] = row[1].value.date().isoformat() if isinstance(row[1].value, datetime) else row[1].value.isoformat()
+                        else:
+                            meta[key] = text_cell(row[1], str(key), required=False, strings=original_strings.get('Документ', {}))
+                    except ValueError as exc:
+                        raise WarehouseError(f'Документ, строка {row[0].row}: {exc}') from exc
         for key in ['Номер документа', 'Дата документа'] + (['Получатель', 'ИНН получателя'] if kind == 'shipment' else []):
             if not meta.get(key):
                 raise WarehouseError(f'Документ: не заполнено поле «{key}»')
@@ -224,22 +235,27 @@ def import_xlsx(content, kind, org_override=None):
         header = dict(kind=kind, number=meta['Номер документа'], date=meta['Дата документа'],
                       org_inn=inn, org_name=org.name, recipient_name=meta.get('Получатель', ''),
                       recipient_inn=meta.get('ИНН получателя', ''))
-        ws = book['Товары']
+        ws = book['DataMatrix'] if flat_datamatrix else book['Товары']
         shipment_columns = ['PN', 'GTIN', 'Количество']
         legacy_receipt_columns = ['PN', 'GTIN', 'Код маркировки', 'Количество в КМ']
         first = next(ws.iter_rows(min_row=1, max_row=1, max_col=4 if kind == 'receipt' else 3))
         headers = [c.value for c in first]
-        legacy_receipt = kind == 'receipt' and headers == legacy_receipt_columns
-        modern_receipt = (kind == 'receipt' and headers[0] in ('КМ', 'Код маркировки')
+        legacy_receipt = kind == 'receipt' and not flat_datamatrix and headers == legacy_receipt_columns
+        modern_receipt = (kind == 'receipt' and not flat_datamatrix
+                          and headers[0] in ('КМ', 'Код маркировки')
                           and headers[1] == 'PN' and headers[2] in ('Количество', 'Кол-во')
                           and headers[3] is None)
-        if kind == 'shipment':
+        if flat_datamatrix:
+            if headers != ['Полный DM', 'GTIN', 'PN', 'Кол-во']:
+                raise WarehouseError('DataMatrix, строка 1: ожидаются столбцы Полный DM / GTIN / PN / Кол-во')
+        elif kind == 'shipment':
             if headers != shipment_columns:
                 raise WarehouseError('Товары, строка 1: ожидаются столбцы ' + ' / '.join(shipment_columns))
         elif not (legacy_receipt or modern_receipt):
             raise WarehouseError('Товары, строка 1: ожидаются столбцы КМ / PN / Количество')
-        columns_count = 4 if legacy_receipt else 3
-        strings = original_strings.get('Товары', {})
+        columns_count = 4 if legacy_receipt or flat_datamatrix else 3
+        sheet_label = 'DataMatrix' if flat_datamatrix else 'Товары'
+        strings = original_strings.get(sheet_label, {})
         lines, expected, seen = {}, [], set()
         for n, row in enumerate(ws.iter_rows(min_row=2, max_col=columns_count), 2):
             if n > MAX_ROWS + 1:
@@ -247,7 +263,15 @@ def import_xlsx(content, kind, org_override=None):
             if all(c.value is None for c in row):
                 continue
             try:
-                if kind == 'receipt' and modern_receipt:
+                if flat_datamatrix:
+                    raw_code = text_cell(row[0], 'Код маркировки', False, strings)
+                    pn = text_cell(row[2], 'PN', False, strings)
+                    code = scan_data(raw_code) if raw_code else None
+                    gtin = code['gtin'] if code else ''
+                    file_gtin = shipment_gtin_cell(row[1], strings)
+                    if file_gtin and (not code or file_gtin != gtin):
+                        raise ValueError('GTIN не соответствует коду маркировки')
+                elif kind == 'receipt' and modern_receipt:
                     raw_code = text_cell(row[0], 'Код маркировки', False, strings)
                     pn = text_cell(row[1], 'PN', False, strings)
                     code = scan_data(raw_code) if raw_code else None
@@ -288,7 +312,7 @@ def import_xlsx(content, kind, org_override=None):
                     lines[gtin].update(pn=pn, pn_source='excel')
                 lines[gtin]['quantity'] += qty
             except (ValueError, WarehouseError) as exc:
-                raise WarehouseError(f'Товары, строка {n}: {exc}') from exc
+                raise WarehouseError(f'{sheet_label}, строка {n}: {exc}') from exc
         if not lines:
             raise WarehouseError('Товары: нет заполненных строк')
         return header, list(lines.values()), expected

@@ -561,6 +561,90 @@ def test_admin_import_receipt_three_columns_stores_expected_codes(clients, store
     assert receipt['expected'][0]['raw_code'] == raw
 
 
+def flat_datamatrix(rows, headers=None):
+    return make_xlsx({'DataMatrix': [headers or ['Полный DM', 'GTIN', 'PN', 'Кол-во', None]] + rows})
+
+
+def test_receipt_datamatrix_flat_import_with_extra_column_and_unmarked_goods():
+    raw = code('FULL20CHARS0000001').replace('\x1d', '')
+    second = code('FULL20CHARS0000002').replace('\x1d', '')
+    content = flat_datamatrix([
+        [raw, int(GTIN), 'PN-1', 100, 8536699008],
+        [second, GTIN, 'PN-1', 200, 8536699008],
+        [None, None, 'UNMARKED', 7, None],
+        [None, None, 'UNMARKED', 8, None],
+    ])
+    header, lines, expected = import_xlsx(content, 'receipt', ORG, 'Поставка 123', '2026-10-28')
+    assert header['number'] == 'Поставка 123'
+    assert header['date'] == '2026-10-28'
+    assert header['org_inn'] == ORG and header['kind'] == 'receipt'
+    assert lines == [
+        dict(gtin=GTIN, pn='PN-1', pn_source='excel', quantity=300),
+        dict(gtin='', pn='UNMARKED', pn_source='excel', quantity=7),
+        dict(gtin='', pn='UNMARKED', pn_source='excel', quantity=8),
+    ]
+    assert len(expected) == 2
+    assert [e['gtin'] for e in expected] == [GTIN, GTIN]
+    assert [e['quantity'] for e in expected] == [100, 200]
+    assert [e['raw_code'] for e in expected] == [raw, second]
+
+
+@pytest.mark.parametrize('override', [
+    (None, '2026-10-28', ORG),
+    ('Накладная', None, ORG),
+    ('Накладная', '2026-10-28', None),
+])
+def test_receipt_datamatrix_requires_number_date_and_organization(override):
+    number, date_, org = override
+    with pytest.raises(WarehouseError, match='номер, дату'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 100]]),
+                    'receipt', org, number, date_)
+
+
+@pytest.mark.parametrize('rows,contains', [
+    ([[code('A'), '04646063126927', 'PN', 100]], 'не соответствует'),
+    ([[None, GTIN, 'PN', 100]], 'не соответствует'),
+    ([[code('A'), GTIN, 'PN', 100], [']d2'+code('A'), GTIN, 'PN', 100]], 'строка 3.*Дубликат'),
+    ([[code('A'), GTIN, 'PN1', 100], [code('B'), GTIN, 'PN2', 100]], 'строка 3.*разные PN'),
+    ([['INVALID', GTIN, 'PN', 100]], 'структур'),
+    ([[None, None, None, 5]], 'PN'),
+    ([[code('A'), GTIN, 'PN', 0]], 'Количество'),
+])
+def test_receipt_datamatrix_rejects_bad_rows_with_sheet_and_line(rows, contains):
+    with pytest.raises(WarehouseError, match='DataMatrix, строка 2.*' + contains if 'строка 3' not in contains else contains):
+        import_xlsx(flat_datamatrix(rows), 'receipt', ORG, 'Накладная', '2026-10-28')
+
+
+def test_receipt_datamatrix_rejects_wrong_header_and_fails_closed_without_metadata():
+    with pytest.raises(WarehouseError, match='ожидаются столбцы'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 1]],
+            ['DM', 'GTIN', 'PN', 'Кол-во']), 'receipt', ORG, 'Накладная', '2026-10-28')
+    with pytest.raises(WarehouseError, match='Дата документа'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 1]]),
+                    'receipt', ORG, 'Накладная', 'not-a-date')
+
+
+def test_admin_receipt_datamatrix_api_requires_explicit_metadata(clients):
+    a, _ = clients
+    headers = {'X-Admin-Key': 'test-admin'}
+    file_content = flat_datamatrix([[code('FLAT'), GTIN, 'PN', 100, 8536699008],
+                                    [None, None, 'BOLT', 5, None]])
+    url = '/api/admin/warehouse/documents'
+    without = a.post(url, headers=headers, data={'kind':'receipt', 'org_inn': ORG},
+                     files={'file':('received.xlsx', file_content)})
+    assert without.status_code == 422 and 'номер, дату' in without.json()['message']
+    response = a.post(url, headers=headers,
+                      data={'kind':'receipt', 'org_inn':ORG, 'document_number':'REC-222',
+                            'document_date':'2026-10-28'},
+                      files={'file':('received.xlsx',file_content)})
+    assert response.status_code == 200, response.text
+    document = response.json()
+    assert document['number'] == 'REC-222' and document['kind'] == 'receipt'
+    assert document['lines'][0]['gtin'] == GTIN
+    assert len(document['expected']) == 1
+    assert len(document['lines']) == 2
+
+
 def test_template_format_and_invalid_file():
     for kind in ('shipment','receipt'):
         book = openpyxl.load_workbook(io.BytesIO(template(kind)))
@@ -832,6 +916,115 @@ def test_restore_preserves_scans_and_original_status(store,svc,kind,status):
     assert not store.list(admin=True,trash=True)
     if status=='completed' and kind=='shipment':assert export_shipment(restored)
     with pytest.raises(WarehouseError):store.restore(d['id'],restored['version'],restored['revision'])
+
+
+
+@pytest.mark.parametrize('kind', ['shipment', 'receipt'])
+def test_archive_completed_without_errors_keeps_scans_history_and_can_restore(store, svc, kind):
+    d = document(store, kind)
+    add(store, d)
+    asyncio.run(check_document(store, svc, d['id']))
+    completed = store.complete(d['id'])
+    baseline = store.get(d['id'])
+    archived = store.archive(d['id'], completed['version'], completed['revision'], completed['number'])
+    assert archived['status'] == 'completed' and archived['archived_at']
+    assert archived['completed_at'] == completed['completed_at']
+    assert archived['scans'] == baseline['scans']
+    assert archived['expected'] == baseline['expected']
+    assert archived['result'] == baseline['result']
+    assert archived['check_current']
+    assert not store.list(admin=True, kind=kind)
+    assert [r['id'] for r in store.list(admin=True, archived=True, kind=kind)] == [d['id']]
+    assert not store.list(archived=True)  # warehouse cannot ask for the admin archive
+    assert not store.list(admin=True, trash=True)
+    restarted = WarehouseStore(store.path)
+    assert restarted.get(d['id'])['archived_at']
+    with restarted.connection() as c:
+        events = [r['action'] for r in c.execute(
+            'SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id', (d['id'],))]
+    assert events[-1] == 'archived'
+    if kind == 'shipment':
+        assert export_shipment(archived)
+    with pytest.raises(WarehouseError, match='архив'):
+        store.start(d['id'], reopen=True)
+    with pytest.raises(WarehouseError, match='архив'):
+        store.edit(d['id'], archived['version'], pns={GTIN: 'CHANGE'})
+    with pytest.raises(WarehouseError, match='архив'):
+        store.delete(d['id'], archived['version'], archived['revision'])
+    with pytest.raises(WarehouseError):
+        store.archive(d['id'], archived['version'], archived['revision'], archived['number'])
+    with pytest.raises(WarehouseError, match='изменён'):
+        store.unarchive(d['id'], baseline['version'], baseline['revision'], baseline['number'])
+    restored = restarted.unarchive(d['id'], archived['version'], archived['revision'], archived['number'])
+    assert restored['status'] == 'completed' and not restored['archived_at']
+    assert restored['scans'] == baseline['scans'] and restored['result'] == baseline['result']
+    assert restored['check_current']
+    assert [r['id'] for r in store.list(admin=True, kind=kind)] == [d['id']]
+    with restarted.connection() as c:
+        assert c.execute("SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id DESC LIMIT 1",
+                         (d['id'],)).fetchone()['action'] == 'unarchived'
+    with pytest.raises(WarehouseError, match='не находится'):
+        store.unarchive(d['id'], restored['version'], restored['revision'], restored['number'])
+    reopened = store.start(d['id'], reopen=True)
+    assert reopened['status'] == 'active' and not reopened['check_current']
+
+
+def test_archive_rejects_incomplete_wrong_number_and_stale_revisions(store, svc):
+    d = document(store)
+    with pytest.raises(WarehouseError, match='завершённого'):
+        store.archive(d['id'], d['version'], d['revision'], d['number'])
+    add(store, d)
+    failed = asyncio.run(check_document(store, svc, d['id']))
+    with pytest.raises(WarehouseError, match='завершённого'):
+        store.archive(d['id'], failed['version'], failed['revision'], failed['number'])
+    completed = store.complete(d['id'])
+    with pytest.raises(WarehouseError, match='точный номер'):
+        store.archive(d['id'], completed['version'], completed['revision'], 'WRONG')
+    with pytest.raises(WarehouseError, match='изменён'):
+        store.archive(d['id'], completed['version'], completed['revision']-1, completed['number'])
+    assert not store.get(d['id'])['archived_at']
+
+
+def test_archive_requires_resolved_issues_and_no_pending_replies(store, svc):
+    d = document(store, quantity=200)
+    add(store, d)
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    issue = store.report_issue(d['id'], checked['version'], checked['result_at'], 'Нужно уточнение')
+    current = store.get(d['id'])
+    store.edit(d['id'], current['version'], quantities={GTIN: 100}, revision=current['revision'])
+    asyncio.run(check_document(store, svc, d['id']))
+    completed = store.complete(d['id'])
+    with pytest.raises(WarehouseError, match='открытых'):
+        store.archive(d['id'], completed['version'], completed['revision'], completed['number'])
+    store.resolve_issue(d['id'], issue['id'], 'Состав проверен')
+    completed = store.get(d['id'])
+    assert store.archive(d['id'], completed['version'], completed['revision'], completed['number'])['archived_at']
+
+
+def test_archiving_is_admin_only_via_api_and_hidden_from_warehouse(clients, store, svc):
+    a, b = clients
+    h = {'X-Admin-Key': 'test-admin'}
+    d = document(store, 'receipt')
+    add(store, d)
+    asyncio.run(check_document(store, svc, d['id']))
+    d = store.complete(d['id'])
+    base = '/api/admin/warehouse/documents/' + d['id']
+    body = {'version': d['version'], 'revision': d['revision'], 'confirmation': d['number']}
+    assert b.post(base + '/archive', json=body).status_code == 403
+    assert a.post(base + '/archive', headers=h, json={**body, 'confirmation':'wrong'}).status_code == 422
+    assert a.post(base + '/archive', headers=h, json=body).status_code == 200
+    assert a.post(base + '/archive', headers=h, json=body).status_code == 409
+    assert a.get('/api/admin/warehouse/documents?kind=receipt&archived=true', headers=h).json()['documents'][0]['id'] == d['id']
+    assert a.get('/api/admin/warehouse/documents?kind=receipt', headers=h).json()['documents'] == []
+    assert b.get('/api/warehouse/documents/' + d['id']).status_code == 404
+    assert b.post('/api/warehouse/documents/' + d['id'] + '/scans', json={'code':code()}).status_code == 404
+    assert b.get('/api/warehouse/documents?archived=true').json()['documents'] == []
+    assert b.post(base + '/unarchive', json=body).status_code == 403
+    latest = a.get(base, headers=h).json()
+    restored = a.post(base + '/unarchive', headers=h, json={
+        'version': latest['version'], 'revision': latest['revision'], 'confirmation': latest['number']})
+    assert restored.status_code == 200 and not restored.json()['archived_at']
+    assert a.get('/api/admin/warehouse/documents?kind=receipt&archived=true', headers=h).json()['documents'] == []
 
 
 def failed_check(store,svc):
