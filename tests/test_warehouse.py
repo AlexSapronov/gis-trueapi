@@ -855,7 +855,6 @@ def test_archive_completed_without_errors_keeps_scans_history_and_can_restore(st
     assert not store.list(admin=True, trash=True)
     restarted = WarehouseStore(store.path)
     assert restarted.get(d['id'])['archived_at']
-    assert [r['action'] for r in restarted.issue_events(d['id'], 'nonexistent')['events']] if False else True
     with restarted.connection() as c:
         events = [r['action'] for r in c.execute(
             'SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id', (d['id'],))]
