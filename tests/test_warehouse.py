@@ -561,6 +561,90 @@ def test_admin_import_receipt_three_columns_stores_expected_codes(clients, store
     assert receipt['expected'][0]['raw_code'] == raw
 
 
+def flat_datamatrix(rows, headers=None):
+    return make_xlsx({'DataMatrix': [headers or ['Полный DM', 'GTIN', 'PN', 'Кол-во', None]] + rows})
+
+
+def test_receipt_datamatrix_flat_import_with_extra_column_and_unmarked_goods():
+    raw = code('FULL20CHARS0000001').replace('\x1d', '')
+    second = code('FULL20CHARS0000002').replace('\x1d', '')
+    content = flat_datamatrix([
+        [raw, int(GTIN), 'PN-1', 100, 8536699008],
+        [second, GTIN, 'PN-1', 200, 8536699008],
+        [None, None, 'UNMARKED', 7, None],
+        [None, None, 'UNMARKED', 8, None],
+    ])
+    header, lines, expected = import_xlsx(content, 'receipt', ORG, 'Поставка 123', '2026-10-28')
+    assert header['number'] == 'Поставка 123'
+    assert header['date'] == '2026-10-28'
+    assert header['org_inn'] == ORG and header['kind'] == 'receipt'
+    assert lines == [
+        dict(gtin=GTIN, pn='PN-1', pn_source='excel', quantity=300),
+        dict(gtin='', pn='UNMARKED', pn_source='excel', quantity=7),
+        dict(gtin='', pn='UNMARKED', pn_source='excel', quantity=8),
+    ]
+    assert len(expected) == 2
+    assert [e['gtin'] for e in expected] == [GTIN, GTIN]
+    assert [e['quantity'] for e in expected] == [100, 200]
+    assert [e['raw_code'] for e in expected] == [raw, second]
+
+
+@pytest.mark.parametrize('override', [
+    (None, '2026-10-28', ORG),
+    ('Накладная', None, ORG),
+    ('Накладная', '2026-10-28', None),
+])
+def test_receipt_datamatrix_requires_number_date_and_organization(override):
+    number, date_, org = override
+    with pytest.raises(WarehouseError, match='номер, дату'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 100]]),
+                    'receipt', org, number, date_)
+
+
+@pytest.mark.parametrize('rows,contains', [
+    ([[code('A'), '04646063126927', 'PN', 100]], 'не соответствует'),
+    ([[None, GTIN, 'PN', 100]], 'не соответствует'),
+    ([[code('A'), GTIN, 'PN', 100], [']d2'+code('A'), GTIN, 'PN', 100]], 'строка 3.*Дубликат'),
+    ([[code('A'), GTIN, 'PN1', 100], [code('B'), GTIN, 'PN2', 100]], 'строка 3.*разные PN'),
+    ([['INVALID', GTIN, 'PN', 100]], 'структур'),
+    ([[None, None, None, 5]], 'PN'),
+    ([[code('A'), GTIN, 'PN', 0]], 'Количество'),
+])
+def test_receipt_datamatrix_rejects_bad_rows_with_sheet_and_line(rows, contains):
+    with pytest.raises(WarehouseError, match='DataMatrix, строка 2.*' + contains if 'строка 3' not in contains else contains):
+        import_xlsx(flat_datamatrix(rows), 'receipt', ORG, 'Накладная', '2026-10-28')
+
+
+def test_receipt_datamatrix_rejects_wrong_header_and_fails_closed_without_metadata():
+    with pytest.raises(WarehouseError, match='ожидаются столбцы'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 1]],
+            ['DM', 'GTIN', 'PN', 'Кол-во']), 'receipt', ORG, 'Накладная', '2026-10-28')
+    with pytest.raises(WarehouseError, match='Дата документа'):
+        import_xlsx(flat_datamatrix([[code(), GTIN, 'PN', 1]]),
+                    'receipt', ORG, 'Накладная', 'not-a-date')
+
+
+def test_admin_receipt_datamatrix_api_requires_explicit_metadata(clients):
+    a, _ = clients
+    headers = {'X-Admin-Key': 'test-admin'}
+    file_content = flat_datamatrix([[code('FLAT'), GTIN, 'PN', 100, 8536699008],
+                                    [None, None, 'BOLT', 5, None]])
+    url = '/api/admin/warehouse/documents'
+    without = a.post(url, headers=headers, data={'kind':'receipt', 'org_inn': ORG},
+                     files={'file':('received.xlsx', file_content)})
+    assert without.status_code == 422 and 'номер, дату' in without.json()['message']
+    response = a.post(url, headers=headers,
+                      data={'kind':'receipt', 'org_inn':ORG, 'document_number':'REC-222',
+                            'document_date':'2026-10-28'},
+                      files={'file':('received.xlsx',file_content)})
+    assert response.status_code == 200, response.text
+    document = response.json()
+    assert document['number'] == 'REC-222' and document['kind'] == 'receipt'
+    assert document['lines'][0]['gtin'] == GTIN
+    assert len(document['expected']) == 1
+    assert len(document['lines']) == 2
+
+
 def test_template_format_and_invalid_file():
     for kind in ('shipment','receipt'):
         book = openpyxl.load_workbook(io.BytesIO(template(kind)))
