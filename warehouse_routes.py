@@ -30,6 +30,10 @@ class DocumentVersion(BaseModel):
     revision: int = Field(ge=0)
 
 
+class ArchiveBody(DocumentVersion):
+    confirmation: str = Field(min_length=1, max_length=300)
+
+
 class EditBody(DocumentVersion):
     quantities: dict[str, Annotated[int, Field(strict=True, gt=0, le=2147483647)]] = Field(default_factory=dict)
     strict_owner: bool | None = None
@@ -49,6 +53,7 @@ class WarehouseFilters(BaseModel):
 class AdminFilters(WarehouseFilters):
     issue_state: Literal['all','open','closed','none'] = 'all'
     trash: bool = False
+    archived: bool = False
 
 
 class ReportBody(BaseModel):
@@ -74,7 +79,7 @@ def install_warehouse(app, service_getter, store_getter, templates):
 
     def visible(document_id):
         d = store_getter().get(document_id)
-        if d['status'] == 'draft':
+        if d['status'] == 'draft' or d['archived_at']:
             raise WarehouseError('Документ недоступен складу', 404)
         return d
 
@@ -210,6 +215,14 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @admin.post('/documents/{document_id}/restore')
     def restore_document(document_id: str, body: DocumentVersion):
         return store_getter().restore(document_id,body.version,body.revision)
+
+    @admin.post('/documents/{document_id}/archive')
+    def archive_document(document_id: str, body: ArchiveBody):
+        return store_getter().archive(document_id, body.version, body.revision, body.confirmation)
+
+    @admin.post('/documents/{document_id}/unarchive')
+    def unarchive_document(document_id: str, body: ArchiveBody):
+        return store_getter().unarchive(document_id, body.version, body.revision, body.confirmation)
 
     @admin.get('/documents/{document_id}/issues')
     def issues(document_id: str):
