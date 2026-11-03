@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 
 from organizations import registry
@@ -91,6 +92,30 @@ async def shipment_results(service, doc):
     return dict(ok=ok, rows=rows, codes=details, missing=[], checked_count=len(scans)), pns
 
 
+def _receipt_full_code_error(expected_code: str, scanned_code: str, expected_quantity: int) -> str | None:
+    """Allow only a trailing AI 30 added to the *unchanged* source KM.
+
+    marking-bm exports the original SUZ code, but prints labels with
+    GS + 30 + package quantity. Compare the complete original prefix,
+    including the crypto tail; never drop arbitrary AIs or truncate crypto.
+    """
+    if scanned_code == expected_code:
+        return None
+    if scanned_code.startswith(expected_code):
+        suffix = scanned_code[len(expected_code):]
+        match = re.fullmatch(r"\x1d30([0-9]{1,8})", suffix)
+        if match:
+            quantity = int(match.group(1))
+            if quantity > 0:
+                if quantity == expected_quantity:
+                    return None
+                return (
+                    f"Количество в AI 30 на этикетке ({quantity}) не совпадает "
+                    f"с количеством в документе ({expected_quantity})"
+                )
+    return 'Полный КМ не совпадает с ожидаемым: проверьте криптографическую часть'
+
+
 def receipt_results(doc):
     expected = {e['cis']: e for e in doc['expected']}
     marked = [line for line in doc['lines'] if line['gtin']]
@@ -100,11 +125,13 @@ def receipt_results(doc):
         e, errors = expected.get(scan['cis']), []
         if e is None:
             errors.append('КМ отсутствует в документе приёмки')
-        elif scan['full_code'] != e['full_code']:
-            errors.append('Полный КМ не совпадает с ожидаемым: проверьте криптографическую часть')
         else:
-            accepted.add(scan['cis'])
-            totals[e['gtin']] += e['quantity']
+            mismatch = _receipt_full_code_error(e['full_code'], scan['full_code'], e['quantity'])
+            if mismatch:
+                errors.append(mismatch)
+            else:
+                accepted.add(scan['cis'])
+                totals[e['gtin']] += e['quantity']
         details.append(dict(scan_id=scan['id'], cis=scan['cis'], gtin=scan['gtin'],
                             quantity=e['quantity'] if e else None, errors=errors))
     missing = [dict(cis=e['cis'], gtin=e['gtin']) for cis, e in expected.items() if cis not in accepted]
