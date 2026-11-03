@@ -172,6 +172,9 @@ def parse(raw: str) -> ParsedCode:
             has_crypto = True
         if tail.startswith(GS) and ("91" in tail or "92" in tail):
             has_crypto = True
+        # Radio template 37: a single fixed four-character AI 93 crypto key.
+        if tail.startswith(GS + "93") and len(tail) >= 7:
+            has_crypto = True
 
     result.has_crypto = has_crypto
     # normalized_cis = GTIN + serial (без крипто-хвоста).
