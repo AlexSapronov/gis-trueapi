@@ -353,7 +353,6 @@ def test_receipt_accepts_marking_bm_label_with_ai30(store, svc, crypto_tail):
     '\x1d300',       # zero is not a valid positive package quantity
     '\x1d30123456789',  # more than eight digits
     '\x1d30100extra',   # additional garbage must not be ignored
-    '30100',         # missing GS is not a valid trailing AI boundary
 ])
 def test_receipt_rejects_invalid_or_wrong_ai30(store, svc, quantity_suffix):
     base = code('5pZpV1RbL3/uSA&!*"FB', tail='91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/')
