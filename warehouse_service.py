@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 
 from organizations import registry
-from warehouse_excel import positive_integer
+from warehouse_excel import positive_integer, restore_radio_separators
 from warehouse_store import WarehouseError
 
 
@@ -126,7 +126,9 @@ def receipt_results(doc):
         if e is None:
             errors.append('КМ отсутствует в документе приёмки')
         else:
-            mismatch = _receipt_full_code_error(e['full_code'], scan['full_code'], e['quantity'])
+            mismatch = _receipt_full_code_error(
+                e['full_code'], restore_radio_separators(scan['full_code']), e['quantity']
+            )
             if mismatch:
                 errors.append(mismatch)
             else:
