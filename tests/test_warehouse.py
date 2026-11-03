@@ -380,6 +380,84 @@ def test_receipt_ai30_does_not_mask_changed_crypto_tail(store, svc):
     assert 'криптографическую часть' in checked['result']['codes'][0]['errors'][0]
 
 
+
+# A real radio-label scan from a keyboard-wedge scanner that dropped ASCII 29:
+# 20-character serial (comma is its last character), 91(4), 92(44), 30(59).
+RADIO_SCANNER_59 = (
+    '0104640638340848215Fkf4uDFLgKvhtDZZhZ,'
+    '91EE1292edaSRVpCamSxfXZVfSI80+GT7re4DCnTvCv324GIKDY=3059'
+)
+RADIO_SOURCE_59 = (
+    '0104640638340848215Fkf4uDFLgKvhtDZZhZ,'
+    '\x1d91EE12\x1d92edaSRVpCamSxfXZVfSI80+GT7re4DCnTvCv324GIKDY='
+)
+
+
+def test_radio_scanner_restores_only_exact_gs_boundaries():
+    source = RADIO_SOURCE_59 + '\x1d3059'
+    for scan in (
+        RADIO_SCANNER_59,
+        RADIO_SCANNER_59[:38] + '\x1d' + RADIO_SCANNER_59[38:],
+        source.replace('\x1d92', '92').replace('\x1d30', '30'),
+        source,
+    ):
+        normalized = scan_data(scan)
+        assert normalized['raw_code'] == scan
+        assert normalized['full_code'] == source
+        assert normalized['has_crypto']
+        assert normalized['cis'] == '04640638340848' + '5Fkf4uDFLgKvhtDZZhZ,'
+
+
+def test_receipt_accepts_real_radio_code_without_scanner_gs(store, svc):
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
+    add(store, d, RADIO_SCANNER_59)
+    result = asyncio.run(check_document(store, svc, d['id']))
+    assert result['can_complete'] and result['result']['ok']
+    assert result['result']['accepted_count'] == 1
+    assert result['result']['rows'][0]['actual'] == 59
+
+
+def test_receipt_normalizes_scans_saved_by_old_version(store, svc):
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
+    old = scan_data(RADIO_SCANNER_59)
+    # Old gis-trueapi restored only the first GS before AI 91.
+    old['full_code'] = RADIO_SCANNER_59[:38] + '\x1d' + RADIO_SCANNER_59[38:]
+    store.add_scan(d['id'], old)
+    result = asyncio.run(check_document(store, svc, d['id']))
+    assert result['can_complete']
+    assert result['result']['accepted_count'] == 1
+
+
+def test_receipt_radio_recovery_rejects_corrupted_crypto_and_wrong_ai30(store, svc):
+    for wrong in (RADIO_SCANNER_59.replace('edaSR', 'XdaSR'),
+                  RADIO_SCANNER_59[:-2] + '58'):
+        d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
+        add(store, d, wrong)
+        result = asyncio.run(check_document(store, svc, d['id']))
+        assert not result['can_complete']
+        assert result['result']['accepted_count'] == 0
+        assert result['result']['rows'][0]['actual'] == 0
+        assert result['result']['codes'][0]['errors']
+
+
+def test_radio_93_without_scanner_gs_and_no_91ee_in_serial():
+    code_93 = '01' + GTIN + '21' + 'S' * 20 + '93AB12' + '30100'
+    expected = '01' + GTIN + '21' + 'S' * 20 + '\x1d93AB12\x1d30100'
+    assert scan_data(code_93)['full_code'] == expected
+
+
+def test_radio_recovery_does_not_guess_in_short_or_truncated_formats():
+    from warehouse_excel import restore_radio_separators
+    assert restore_radio_separators(code('SERIAL').replace('\x1d', '')) == code('SERIAL').replace('\x1d', '')
+    assert restore_radio_separators(RADIO_SCANNER_59[:-8]) == RADIO_SCANNER_59[:-8]
+    # A literal "91EE" may legitimately occur inside the 20-char serial.
+    special = '01' + GTIN + '21' + 'A91EE' + 'B' * 15
+    whole = special + '91EE12' + '92' + 'X' * 44 + '3059'
+    expected = special + '\x1d91EE12\x1d92' + 'X' * 44 + '\x1d3059'
+    assert scan_data(whole)['full_code'] == expected
+    assert scan_data(whole)['cis'] == GTIN + 'A91EE' + 'B' * 15
+
+
 def test_receipt_unknown_code_never_counts(store, svc):
     d = document(store, 'receipt')
     add(store, d, code('INTRODUCEDQ200'))
