@@ -331,6 +331,55 @@ def test_receipt_requires_exact_set_and_full_crypto(store, svc):
     assert result['result']['codes'][1]['errors']
 
 
+@pytest.mark.parametrize('crypto_tail', [
+    '91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/',
+    '93AB12',
+])
+def test_receipt_accepts_marking_bm_label_with_ai30(store, svc, crypto_tail):
+    # marking-bm: XLS exports the original SUZ KM; label adds GS + AI 30.
+    base = code('5pZpV1RbL3/uSA&!*"FB', tail=crypto_tail)
+    label = base + '\x1d30100'
+    d = document(store, 'receipt', rows=[['PN', GTIN, base, 100]])
+    assert d['expected'][0]['full_code'] == base
+    assert add(store, d, label)['scan']['full_code'] == label
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert checked['can_complete'] and checked['result']['ok']
+    assert checked['result']['accepted_count'] == 1
+    assert checked['result']['rows'][0]['actual'] == 100
+
+
+@pytest.mark.parametrize('quantity_suffix', [
+    '\x1d30101',     # valid AI 30 with wrong quantity
+    '\x1d300',       # zero is not a valid positive package quantity
+    '\x1d30123456789',  # more than eight digits
+    '\x1d30100extra',   # additional garbage must not be ignored
+    '30100',         # missing GS is not a valid trailing AI boundary
+])
+def test_receipt_rejects_invalid_or_wrong_ai30(store, svc, quantity_suffix):
+    base = code('5pZpV1RbL3/uSA&!*"FB', tail='91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/')
+    d = document(store, 'receipt', rows=[['PN', GTIN, base, 100]])
+    add(store, d, base + quantity_suffix)
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert not checked['can_complete']
+    assert checked['result']['accepted_count'] == 0
+    assert checked['result']['rows'][0]['actual'] == 0
+    assert checked['result']['codes'][0]['errors']
+    if quantity_suffix == '\x1d30101':
+        assert 'Количество в AI 30' in checked['result']['codes'][0]['errors'][0]
+
+
+def test_receipt_ai30_does_not_mask_changed_crypto_tail(store, svc):
+    base = code('5pZpV1RbL3/uSA&!*"FB', tail='91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/')
+    d = document(store, 'receipt', rows=[['PN', GTIN, base, 100]])
+    # Same GTIN, serial and AI 30. One different character in AI 92 remains a hard failure.
+    altered_crypto = base.replace('Ab+/_', 'Ab+/X', 1)
+    add(store, d, altered_crypto + '\x1d30100')
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert not checked['can_complete']
+    assert checked['result']['accepted_count'] == 0
+    assert 'криптографическую часть' in checked['result']['codes'][0]['errors'][0]
+
+
 def test_receipt_unknown_code_never_counts(store, svc):
     d = document(store, 'receipt')
     add(store, d, code('INTRODUCEDQ200'))
