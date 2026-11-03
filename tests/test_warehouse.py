@@ -443,7 +443,9 @@ def test_receipt_radio_recovery_rejects_corrupted_crypto_and_wrong_ai30(store, s
 def test_radio_93_without_scanner_gs_and_no_91ee_in_serial():
     code_93 = '01' + GTIN + '21' + 'S' * 20 + '93AB12' + '30100'
     expected = '01' + GTIN + '21' + 'S' * 20 + '\x1d93AB12\x1d30100'
-    assert scan_data(code_93)['full_code'] == expected
+    parsed = scan_data(code_93)
+    assert parsed['full_code'] == expected
+    assert parsed['has_crypto']
 
 
 def test_radio_recovery_does_not_guess_in_short_or_truncated_formats():
