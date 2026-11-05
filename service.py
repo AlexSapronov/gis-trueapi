@@ -168,7 +168,7 @@ class Service:
 
     # ---- administrator: customs declaration lookup by scanned KI --------
 
-    async def lookup_gtd_batch(self, cises: list[str], org_inn: str) -> dict[str, str]:
+    async def lookup_gtd_batch(self, cises: list[str], org_inn: str, *, allow_missing: bool = False) -> dict[str, str | None]:
         """Resolve every KI; never associate reordered short/list replies by position."""
         token = self._org_token(self._pick_org_inn(org_inn))
         expected = set(cises)
@@ -202,11 +202,17 @@ class Service:
             except ValueError as exc:
                 raise AppError(ErrorCategory.API_ERROR, str(exc)) from exc
             dt = result.get('declaration_number')
-            if not result.get('found') or not isinstance(dt, str) or not dt.strip():
-                raise AppError(ErrorCategory.API_ERROR, 'ГТД не получена для КИ ' + cis)
+            if not result.get('found'):
+                raise AppError(ErrorCategory.API_ERROR, 'КИ не найден при запросе ГТД: ' + cis)
+            if dt is not None and not isinstance(dt, str):
+                raise AppError(ErrorCategory.API_ERROR, 'Некорректный номер ГТД для КИ ' + cis)
+            if not dt or not dt.strip():
+                if not allow_missing:
+                    raise AppError(ErrorCategory.API_ERROR, 'ГТД не получена для КИ ' + cis)
+                dt = None
             if result.get('gtin') != cis[2:16]:
                 raise AppError(ErrorCategory.API_ERROR, 'GTIN в ответе ЧЗ не совпадает с КИ ' + cis)
-            found[cis] = dt.strip()
+            found[cis] = dt.strip() if dt else None
         missing = expected - found.keys()
         if missing:
             raise AppError(ErrorCategory.API_ERROR, 'ЧЗ не вернул ГТД для КИ ' + sorted(missing)[0])

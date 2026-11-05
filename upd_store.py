@@ -58,5 +58,5 @@ class UpdStore:
             for xml_pn, scan_pn in aliases.items():
                 c.execute('INSERT INTO upd_pn_aliases VALUES (?,?,?) ON CONFLICT(org_inn,xml_pn) '
                           'DO UPDATE SET scan_pn=excluded.scan_pn', (doc['org_inn'], xml_pn, scan_pn))
-            self._event(c, document_id, 'upd_prepared',
+            self._event(c, document_id, 'upd_prepared' if output is not None else 'upd_review_required',
                         {'upload_id': upload_id, 'rows': summary, 'saved_aliases': aliases}, actor='admin')

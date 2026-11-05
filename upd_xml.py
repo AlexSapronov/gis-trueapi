@@ -1,7 +1,8 @@
 """UPD 5.03 enrichment. XML/Decimal only; no network or database operations."""
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from bisect import bisect_left
+from collections import Counter, defaultdict, deque
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
@@ -98,7 +99,8 @@ def inspect_xml(content, doc, aliases):
         saved = aliases.get(pn)
         target = saved if saved in choices else pn if pn in choices else None
         rows.append(dict(id=str(i), number=row.get('НомСтр'), name=row.get('НаимТов', ''),
-                         pn=pn, quantity=row.get('КолТов', ''), target_pn=target,
+                         pn=pn, quantity=row.get('КолТов', ''),
+                         declarations=[n.get('НомерДТ', '') for n in row.findall('СвДТ')], target_pn=target,
                          source='saved' if saved in choices else 'exact' if target else ''))
     return dict(rows=rows, choices=list(choices.values()), seller_inn=seller,
                 number=root.find('Документ/СвСчФакт').get('НомерДок'),
@@ -131,8 +133,39 @@ def money_parts(value, quantities):
     return result
 
 
-def allocate(root, doc, mapping):
-    """Consume each scan once, preserving indivisible quantityInPack."""
+class Allocation(list):
+    """Per-original-row scans plus the source rows rebuilt as one commercial unit."""
+    def __init__(self, size):
+        super().__init__([[] for _ in range(size)])
+        self.groups = {}
+
+
+def commercial_signature(row):
+    """Only customs, marking, quantity and amounts may differ when merging."""
+    clone = deepcopy(row)
+    for name in ('НомСтр', 'КолТов', 'СтТовБезНДС', 'СтТовУчНал'):
+        if name in clone.attrib:
+            if name in ('СтТовБезНДС', 'СтТовУчНал'):
+                clone.set(name, '')
+            else:
+                clone.attrib.pop(name)
+    for node in clone.findall('СвДТ') + clone.findall('.//НомСредИдентТов'):
+        node.getparent().remove(node)
+    extra = clone.find('ДопСведТов')
+    if extra is not None:
+        extra.attrib.pop('ГТИН', None)
+    tax = clone.find('СумНал/СумНал')
+    if tax is not None:
+        tax.text = ''
+    for node in clone.iter():
+        node.tail = None
+        if node.text and not node.text.strip():
+            node.text = None
+    return E.tostring(clone, method='c14n')
+
+
+def allocate(root, doc, mapping, regroup=False):
+    """Reconcile PN totals; in customs mode ignore old 1C customs boundaries."""
     check_document(doc)
     rows = root.findall('Документ/ТаблСчФакт/СведТов')
     if set(mapping) != {str(i) for i in range(len(rows))}:
@@ -158,14 +191,12 @@ def allocate(root, doc, mapping):
             raise WarehouseError('Повторный КИ в отгрузке')
         seen.add(cis)
         pools[by_gtin[gtin]].append({**scan, 'cis': cis, 'quantity': r['quantity']})
-    allocated = []
+    units = {}
     for i, row in enumerate(rows):
         pn = mapping[str(i)]
         if pn is None:
-            # Existing marking must never silently survive the "unmarked" path.
             if row.findall('.//НомСредИдентТов'):
                 raise WarehouseError(f'Строка {i+1} уже содержит маркировку: выберите PN для замены')
-            allocated.append([])
             continue
         if pn not in pools:
             raise WarehouseError(f'PN «{pn}» отсутствует в сканах')
@@ -174,30 +205,145 @@ def allocate(root, doc, mapping):
         qty = decimal(row.get('КолТов'), f'количество строки {i+1}')
         if not qty or qty != int(qty):
             raise WarehouseError(f'Строка {i+1}: количество должно быть положительным целым')
+        key = (pn, commercial_signature(row)) if regroup else i
+        unit = units.setdefault(key, dict(pn=pn, indices=[], quantity=0))
+        unit['indices'].append(i)
+        unit['quantity'] += int(qty)
+    # Report actual discrepancies separately from an artificial boundary inside one PN.
+    totals = Counter()
+    for unit in units.values():
+        totals[unit['pn']] += unit['quantity']
+    for pn, pool in pools.items():
+        actual = sum(scan['quantity'] for scan in pool)
+        if totals[pn] != actual:
+            raise WarehouseError(f'PN {pn}: общее количество XML {totals[pn]} не совпадает с КМ ({actual}). '
+                                 'Не все КМ распределены по XML или не хватает товара.')
+    allocated = Allocation(len(rows))
+    for unit in units.values():
+        pn, qty, indices = unit['pn'], unit['quantity'], unit['indices']
         selected, actual = [], 0
         while actual < qty and pools[pn]:
             scan = pools[pn].popleft()
             actual += scan['quantity']
             selected.append(scan)
         if actual != qty:
-            raise WarehouseError(f'Строка {i+1}, PN {pn}: количество XML {qty} не совпадает с КМ ({actual}). '
-                                 'КМ упаковки нельзя разделить между строками.')
-        allocated.append(selected)
-    leftovers = [pn for pn, pool in pools.items() if pool]
-    if leftovers:
-        raise WarehouseError('Не все КМ распределены по XML: ' + ', '.join(leftovers))
+            label = ', '.join(str(i+1) for i in indices)
+            raise WarehouseError(f'Строки {label}, PN {pn}: граница количества XML {qty} '
+                                 f'проходит внутри КМ ({actual}). Нельзя делить упаковку. '
+                                 'Строки с разной ценой, НДС или другими реквизитами автоматически не объединяются.',
+                                 code='upd_pack_boundary')
+        allocated[indices[0]] = selected
+        allocated.groups[indices[0]] = indices
     return allocated
 
 
-def split_amounts(original, clones, quantities):
-    if len(clones) == 1:
-        return
+def package_counts(scans):
+    return [dict(quantity=qty, codes=count, total=qty*count)
+            for qty, count in sorted(Counter(s['quantity'] for s in scans).items())]
+
+
+def original_rows(rows, indices):
+    return [dict(row=i+1, quantity=rows[i].get('КолТов'),
+                 declarations=[n.get('НомерДТ', '') for n in rows[i].findall('СвДТ')]) for i in indices]
+
+
+def review_plan(root, mapping, allocated, declarations=None):
+    """Explain exact whole-KI quantities without assigning unverifiable customs data."""
+    rows = root.findall('Документ/ТаблСчФакт/СведТов')
+    proposed, boundaries = [], []
+    for index, scans in enumerate(allocated):
+        if not scans:
+            continue
+        indices = allocated.groups.get(index, [index])
+        source = original_rows(rows, indices)
+        groups = defaultdict(list)
+        for scan in scans:
+            groups[(declarations.get(scan['cis']) if declarations is not None else None,
+                    scan['gtin'])].append(scan)
+        for (dt, gtin), codes in groups.items():
+            proposed.append(dict(source_row=index+1, source_rows=[i+1 for i in indices],
+                                 original_rows=source, pn=mapping[str(index)], gtin=gtin,
+                                 declaration_number=dt, quantity=sum(s['quantity'] for s in codes),
+                                 codes=len(codes), packages=package_counts(codes)))
+        # An explicit alternative retaining as many old rows as possible. Only
+        # quantities are suggested; this does not establish which DT owns a KI.
+        prefix = [0]
+        for scan in scans:
+            prefix.append(prefix[-1]+scan['quantity'])
+        count = min(len(indices), len(scans))
+        previous, target = 0, Decimal(0)
+        for n in range(count):
+            target += decimal(rows[indices[n]].get('КолТов'), 'количество')
+            if n == count-1:
+                stop = len(scans)
+            else:
+                low, high = previous+1, len(scans)-(count-n-1)
+                # Binary search on cumulative pack quantities; do not scan all
+                # candidate boundaries for each XML row.
+                candidate = min(high, max(low, bisect_left(prefix, target)))
+                stop = min({candidate, max(low, candidate-1)}, key=lambda k: (abs(prefix[k]-target), k))
+            selected = scans[previous:stop]
+            boundaries.append(dict(source_rows=[i+1 for i in indices], pn=mapping[str(index)],
+                                   original_row=indices[n]+1, quantity=prefix[stop]-prefix[previous],
+                                   codes=len(selected), packages=package_counts(selected),
+                                   requires_customs_confirmation=True))
+            previous = stop
+    checked = declarations is not None
+    message = (
+        'ЧЗ вернул сведения о части КМ без номера ГТД. Это не означает отсутствия декларации. '
+        if checked else
+        'Границы исходных строк проходят внутри КМ. Для пересборки по ГТД включите получение ГТД из ЧЗ '
+        'или исправьте количество в строках по приведённому варианту. '
+    )
+    message += ('Ниже приведены количества по целым КМ. Вариант границ исходных строк '
+                'не подтверждает соответствие ГТД конкретным КМ. ')
+    if checked:
+        message += ('Подтвердите исходные ГТД и исправьте строки в 1С, затем загрузите XML повторно '
+                    'с выключенным получением ГТД, чтобы сохранить подтверждённые декларации.')
+    return dict(ready=False, needs_review=True, gtd_checked=checked,
+                rows=proposed, boundaries=boundaries, message=message)
+
+
+
+def merge_rows(rows):
+    merged = deepcopy(rows[0])
+    if len(rows) == 1:
+        return merged
+    for row in rows:
+        validate_rebuild_amounts(row)
+    merged.set('КолТов', str(sum(decimal(row.get('КолТов'), 'количество') for row in rows)))
+    for attr in ('СтТовБезНДС', 'СтТовУчНал'):
+        if rows[0].get(attr) is not None:
+            merged.set(attr, format(sum(decimal(row.get(attr), attr) for row in rows), '.2f'))
+    tax = merged.find('СумНал/СумНал')
+    if tax is not None:
+        tax.text = format(sum(decimal(row.findtext('СумНал/СумНал'), 'НДС') for row in rows), '.2f')
+    return merged
+
+
+def validate_rebuild_amounts(original):
     extra = original.find('ДопСведТов')
     if (original.find('Акциз/СумАкциз') is not None or
             (extra is not None and (extra.findall('СведПрослеж') or extra.findall('НалУчАморт')
              or extra.findall('СумНалВосст') or extra.get('СтТовБезНДС') is not None))):
         raise WarehouseError('Автоматическое разбиение строк с акцизом, прослеживаемостью '
                              'или дополнительными налоговыми суммами не поддерживается')
+    net, gross = original.get('СтТовБезНДС'), original.get('СтТовУчНал')
+    tax = original.findtext('СумНал/СумНал', '0')
+    for value in (net, gross, tax):
+        if value is not None:
+            amount = decimal(value, 'сумма')
+            if amount != amount.quantize(Decimal('.01')):
+                raise WarehouseError('Сумма содержит более двух знаков после запятой')
+    if net is not None and gross is not None:
+        if decimal(net, 'без НДС') + decimal(tax, 'НДС') != decimal(gross, 'с НДС'):
+            raise WarehouseError('В исходной строке сумма без НДС + НДС не равна сумме с НДС')
+
+
+def split_amounts(original, clones, quantities):
+    if len(clones) == 1:
+        return
+    validate_rebuild_amounts(original)
     net = original.get('СтТовБезНДС')
     gross = original.get('СтТовУчНал')
     tax_node = original.find('СумНал/СумНал')
@@ -223,10 +369,14 @@ def enrich_xml(content, doc, mapping, allocated, declarations=None):
     root = parse_xml(content)
     table = root.find('Документ/ТаблСчФакт')
     summary = []
-    for i, original in enumerate(list(table.findall('СведТов'))):
+    source_rows = list(table.findall('СведТов'))
+    for i, source_row in enumerate(source_rows):
         scans = allocated[i]
         if not scans:
             continue
+        indices = getattr(allocated, 'groups', {}).get(i, [i])
+        originals = [source_rows[index] for index in indices]
+        original = merge_rows(originals)
         groups = defaultdict(list)
         for scan in scans:
             dt = declarations.get(scan['cis']) if declarations is not None else None
@@ -235,7 +385,7 @@ def enrich_xml(content, doc, mapping, allocated, declarations=None):
                     raise WarehouseError('ЧЗ не вернул корректный номер ГТД для КИ ' + scan['cis'])
                 dt = dt.strip()
             groups[(dt, scan['gtin'])].append(scan)
-        countries = {n.get('КодПроисх') for n in original.findall('СвДТ') if n.get('КодПроисх')}
+        countries = {n.get('КодПроисх') for row in originals for n in row.findall('СвДТ') if n.get('КодПроисх')}
         if declarations is not None and len(countries) > 1:
             raise WarehouseError(f'Строка {i+1}: несколько стран происхождения; уточните исходный XML')
         country = next(iter(countries), None)
@@ -266,13 +416,15 @@ def enrich_xml(content, doc, mapping, allocated, declarations=None):
             extra.insert(extra.index(state) if state is not None else len(extra), marks)
             clones.append(clone)
             quantities.append(qty)
-            summary.append(dict(source_row=i+1, pn=mapping[str(i)], gtin=gtin,
+            summary.append(dict(source_row=i+1, source_rows=[index+1 for index in indices],
+                                original_rows=original_rows(source_rows, indices), pn=mapping[str(i)], gtin=gtin,
                                 declaration_number=dt if declarations is not None else '; '.join(
                                     n.get('НомерДТ', '') for n in original.findall('СвДТ')),
                                 quantity=qty, codes=len(codes)))
         split_amounts(original, clones, quantities)
-        pos = table.index(original)
-        table.remove(original)
+        pos = table.index(source_row)
+        for old in originals:
+            table.remove(old)
         for offset, clone in enumerate(clones):
             table.insert(pos+offset, clone)
     for n, row in enumerate(table.findall('СведТов'), 1):
