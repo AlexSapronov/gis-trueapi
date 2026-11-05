@@ -33,16 +33,16 @@ def workbook(rows=None):return make_xlsx({'Лист1':[HEAD]+(rows or [row()])})
 def store(tmp_path):return WarehouseStore(tmp_path/'warehouse.db')
 
 
-def completed(store,quantities=(6000,),pn='PN-1'):
-    d=store.create(dict(kind='shipment',number='T1',date='2026-11-05',org_inn=ORG,
-                        org_name='Тест',recipient_name='Покупатель',recipient_inn=BUYER),
-                   [dict(gtin=GTIN,pn=pn,pn_source='manual',quantity=sum(quantities))],[])
+def completed(store,quantities=(6000,),pn='PN-1',*,number='T1',date='2026-11-05',org=ORG,recipient=BUYER,gtin=GTIN):
+    d=store.create(dict(kind='shipment',number=number,date=date,org_inn=org,
+                        org_name='Тест',recipient_name='Покупатель',recipient_inn=recipient),
+                   [dict(gtin=gtin,pn=pn,pn_source='manual',quantity=sum(quantities))],[])
     codes=[]
     with store.connection(True) as c:
         for i,qty in enumerate(quantities):
-            scan_id='s'+str(i)+d['id'];cis=GTIN+'X'+str(i)
+            scan_id='s'+str(i)+d['id'];cis=gtin+'X'+str(i)
             c.execute('INSERT INTO warehouse_scans VALUES (?,?,?,?,?,?,?,?)',
-                      (scan_id,d['id'],cis,'raw','full',GTIN,1,'2026-11-05'))
+                      (scan_id,d['id'],cis,'raw','full',gtin,1,'2026-11-05'))
             codes.append(dict(scan_id=scan_id,quantity=qty,errors=[]))
         c.execute("UPDATE warehouse_documents SET status='completed',result=?,result_version=version WHERE id=?",
                   (json.dumps({'ok':True,'codes':codes}),d['id']))
@@ -87,7 +87,7 @@ def test_goodid_match_overrides_different_pn_names(store):
     store.gtd_catalog_save({'123':GTIN})
     api=Api();result,book=run(store,workbook([row(pn='ERP name differs')]),api)
     assert result['report']['changed']==1
-    assert result['report']['rows'][0]['match_source']=='GoodID → GTIN'
+    assert result['report']['rows'][0]['match_source'].startswith('GoodID → GTIN')
     assert api.calls[0][0]==['01'+GTIN+'21X0']
     assert book['Лист1']['J2'].value==DT2
 
@@ -118,7 +118,7 @@ def test_same_declaration_no_highlight_and_suffix_not_invented(store):
     assert book['Лист1']['J2'].value==DT1
 
 
-@pytest.mark.parametrize('case',['no_dt','no_doc','wrong_recipient','wrong_date','wrong_quantity','wrong_pn'])
+@pytest.mark.parametrize('case',['no_dt','no_doc','wrong_recipient','wrong_quantity','wrong_pn'])
 def test_unconfirmed_preserves_original_values(store,case):
     if case!='no_doc':completed(store)
     data=row()
@@ -251,3 +251,123 @@ def test_structural_rows_do_not_duplicate_extra_tax_amounts(store):
     result,book=run(store,content,Api([DT1,DT2]))
     assert result['report']['unconfirmed']==1
     assert book['Лист1'].max_row==2 and book['Лист1']['M2'].value==100
+
+
+def test_full_composition_matches_different_bp_warehouse_numbers_and_dates(store):
+    completed(store,number='WAREHOUSE-A',date='2026-11-01',pn='Warehouse name')
+    store.gtd_catalog_save({'123':GTIN})
+    api=Api();result,book=run(store,workbook([row(pn='Other ERP name')]),api)
+    assert result['report']['changed']==1 and len(api.calls)==1
+    assert result['report']['rows'][0]['warehouse_number']=='WAREHOUSE-A'
+    assert book['Лист1']['A2'].value=='T1'  # BP document number remains untouched.
+    assert book['Проверка ГТД']['I2'].value=='WAREHOUSE-A'
+
+
+def test_same_product_same_total_wrong_inn_is_not_a_match(store):
+    completed(store,number='WAREHOUSE-A',recipient='9999999999')
+    api=Api();result,_=run(store,api=api)
+    assert result['report']['unconfirmed']==1 and not api.calls
+    assert 'ИНН' in result['report']['rows'][0]['reason']
+
+
+def test_whole_invoice_cannot_be_composed_from_two_warehouse_documents(store):
+    gtin2='07712345678907'
+    completed(store,(100,),number='WAREHOUSE-A')
+    completed(store,(200,),number='WAREHOUSE-B',gtin=gtin2,pn='PN-2')
+    store.gtd_catalog_save({'123':GTIN,'456':gtin2})
+    api=Api();source=workbook([row(100,total=1),row(200,good_id=456,pn='PN-2',total=2)])
+    result,_=run(store,source,api)
+    assert result['report']['unconfirmed']==2 and not api.calls
+    assert all('полного состава' in r['reason'] for r in result['report']['rows'])
+
+
+def test_one_warehouse_document_cannot_back_two_bp_document_numbers(store):
+    completed(store,number='WAREHOUSE-A')
+    second=row();second[0]='BP-SECOND'
+    api=Api();result,_=run(store,workbook([row(),second]),api)
+    assert result['report']['unconfirmed']==2 and not api.calls
+    assert all('нескольким номерам' in r['reason'] for r in result['report']['rows'])
+
+
+def test_separate_bp_numbers_are_matched_independently_by_complete_totals(store):
+    completed(store,number='WAREHOUSE-A')
+    completed(store,(3000,),number='WAREHOUSE-B')
+    second=row(3000,total=30);second[0]='BP-SECOND'
+    result,_=run(store,workbook([row(),second]))
+    assert result['report']['changed']==2
+    assert [r['warehouse_number'] for r in result['report']['rows']]==['WAREHOUSE-A','WAREHOUSE-B']
+
+
+def test_identical_warehouse_compositions_are_reported_as_ambiguous(store):
+    completed(store,number='WAREHOUSE-A',date='2026-11-01')
+    completed(store,number='WAREHOUSE-B',date='2026-11-02')
+    api=Api();result,_=run(store,api=api)
+    assert result['report']['unconfirmed']==1 and not api.calls
+    assert 'Несколько складских' in result['report']['rows'][0]['reason']
+
+
+def test_full_composition_accounts_for_unmarked_positions(store):
+    d=completed(store,number='WAREHOUSE-A')
+    with store.connection(True) as c:
+        c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',('unmarked',d['id'],'Unmarked',5))
+    api=Api();result,_=run(store,api=api)
+    assert result['report']['unconfirmed']==1 and not api.calls
+    # Supplying the whole document permits the marked row to be confirmed;
+    # the unmarked row remains unchanged and is described explicitly.
+    store.gtd_catalog_save({'456':'07712345678907'})
+    source=workbook([row(),row(5,pn='Unmarked',good_id=456,total=.05)])
+    result,book=run(store,source)
+    assert result['report']['changed']==1 and result['report']['unconfirmed']==1
+    assert 'без маркировки' in result['report']['rows'][1]['reason']
+
+
+def test_invalid_quantity_does_not_turn_an_invoice_into_a_partial_match(store):
+    completed(store,number='WAREHOUSE-A')
+    api=Api();result,_=run(store,workbook([row(),row(-1)]),api)
+    assert result['report']['unconfirmed']==2 and not api.calls
+    assert 'некорректные строки' in result['report']['rows'][0]['reason']
+
+
+def test_archived_document_is_matched_by_composition(store):
+    d=completed(store,number='WAREHOUSE-A')
+    store.archive(d['id'],d['version'],d['revision'],d['number'])
+    result,_=run(store)
+    assert result['report']['changed']==1
+
+
+@pytest.mark.parametrize('swap',[False,True])
+def test_complete_gtin_quantity_vector_is_compared_per_product(store,swap):
+    gtin2='07712345678907'
+    d=completed(store,number='WAREHOUSE-A')
+    result=d['result'];result['codes'].append(dict(scan_id='second-product',quantity=200,errors=[]))
+    with store.connection(True) as c:
+        c.execute('INSERT INTO warehouse_lines VALUES (?,?,?,?,?)',(d['id'],gtin2,'PN-2','manual',200))
+        c.execute('INSERT INTO warehouse_scans VALUES (?,?,?,?,?,?,?,?)',
+                  ('second-product',d['id'],gtin2+'Y0','raw','full',gtin2,1,'2026-11-05'))
+        c.execute('UPDATE warehouse_documents SET result=? WHERE id=?',(json.dumps(result),d['id']))
+    store.gtd_catalog_save({'123':GTIN,'456':gtin2})
+    quantities=[200,6000] if swap else [6000,200]
+    source=workbook([row(quantities[0]),row(quantities[1],good_id=456,pn='PN-2')])
+    api=Api();output,_=run(store,source,api)
+    if swap:
+        assert output['report']['unconfirmed']==2 and not api.calls
+    else:
+        assert output['report']['changed']==2 and len(api.calls)==1
+        assert len(api.calls[0][0])==2
+        assert all(r['warehouse_number']=='WAREHOUSE-A' for r in output['report']['rows'])
+
+
+def test_bp_date_is_not_a_matching_requirement(store):
+    completed(store,number='WAREHOUSE-A',date='2026-11-01')
+    data=row();data[4]='Дата выгрузки'
+    output,book=run(store,workbook([data]))
+    assert output['report']['changed']==1
+    assert book['Лист1']['E2'].value=='Дата выгрузки'
+
+
+def test_unfinished_matching_shipment_has_specific_diagnostic(store):
+    d=completed(store,number='WAREHOUSE-A')
+    store.start(d['id'],reopen=True)
+    api=Api();result,_=run(store,api=api)
+    assert result['report']['unconfirmed']==1 and not api.calls
+    assert 'ещё не завершена' in result['report']['rows'][0]['reason']

@@ -50,7 +50,7 @@
 </section>
 <section id="gtd-excel-panel" class="wh-card" hidden>
 <h2>Перезаполнить ГТД в Excel</h2>
-<p>Загрузите выгрузку с Number, FromINN, GoodName, Amount и Declaration. GoodId связывается с GTIN по справочнику; при отсутствии связи используется PN. КМ берутся из завершённой отгрузки с теми же номером, организацией, датой и получателем. ГТД запрашиваются по этим КМ.</p>
+<p>Загрузите выгрузку с Number, FromINN, GoodName, Amount и Declaration. GoodId связывается с GTIN по справочнику; при отсутствии связи используется PN. Строки каждого номера БП сравниваются с полным составом одной завершённой складской отгрузки: ИНН отправителя → получателя, GTIN и суммарное количество. Номера и даты БП и склада могут отличаться. ГТД запрашиваются по этим КМ.</p>
 <details class="wh-settings"><summary>Справочник GoodID → GTIN</summary><p>Файл .xlsx с двумя столбцами GoodID и GTIN, заголовки в первой строке. Повторная загрузка обновляет перечисленные связи; остальные сохраняются. GTIN из 13 цифр дополняется ведущим нулём.</p>
 <button id="gtd-catalog-template" class="btn" type="button">Скачать шаблон справочника</button>
 <form id="gtd-catalog-form"><fieldset id="gtd-catalog-fields"><label>Справочник <input id="gtd-catalog-file" type="file" accept=".xlsx" required></label><button class="btn" type="submit">Загрузить связи</button></fieldset></form><p id="gtd-catalog-result" role="status"></p></details>
