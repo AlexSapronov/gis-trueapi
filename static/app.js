@@ -247,6 +247,9 @@
       } else if (cat === 'forbidden' || cat === 'no_permission') {
         setStatus('warn', 'НЕТ ДОСТУПА К ЧЗ', 'Недостаточно прав для операции', null,
           techLine + orgTokenListHtml());
+      } else if (cat === 'timeout') {
+        setStatus('warn', 'ЧЗ ОТВЕЧАЕТ СЛИШКОМ ДОЛГО', 'Истекло время ожидания ответа ЧЗ. Повторите проверку.', null,
+          techLine + orgTokenListHtml());
       } else if (cat === 'rate_limit') {
         setStatus('warn', 'ЧЗ: СЛИШКОМ МНОГО ЗАПРОСОВ', 'Подождите и повторите', null,
           techLine + orgTokenListHtml());
@@ -378,25 +381,7 @@
   }
 
   // ===== общий fetch-helper =====
-  async function apiFetch(url, opts) {
-    opts = opts || {};
-    const ctrl = new AbortController();
-    opts.signal = ctrl.signal;
-    const to = setTimeout(() => ctrl.abort(), opts.timeoutMs || 15000);
-    let r;
-    try {
-      r = await fetch(url, opts);
-    } catch (e) {
-      clearTimeout(to);
-      return { ok: false, kind: 'network', status: 0, data: null };
-    }
-    clearTimeout(to);
-    let data = null;
-    try { data = await r.json(); } catch (e) { data = null; }
-    if (r.ok) return { ok: true, kind: 'ok', status: r.status, data };
-    if (r.status >= 400 && r.status < 500) return { ok: false, kind: 'biz', status: r.status, data };
-    return { ok: false, kind: 'server', status: r.status, data };
-  }
+  const apiFetch = GisApi.request;
   // Оборачивает операцию (scan/batch/balance) в учёт in-flight: счётчик
   // гарантированно сбрасывается в finally, после завершения вызывается
   // maybePerformPendingReload() (если был отложен reload из-за смены build_id).
@@ -563,6 +548,13 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: code.trim() }),
       });
+      if (res.kind === 'timeout') {
+        showScanError('Истекло время ожидания ответа', 'Ответ по этому КМ не получен. Повторите сканирование.');
+        checkBackend();
+        focusScan();
+        scanning = false;
+        return;
+      }
       if (res.kind === 'network') {
         S.serverOnline = false; computeStatus();
         showScanError('Сервер недоступен', 'Подключение восстановится автоматически');
@@ -614,9 +606,15 @@
       batchCheck.disabled = true; batchCheck.textContent = 'Проверка…';
       const res = await apiFetch('/api/scan_batch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: lines }),
+        body: JSON.stringify({ codes: lines }), timeoutMs: 120000,
       });
       batchCheck.disabled = false; batchCheck.textContent = 'Проверить';
+      if (res.kind === 'timeout') {
+        batchSummary.classList.remove('hidden');
+        batchSummary.innerHTML = '<span class="err-n">Истекло время ожидания пакетной проверки. Повторите запрос.</span>';
+        checkBackend();
+        return;
+      }
       if (res.kind === 'network') {
         S.serverOnline = false; computeStatus();
         batchSummary.classList.remove('hidden');
@@ -724,8 +722,13 @@
       balanceResult.innerHTML = '<div class="result-card neutral"><span class="spinner"></span>Запрос…</div>';
       const res = await apiFetch('/api/balance', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gtin }),
+        body: JSON.stringify({ gtin }), timeoutMs: 180000,
       });
+      if (res.kind === 'timeout') {
+        balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Истекло время ожидания баланса. Повторите запрос.</div></div>';
+        checkBackend();
+        return;
+      }
       if (res.kind === 'network') {
         S.serverOnline = false; computeStatus();
         balanceResult.innerHTML = '<div class="result-card err"><div class="verdict">✕ ОШИБКА</div><div class="err-msg">Сервер недоступен</div></div>';

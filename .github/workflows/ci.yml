@@ -34,6 +34,7 @@ jobs:
         run: |
           node --check static/theme.js
           node --check static/admin-settings.js
+          node --check static/api-request.js
           node --check static/app.js
           node --check static/scanner-focus.js
           node --check static/warehouse.js

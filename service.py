@@ -168,6 +168,8 @@ class Service:
 
     # ---- administrator: customs declaration lookup by scanned KI --------
 
+    # /api/status describes core cises/info/search operations. Optional
+    # cises/short/list failures/successes must not overwrite the scanner health.
     async def lookup_gtd_batch(self, cises: list[str], org_inn: str, *, allow_missing: bool = False) -> dict[str, str | None]:
         """Resolve every KI; never associate reordered short/list replies by position."""
         token = self._org_token(self._pick_org_inn(org_inn))
@@ -177,10 +179,8 @@ class Service:
         try:
             records = await self.client.short_info(list(dict.fromkeys(cises)), token)
         except TrueApiError as exc:
-            self._mark_trueapi_error(exc.category)
             raise AppError(exc.category, exc.message) from exc
         except Exception as exc:
-            self._mark_trueapi_error(ErrorCategory.API_ERROR)
             raise AppError(ErrorCategory.API_ERROR, 'Не удалось получить ГТД из ЧЗ') from exc
         found = {}
         for record in records:
@@ -216,7 +216,6 @@ class Service:
         missing = expected - found.keys()
         if missing:
             raise AppError(ErrorCategory.API_ERROR, 'ЧЗ не вернул ГТД для КИ ' + sorted(missing)[0])
-        self._mark_trueapi_success()
         return found
 
     async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
@@ -235,7 +234,6 @@ class Service:
         try:
             records = await self.client.short_info([parsed.api_cis], token)
         except TrueApiError as exc:
-            self._mark_trueapi_error(exc.category)
             if exc.status == 404:
                 raise AppError(
                     ErrorCategory.API_ERROR,
@@ -245,12 +243,9 @@ class Service:
                 ) from exc
             raise AppError(exc.category, exc.message) from exc
         except httpx.TimeoutException as exc:
-            self._mark_trueapi_error(ErrorCategory.TIMEOUT)
             raise AppError(ErrorCategory.TIMEOUT, CATEGORY_MESSAGES[ErrorCategory.TIMEOUT]) from exc
         except Exception as exc:
-            self._mark_trueapi_error(ErrorCategory.API_ERROR)
             raise AppError(ErrorCategory.API_ERROR, CATEGORY_MESSAGES[ErrorCategory.API_ERROR]) from exc
-        self._mark_trueapi_success()
         if not records:
             return {
                 "found": False, "cis": parsed.api_cis, "gtin": parsed.gtin,
