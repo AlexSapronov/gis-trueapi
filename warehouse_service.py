@@ -6,7 +6,8 @@ import re
 from datetime import datetime, timezone
 
 from organizations import registry
-from warehouse_excel import positive_integer, restore_radio_separators
+from datamatrix import strip_ai30
+from warehouse_excel import positive_integer
 from warehouse_store import WarehouseError
 
 
@@ -93,28 +94,22 @@ async def shipment_results(service, doc):
 
 
 def _receipt_full_code_error(expected_code: str, scanned_code: str, expected_quantity: int) -> str | None:
-    """Allow only a trailing AI 30 added to the *unchanged* source KM.
+    """Compare the *entire* KM and its crypto, ignoring GS/FNC1 and AI 30.
 
-    marking-bm exports the original SUZ code, but prints labels with
-    GS + 30 + package quantity. Compare the complete original prefix,
-    including the crypto tail; never drop arbitrary AIs or truncate crypto.
+    All recognized GS/FNC1 representations are treated identically, including
+    partially lost separators. The optional AI 30 is packaging metadata, not
+    part of KM identity, and must never determine receipt acceptance.
     """
-    if scanned_code == expected_code:
+    expected = strip_ai30(expected_code).replace('\x1d', '')
+    scanned = strip_ai30(scanned_code).replace('\x1d', '')
+    if scanned == expected:
         return None
-    if scanned_code.startswith(expected_code):
-        suffix = scanned_code[len(expected_code):]
-        match = re.fullmatch(r"\x1d30([0-9]{1,8})", suffix)
-        if match:
-            quantity = int(match.group(1))
-            if quantity > 0:
-                if quantity == expected_quantity:
-                    return None
-                return (
-                    f"Количество в AI 30 на этикетке ({quantity}) не совпадает "
-                    f"с количеством в документе ({expected_quantity})"
-                )
+    # If GS was dropped before AI 30 in an otherwise equal KM, allow that
+    # trailing AI too. A suffix is accepted only after an *exact* crypto match.
+    for short, long in ((expected, scanned), (scanned, expected)):
+        if long.startswith(short) and re.fullmatch(r'30[0-9]{1,8}', long[len(short):]):
+            return None
     return 'Полный КМ не совпадает с ожидаемым: проверьте криптографическую часть'
-
 
 def receipt_results(doc):
     expected = {e['cis']: e for e in doc['expected']}
@@ -127,7 +122,7 @@ def receipt_results(doc):
             errors.append('КМ отсутствует в документе приёмки')
         else:
             mismatch = _receipt_full_code_error(
-                e['full_code'], restore_radio_separators(scan['full_code']), e['quantity']
+                e['full_code'], scan['full_code'], e['quantity']
             )
             if mismatch:
                 errors.append(mismatch)
