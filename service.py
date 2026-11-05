@@ -15,7 +15,8 @@ from typing import Any, Optional
 import httpx
 
 from config import settings
-from datamatrix import parse
+from datamatrix import parse, strip_ai30
+from gtd import interpret_gtd_record
 from mockclient import MockTrueApiClient
 from models import (
     AppError,
@@ -164,6 +165,44 @@ class Service:
         if code in ("504",):
             return ErrorCategory.API_UNAVAILABLE
         return ErrorCategory.API_ERROR
+
+    # ---- administrator: customs declaration lookup by scanned KI --------
+
+    async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
+        """Read DT information via True API without exposing tokens or raw responses."""
+        parsed = parse(strip_ai30(raw_code))
+        if not parsed.structure_valid or not parsed.api_cis:
+            category = (
+                ErrorCategory.GTIN_CHECKSUM
+                if parsed.structure_error and "контрольн" in parsed.structure_error.lower()
+                else ErrorCategory.DM_STRUCTURE
+            )
+            raise AppError(category, parsed.structure_error or CATEGORY_MESSAGES[category])
+
+        use_inn = self._pick_org_inn(org_inn)
+        token = self._org_token(use_inn)
+        try:
+            records = await self.client.short_info([parsed.api_cis], token)
+        except TrueApiError as exc:
+            self._mark_trueapi_error(exc.category)
+            raise AppError(exc.category, exc.message) from exc
+        except httpx.TimeoutException as exc:
+            self._mark_trueapi_error(ErrorCategory.TIMEOUT)
+            raise AppError(ErrorCategory.TIMEOUT, CATEGORY_MESSAGES[ErrorCategory.TIMEOUT]) from exc
+        except Exception as exc:
+            self._mark_trueapi_error(ErrorCategory.API_ERROR)
+            raise AppError(ErrorCategory.API_ERROR, CATEGORY_MESSAGES[ErrorCategory.API_ERROR]) from exc
+        self._mark_trueapi_success()
+        if not records:
+            return {
+                "found": False, "cis": parsed.api_cis, "gtin": parsed.gtin,
+                "declaration_number": None, "declaration_date": None,
+                "declaration_id": None, "message": "КИ не найден в ответе True API",
+            }
+        try:
+            return interpret_gtd_record(records[0], parsed.api_cis, parsed.gtin)
+        except ValueError as exc:
+            raise AppError(ErrorCategory.API_ERROR, str(exc)) from exc
 
     # ---- scan (один КМ) ------------------------------------------------
 
