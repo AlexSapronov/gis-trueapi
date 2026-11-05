@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from warehouse_issues import WarehouseIssues
+from upd_store import UpdStore
 from app_settings import RuntimeSettings
 
 
@@ -24,7 +25,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(WarehouseIssues, RuntimeSettings):
+class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +87,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings):
             if 'archived_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
             self.init_settings(c)
+            self.init_upd(c)
         c.close()
 
     @contextmanager

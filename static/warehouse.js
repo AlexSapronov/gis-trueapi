@@ -31,7 +31,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !updEditor?.hasDraft() && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -72,6 +72,7 @@
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
+  const updEditor = admin ? new UpdEditor({request, json, download}) : null;
   function pendingKey() { return current ? 'warehouse-unsent-' + current.id : ''; }
   function savePending() {
     if (!current || admin) return;
@@ -179,6 +180,7 @@
     return $('filter-trash').value === 'archive' ? 'Архив · ' : $('filter-trash').value === 'true' ? 'Корзина · ' : '';
   }
   function showSection() {
+    updEditor?.setDocument(current);
     document.body.classList.toggle('wh-worker-document', !admin && !!current);
     $('document-filters').hidden = !!current || (admin && section !== 'documents');
     $('list-heading').hidden=$('document-filters').hidden;
@@ -330,6 +332,7 @@
       if (errors) $('check-errors').insertAdjacentHTML('afterbegin', `<button class="btn wh-danger" data-show-errors>Показать ошибочные КМ (${errors})</button>`);
     }
     if (admin) {
+      updEditor.setDocument(d);
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed' || !!d.archived_at;
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
       $('archive-document').hidden = !!d.deleted_at || !!d.archived_at || d.status !== 'completed' || !d.check_current || !result?.ok || !!d.open_issues || !!d.pending_returns;

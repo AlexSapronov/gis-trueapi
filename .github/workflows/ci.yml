@@ -37,4 +37,5 @@ jobs:
           node --check static/app.js
           node --check static/scanner-focus.js
           node --check static/warehouse.js
+          node --check static/upd.js
           echo "app.js syntax OK"

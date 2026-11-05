@@ -168,6 +168,51 @@ class Service:
 
     # ---- administrator: customs declaration lookup by scanned KI --------
 
+    async def lookup_gtd_batch(self, cises: list[str], org_inn: str) -> dict[str, str]:
+        """Resolve every KI; never associate reordered short/list replies by position."""
+        token = self._org_token(self._pick_org_inn(org_inn))
+        expected = set(cises)
+        identities_to_cis = {key: cis for cis in expected
+                             for key in (cis, cis[2:16] + cis[18:])}
+        try:
+            records = await self.client.short_info(list(dict.fromkeys(cises)), token)
+        except TrueApiError as exc:
+            self._mark_trueapi_error(exc.category)
+            raise AppError(exc.category, exc.message) from exc
+        except Exception as exc:
+            self._mark_trueapi_error(ErrorCategory.API_ERROR)
+            raise AppError(ErrorCategory.API_ERROR, 'Не удалось получить ГТД из ЧЗ') from exc
+        found = {}
+        for record in records:
+            details = record.get('result') or record.get('cisInfo') or {}
+            nested = details.get('cisInfo') if isinstance(details, dict) else None
+            identities = [record.get('requestedCis'), record.get('cis')]
+            for source in (details, nested):
+                if isinstance(source, dict):
+                    identities.extend([source.get('requestedCis'), source.get('cis')])
+            supplied = [key for key in identities if isinstance(key, str) and key]
+            keys = {identities_to_cis[key] for key in supplied if key in identities_to_cis}
+            if len(keys) != 1 or any(key not in identities_to_cis for key in supplied):
+                raise AppError(ErrorCategory.API_ERROR, 'В ответе ЧЗ нет однозначной связи КИ и ГТД')
+            cis = keys.pop()
+            if cis in found:
+                raise AppError(ErrorCategory.API_ERROR, 'ЧЗ вернул повторный ответ по КИ ' + cis)
+            try:
+                result = interpret_gtd_record(record, cis, cis[2:16])
+            except ValueError as exc:
+                raise AppError(ErrorCategory.API_ERROR, str(exc)) from exc
+            dt = result.get('declaration_number')
+            if not result.get('found') or not isinstance(dt, str) or not dt.strip():
+                raise AppError(ErrorCategory.API_ERROR, 'ГТД не получена для КИ ' + cis)
+            if result.get('gtin') != cis[2:16]:
+                raise AppError(ErrorCategory.API_ERROR, 'GTIN в ответе ЧЗ не совпадает с КИ ' + cis)
+            found[cis] = dt.strip()
+        missing = expected - found.keys()
+        if missing:
+            raise AppError(ErrorCategory.API_ERROR, 'ЧЗ не вернул ГТД для КИ ' + sorted(missing)[0])
+        self._mark_trueapi_success()
+        return found
+
     async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
         """Read DT information via True API without exposing tokens or raw responses."""
         parsed = parse(strip_ai30(raw_code))
