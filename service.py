@@ -185,6 +185,13 @@ class Service:
             records = await self.client.short_info([parsed.api_cis], token)
         except TrueApiError as exc:
             self._mark_trueapi_error(exc.category)
+            if exc.status == 404:
+                raise AppError(
+                    ErrorCategory.API_ERROR,
+                    'True API вернул HTTP 404 при обращении к cises/short/list. '
+                    'Проверьте доступность метода на используемом контуре ЧЗ. '
+                    'Сам по себе этот ответ не означает, что КМ не найден.',
+                ) from exc
             raise AppError(exc.category, exc.message) from exc
         except httpx.TimeoutException as exc:
             self._mark_trueapi_error(ErrorCategory.TIMEOUT)
