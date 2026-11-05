@@ -20,6 +20,7 @@ from organizations import registry
 from warehouse_excel import MAX_FILE_SIZE, export_shipment, import_xlsx, scan_data, template
 from warehouse_service import check_document, resolve_pns
 from warehouse_store import WarehouseError
+from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, check_document as check_upd_document
 
 
 class ScanBody(BaseModel):
@@ -28,6 +29,12 @@ class ScanBody(BaseModel):
 
 class GtdBody(ScanBody):
     org_inn: str = Field(min_length=10, max_length=12)
+
+
+class UpdMapping(BaseModel):
+    fill_gtd: bool = False
+    mapping: dict[str, str | None] = Field(max_length=5000)
+    save_links: bool = False
 
 
 class DocumentVersion(BaseModel):
@@ -270,6 +277,61 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @admin.post('/documents/{document_id}/reopen')
     def reopen(document_id: str):
         return store_getter().start(document_id, reopen=True)
+
+    @admin.post('/documents/{document_id}/upd')
+    async def upload_upd(document_id: str, file: UploadFile = File(...)):
+        content = await file.read(MAX_XML_SIZE + 1)
+        store = store_getter()
+        doc = store.get(document_id)
+        info = await asyncio.to_thread(inspect_xml, content, doc, store.upd_aliases(doc['org_inn']))
+        upload_id = store.upd_create(doc, content)
+        return {**info, 'upload_id': upload_id}
+
+    @admin.post('/documents/{document_id}/upd/{upload_id}/prepare')
+    async def prepare_upd(document_id: str, upload_id: str, body: UpdMapping):
+        store = store_getter()
+        upload, doc = store.upd_get(document_id, upload_id)
+        info = await asyncio.to_thread(inspect_xml, upload['source'], doc, {})
+        if any(pn is not None and (not pn.strip() or len(pn) > 1000) for pn in body.mapping.values()):
+            raise WarehouseError('Некорректный PN')
+        root = await asyncio.to_thread(parse_xml, upload['source'])
+        allocated = allocate(root, doc, body.mapping)
+        aliases = {}
+        if body.save_links:
+            for row in info['rows']:
+                source = row['pn'].strip()
+                target = body.mapping[row['id']]
+                if target is None:
+                    continue
+                if not source or len(source) > 1000:
+                    raise WarehouseError('Для сохранения связи заполните PN из XML (до 1000 символов)')
+                if source in aliases and aliases[source] != target:
+                    raise WarehouseError('Один PN из XML сопоставлен разным PN склада; снимите сохранение связей')
+                aliases[source] = target
+        declarations = None
+        if body.fill_gtd:
+            try:
+                async with asyncio.timeout(180):
+                    declarations = await service_getter().lookup_gtd_batch(
+                        [scan['cis'] for group in allocated for scan in group], doc['org_inn'])
+            except TimeoutError as exc:
+                raise WarehouseError('Истекло время получения ГТД. Повторите подготовку XML.', 504) from exc
+            except AppError as exc:
+                raise WarehouseError(exc.message, 502) from exc
+        output, filename, summary = await asyncio.to_thread(
+            enrich_xml, upload['source'], doc, body.mapping, allocated, declarations)
+        store.upd_finish(document_id, upload_id, output, filename, summary, aliases)
+        return {'rows': summary, 'filename': filename, 'saved_links': len(aliases), 'gtd_filled': body.fill_gtd}
+
+    @admin.get('/documents/{document_id}/upd/{upload_id}/download')
+    def download_upd(document_id: str, upload_id: str):
+        upload, doc = store_getter().upd_get(document_id, upload_id)
+        check_upd_document(doc)
+        if upload['output'] is None:
+            raise WarehouseError('Сначала подготовьте XML', 409)
+        return Response(upload['output'], media_type='application/xml', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + quote(upload['filename']),
+            'Cache-Control': 'no-store'})
 
     @admin.get('/documents/{document_id}/export')
     def export(document_id: str):

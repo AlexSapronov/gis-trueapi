@@ -87,6 +87,17 @@
 <p id="issue-state" class="wh-stale" role="status"></p>
 {% if admin %}
 <div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="archive-document" class="btn">В архив</button><button id="unarchive-document" class="btn primary" hidden>Вернуть из архива</button><button id="delete-document" class="btn wh-danger">Удалить документ</button><button id="restore-document" class="btn primary" hidden>Восстановить из корзины</button><button id="show-issues" class="btn" hidden>Разобрать обращения</button></div>
+<details id="upd-panel" class="wh-settings" hidden><summary>Заполнить XML УПД кодами маркировки и ГТД</summary>
+<p>Загрузите неподписанный XML УПД 5.03 из 1С БП. Сопоставьте PN из XML с PN отсканированного товара. По желанию включите получение ГТД из ЧЗ: при разных декларациях программа разделит позицию на строки, сохранив общие суммы.</p>
+<form id="upd-upload-form"><fieldset id="upd-upload-fields"><label>XML УПД <input id="upd-file" type="file" accept=".xml" required></label><button class="btn" type="submit">Загрузить XML</button></fieldset></form>
+<p id="upd-status" role="status" aria-live="polite"></p>
+<form id="upd-mapping-form" hidden><fieldset id="upd-mapping-fields"><p id="upd-source"></p><p class="wh-muted">PN берётся из «АртикулТов», а при его отсутствии — из наименования без описания в скобках в конце. Полное наименование показано рядом. Для немаркируемых строк явно выберите «Без маркировки».</p>
+<div class="wh-table"><table><thead><tr><th>Строка</th><th>PN в XML / наименование</th><th>Количество XML</th><th>PN в сканах</th></tr></thead><tbody id="upd-mapping-rows"></tbody></table></div>
+<label><input id="upd-save-links" type="checkbox"> Сохранить связи PN для следующих загрузок этой организации</label>
+<label><input id="upd-fill-gtd" type="checkbox"> Получать и подставлять ГТД из ЧЗ</label><p class="wh-muted">Без флажка ГТД сохраняются из исходного XML, запросы ГТД в ЧЗ не выполняются.</p>
+<button class="btn primary" type="submit">Подготовить XML</button></fieldset></form>
+<div id="upd-preview" hidden></div><button id="upd-download" class="btn primary" type="button" hidden>Скачать заполненный XML</button>
+</details>
 <details id="doc-settings" class="wh-settings"><summary>Реквизиты, PN и план документа</summary><form id="edit-form"><label id="strict-label"><input id="strict" type="checkbox"> Строгое соответствие юридическому лицу</label><div id="pn-fields"></div><button class="btn" id="save">Сохранить изменения</button> <button class="btn" id="cancel-edit" type="button">Отменить изменения</button></form></details>
 {% endif %}
 {% if not admin %}
@@ -119,5 +130,5 @@
 {% if not admin %}<dialog id="report-dialog"><h2>Сообщить ответственному</h2><p>Результат проверки и коды будут доступны ответственному в админке.</p><form id="report-form"><label>Комментарий <textarea id="report-message" rows="3" maxlength="2000" placeholder="Что нужно уточнить? Необязательно"></textarea></label><div class="wh-toolbar"><button class="btn primary">Отправить</button><button id="report-cancel" class="btn" type="button">Отмена</button></div></form></dialog>{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Если считали код случайно, продолжайте работу. Если хотите изъять его из документа, нажмите «Удалить код из документа».</p><p id="duplicate-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="duplicate-keep" autofocus>ОК, продолжить</button><button class="btn wh-danger" id="duplicate-remove">Удалить код из документа</button></div></dialog>
 {% if not admin %}<dialog id="complete-dialog"><h2>Всё совпадает</h2><p id="complete-description"></p><p id="complete-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="complete-confirm">Завершить документ</button><button class="btn" id="complete-later" autofocus>Продолжить работу</button></div></dialog>{% endif %}
-<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
+<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script><script src="/static/upd.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>
