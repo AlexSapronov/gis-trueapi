@@ -118,6 +118,17 @@ async def test_gtd_rejects_unknown_organization(service):
     assert service.client.calls == []
 
 
+@pytest.mark.asyncio
+async def test_upstream_404_is_not_reported_as_missing_organization(service):
+    async def failed_short_info(cises, token):
+        raise TrueApiError(ErrorCategory.NOT_FOUND, 'Not Found', status=404)
+    service.client.short_info = failed_short_info
+    with pytest.raises(AppError) as error:
+        await service.lookup_gtd(CIS, '0000000001')
+    assert error.value.category == ErrorCategory.API_ERROR
+    assert 'True API' in error.value.message
+    assert 'HTTP 404' in error.value.message
+
 def test_admin_gtd_endpoint_is_protected_and_responds(monkeypatch, service):
     monkeypatch.setattr(settings, "admin_key", "gtd-test-admin-key")
     monkeypatch.setattr(main, "svc", service)
