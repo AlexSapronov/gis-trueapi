@@ -43,7 +43,11 @@
     if (!response.ok) {
       let d; try { d = await response.json(); } catch (_) { d = {}; }
       if (admin && response.status === 403 && path !== '/api/admin/session') requireLogin();
-      const error = new Error(d.message || (typeof d.detail === 'string' ? d.detail : `Ошибка ${response.status}`));
+      const missingGtdRoute = admin && path === '/api/admin/warehouse/gtd'
+        && response.status === 404 && d.detail === 'Not Found';
+      const error = new Error(missingGtdRoute
+        ? 'На сервере отсутствует маршрут проверки ГТД. Обновите Python-код приложения и перезапустите службу gis-trueapi.service.'
+        : (d.message || (typeof d.detail === 'string' ? d.detail : `Ошибка ${response.status}`)));
       error.status = response.status; error.code = d.code; throw error;
     }
     return response;
