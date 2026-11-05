@@ -355,6 +355,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
         return xlsx_response(export_shipment(d), 'Отгрузка_' + number + '_КМ.xlsx')
 
     app.include_router(router)
+    from gtd_excel_routes import install_gtd_excel
+    install_gtd_excel(app, admin, service_getter, store_getter)
     app.include_router(admin)
 
 

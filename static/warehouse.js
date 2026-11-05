@@ -7,6 +7,7 @@
   let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
   if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd') section = 'gtd';
+  if (admin && new URLSearchParams(location.search).get('section') === 'gtd-excel') section = 'gtd-excel';
   let returnRequestId = null;
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null, archiveTarget = null;
@@ -31,7 +32,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !updEditor?.hasDraft() && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !gtdExcel?.hasDraft() && !updEditor?.hasDraft() && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -73,6 +74,7 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   const updEditor = admin ? new UpdEditor({request, json, download}) : null;
+  const gtdExcel = admin ? new GtdExcel({json, download}) : null;
   function pendingKey() { return current ? 'warehouse-unsent-' + current.id : ''; }
   function savePending() {
     if (!current || admin) return;
@@ -194,7 +196,9 @@
     $('import-unmarked-hint').textContent = kind === 'receipt'
       ? 'Для товара без маркировки оставьте КМ пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.'
       : 'Для товара без маркировки оставьте GTIN пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.';
-    const token = section === 'token', settings = section === 'settings', gtd = section === 'gtd', other = token || settings || gtd;
+    const token = section === 'token', settings = section === 'settings', gtd = section === 'gtd', excel = section === 'gtd-excel', other = token || settings || gtd || excel;
+    $('gtd-excel-panel').hidden = !excel;
+    $('gtd-excel-tab').classList.toggle('primary', excel);
     $('application-settings').hidden = !settings;
     $('settings-tab').classList.toggle('primary', settings);
     $('token-panel').hidden = !token;
@@ -228,7 +232,8 @@
       const id = new URLSearchParams(location.search).get('doc');
       if (id && !current) await open(id); else if (current) render(); else await list();
     } else if (section === 'settings') await settingsEditor.load();
-    else if (section !== 'gtd') await tokenStatus();
+    else if (!['gtd','gtd-excel'].includes(section)) await tokenStatus();
+    gtdExcel.resume();
     showSection();
     if (section === 'gtd') $('gtd-code').focus();
   }
@@ -565,6 +570,11 @@
       if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) throw new Error('Сохраните или отмените изменения документа перед переходом.');
       section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
       showSection(); await tokenStatus();
+    });
+    $('gtd-excel-tab').onclick = () => action(async () => {
+      if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1)
+        throw new Error('Сохраните или отмените изменения перед переходом.');
+      section='gtd-excel';current=null;history.replaceState(null,'','/admin?section=gtd-excel');showSection();
     });
     $('gtd-tab').onclick = () => action(async () => {
       if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1)

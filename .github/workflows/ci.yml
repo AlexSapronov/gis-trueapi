@@ -39,4 +39,5 @@ jobs:
           node --check static/scanner-focus.js
           node --check static/warehouse.js
           node --check static/upd.js
+          node --check static/gtd-excel.js
           echo "app.js syntax OK"

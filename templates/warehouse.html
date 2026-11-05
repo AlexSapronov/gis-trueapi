@@ -17,7 +17,7 @@
 <form id="login" class="wh-card wh-login"><span class="wh-eyebrow">Административный доступ</span><h2>Вход в админку</h2><p class="wh-muted">Один вход для токенов, приёмки и отгрузки.</p><label>Ключ администратора <input id="admin-key" type="password" autocomplete="current-password" required></label><button class="btn primary">Войти</button></form>
 {% endif %}
 <div id="workspace" {% if admin %}hidden{% endif %}>
-<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button><button class="btn" id="gtd-tab">Проверить ГТД</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
+<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button><button class="btn" id="gtd-tab">Проверить ГТД</button><button class="btn" id="gtd-excel-tab">ГТД в Excel</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
 {% if admin %}
 <section id="application-settings" class="wh-card" hidden>
 <span class="wh-eyebrow">Управление приложением</span><h2>Настройки</h2><p id="settings-meta" class="wh-muted"></p>
@@ -47,6 +47,18 @@
 <div class="wh-toolbar"><button id="gtd-submit" class="btn primary" type="submit">Проверить</button><button id="gtd-clear" class="btn" type="reset">Очистить</button></div>
 </form>
 <div id="gtd-result" role="status" aria-live="polite" hidden></div>
+</section>
+<section id="gtd-excel-panel" class="wh-card" hidden>
+<h2>Перезаполнить ГТД в Excel</h2>
+<p>Загрузите выгрузку с Number, FromINN, GoodName, Amount и Declaration. GoodId связывается с GTIN по справочнику; при отсутствии связи используется PN. КМ берутся из завершённой отгрузки с теми же номером, организацией, датой и получателем. ГТД запрашиваются по этим КМ.</p>
+<details class="wh-settings"><summary>Справочник GoodID → GTIN</summary><p>Файл .xlsx с двумя столбцами GoodID и GTIN, заголовки в первой строке. Повторная загрузка обновляет перечисленные связи; остальные сохраняются. GTIN из 13 цифр дополняется ведущим нулём.</p>
+<button id="gtd-catalog-template" class="btn" type="button">Скачать шаблон справочника</button>
+<form id="gtd-catalog-form"><fieldset id="gtd-catalog-fields"><label>Справочник <input id="gtd-catalog-file" type="file" accept=".xlsx" required></label><button class="btn" type="submit">Загрузить связи</button></fieldset></form><p id="gtd-catalog-result" role="status"></p></details>
+<form id="gtd-excel-form"><fieldset id="gtd-excel-fields"><label>Excel для проверки ГТД <input id="gtd-excel-file" type="file" accept=".xlsx" required></label><button id="gtd-excel-submit" class="btn primary" type="submit">Проверить и заполнить ГТД</button></fieldset></form>
+<p class="wh-muted">Выгрузка сохраняет исходные листы и столбцы. Изменённые строки выделяются жёлтым, пояснения добавляются на отдельный лист «Проверка ГТД». Если нужны новые границы строк по целым КМ, простые строки пересобираются с сохранением количества и итоговой стоимости. Неподтверждённые группы остаются без изменений. Номер из ЧЗ может не содержать номер товара после последнего слеша — этот суффикс не переносится из старой декларации.</p>
+<p id="gtd-excel-status" role="status" aria-live="polite"></p><button id="gtd-excel-download" class="btn primary" type="button" hidden>Скачать проверенный Excel</button>
+<label><input id="gtd-excel-only-changed" type="checkbox"> Только изменённые строки</label>
+<div class="wh-table"><table><thead><tr><th>Лист / строка</th><th>Накладная / PN</th><th>Исходная ГТД</th><th>ГТД из ЧЗ</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody id="gtd-excel-rows"></tbody></table></div>
 </section>
 <details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
 <p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
@@ -130,5 +142,5 @@
 {% if not admin %}<dialog id="report-dialog"><h2>Сообщить ответственному</h2><p>Результат проверки и коды будут доступны ответственному в админке.</p><form id="report-form"><label>Комментарий <textarea id="report-message" rows="3" maxlength="2000" placeholder="Что нужно уточнить? Необязательно"></textarea></label><div class="wh-toolbar"><button class="btn primary">Отправить</button><button id="report-cancel" class="btn" type="button">Отмена</button></div></form></dialog>{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Если считали код случайно, продолжайте работу. Если хотите изъять его из документа, нажмите «Удалить код из документа».</p><p id="duplicate-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="duplicate-keep" autofocus>ОК, продолжить</button><button class="btn wh-danger" id="duplicate-remove">Удалить код из документа</button></div></dialog>
 {% if not admin %}<dialog id="complete-dialog"><h2>Всё совпадает</h2><p id="complete-description"></p><p id="complete-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="complete-confirm">Завершить документ</button><button class="btn" id="complete-later" autofocus>Продолжить работу</button></div></dialog>{% endif %}
-<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script><script src="/static/upd.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
+<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script><script src="/static/upd.js?v={{ build_id }}"></script><script src="/static/gtd-excel.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>
