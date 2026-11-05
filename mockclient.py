@@ -77,6 +77,19 @@ class MockTrueApiClient:
             )
         return results
 
+    async def short_info(self, cises: list[str], token: str) -> list[dict[str, Any]]:
+        """Mock short/list; never invent real customs declaration numbers."""
+        records = await self.info(cises, token)
+        out = []
+        for rec in records:
+            if rec.get("errorMessage"):
+                out.append({"errorMessage": rec["errorMessage"], "errorCode": rec.get("errorCode")})
+            else:
+                item = rec["cisInfo"].copy()
+                item["specialAttributes"] = {}
+                out.append({"result": item})
+        return out
+
     @staticmethod
     def _split(cis: str) -> tuple[str | None, str]:
         """Разбирает cis (либо GTIN+serial, либо 01<GTIN>21<serial>) → (gtin, serial)."""

@@ -6,9 +6,11 @@
   let authenticated = false;
   let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
   if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
+  if (admin && new URLSearchParams(location.search).get('section') === 'gtd') section = 'gtd';
   let returnRequestId = null;
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null, archiveTarget = null;
+  let gtdBusy = false;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshPromise = null, queueError = false;
   let duplicateTarget = null, duplicateDeleting = false;
@@ -29,7 +31,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -186,10 +188,12 @@
     $('import-unmarked-hint').textContent = kind === 'receipt'
       ? 'Для товара без маркировки оставьте КМ пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.'
       : 'Для товара без маркировки оставьте GTIN пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.';
-    const token = section === 'token', settings = section === 'settings', other = token || settings;
+    const token = section === 'token', settings = section === 'settings', gtd = section === 'gtd', other = token || settings || gtd;
     $('application-settings').hidden = !settings;
     $('settings-tab').classList.toggle('primary', settings);
     $('token-panel').hidden = !token;
+    $('gtd-panel').hidden = !gtd;
+    $('gtd-tab').classList.toggle('primary', gtd);
     $('document-list').hidden = other || !!current;
     $('document').hidden = other || !current;
     $('import-box').hidden = other || !!current || $('filter-trash').value !== 'false';
@@ -212,13 +216,15 @@
     setupFilterOrgs(config.organizations); loadFilters();
     $('import-org').innerHTML = '<option value="">Из файла</option>' + options;
     $('token-org').innerHTML = options;
+    $('gtd-org').innerHTML = options;
     if (kind === 'receipt') $('import-org').value = defaultReceiptOrg;
     if (section === 'documents') {
       const id = new URLSearchParams(location.search).get('doc');
       if (id && !current) await open(id); else if (current) render(); else await list();
     } else if (section === 'settings') await settingsEditor.load();
-    else await tokenStatus();
+    else if (section !== 'gtd') await tokenStatus();
     showSection();
+    if (section === 'gtd') $('gtd-code').focus();
   }
   async function list() {
     const serial=++listSerial;
@@ -356,7 +362,7 @@
   }
   async function refreshDocument() {
     try {
-      if (admin && section === 'settings') return;
+      if (admin && (section === 'settings' || section === 'gtd')) return;
       if (admin && section === 'token') await tokenStatus();
       else if (current) {
         const id = current.id, next = await json(apiBase + '/documents/' + id);
@@ -553,6 +559,58 @@
       section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
       showSection(); await tokenStatus();
     });
+    $('gtd-tab').onclick = () => action(async () => {
+      if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1)
+        throw new Error('Сохраните или отмените изменения перед переходом.');
+      section = 'gtd'; current = null; history.replaceState(null, '', '/admin?section=gtd');
+      showSection(); $('gtd-code').focus();
+    });
+    $('gtd-form').onsubmit = e => {
+      e.preventDefault();
+      if (gtdBusy) return;
+      action(async () => {
+        gtdBusy = true;
+        $('gtd-submit').disabled = true;
+        $('gtd-result').hidden = true;
+        $('gtd-result').className = '';
+        try {
+          const data = await json(apiBase + '/gtd', {method:'POST',
+            body:{code:$('gtd-code').value, org_inn:$('gtd-org').value}});
+          const field = (name, value) => value
+            ? '<div class="wh-gtd-field"><dt>' + esc(name) + '</dt><dd>' + esc(value) + '</dd></div>'
+            : '';
+          const titleClass = data.declaration_number ? 'wh-good' : 'wh-stale';
+          const statusNames = {INTRODUCED:'В обороте', APPLIED:'Нанесён', EMITTED:'Эмитирован'};
+          $('gtd-result').innerHTML =
+            '<h3 class="' + titleClass + '">' + esc(data.message || 'Результат проверки') + '</h3>' +
+            '<dl class="wh-gtd-fields">' +
+              field('Номер ДТ (ГТД)', data.declaration_number) +
+              field('Дата ДТ', data.declaration_date) +
+              field('Идентификатор ДТ', data.declaration_id) +
+              field('GTIN', data.gtin) +
+              field('Товар', data.product_name) +
+              field('Статус КМ', statusNames[data.status] || data.status) +
+              field('Тип эмиссии', data.emission_type) +
+              field('Дата ввода в оборот', data.introduced_date) +
+              field('КИ (для запроса)', data.cis) + '</dl>';
+          $('gtd-result').hidden = false;
+          $('gtd-code').value = '';
+          $('gtd-code').focus();
+        } catch (err) {
+          $('gtd-result').textContent = err.message || 'Ошибка проверки';
+          $('gtd-result').className = 'wh-bad';
+          $('gtd-result').hidden = false;
+          throw err;
+        } finally {
+          gtdBusy = false;
+          $('gtd-submit').disabled = false;
+        }
+      });
+    };
+    $('gtd-form').onreset = () => {
+      $('gtd-result').hidden = true;
+      setTimeout(() => $('gtd-code').focus(), 0);
+    };
     $('settings-tab').onclick = () => action(async () => {
       if (dirty || caseDraft() || tokenDraft() || settingsEditor.isDirty() || busy > 1) throw new Error('Сохраните или отмените текущие изменения перед переходом.');
       section = 'settings'; current = null; history.replaceState(null, '', '/admin?section=settings');

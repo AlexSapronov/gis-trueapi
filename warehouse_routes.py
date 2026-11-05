@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from admin_auth import authorized
 from app_settings import ApplicationSettings, SettingsUpdate, defaults
+from models import AppError, ErrorCategory
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
@@ -23,6 +24,10 @@ from warehouse_store import WarehouseError
 
 class ScanBody(BaseModel):
     code: str = Field(min_length=1, max_length=4096)
+
+
+class GtdBody(ScanBody):
+    org_inn: str = Field(min_length=10, max_length=12)
 
 
 class DocumentVersion(BaseModel):
@@ -167,6 +172,18 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @admin.put('/settings')
     def save_settings(body: SettingsUpdate):
         return store_getter().update_settings(body.revision, body.values.model_dump())
+
+    @admin.post('/gtd')
+    async def lookup_gtd(body: GtdBody):
+        try:
+            return await service_getter().lookup_gtd(body.code, body.org_inn)
+        except AppError as exc:
+            client_error = exc.category in {
+                ErrorCategory.DM_STRUCTURE, ErrorCategory.GTIN_CHECKSUM,
+                ErrorCategory.NOT_FOUND, ErrorCategory.NO_ORG_TOKEN,
+            }
+            # An upstream HTTP 401/403 is not an expired administrator session.
+            raise WarehouseError(exc.message, 422 if client_error else 502) from exc
 
     @admin.get('/documents')
     def admin_documents(filters: Annotated[AdminFilters, Query()]):

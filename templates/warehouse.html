@@ -17,7 +17,7 @@
 <form id="login" class="wh-card wh-login"><span class="wh-eyebrow">Административный доступ</span><h2>Вход в админку</h2><p class="wh-muted">Один вход для токенов, приёмки и отгрузки.</p><label>Ключ администратора <input id="admin-key" type="password" autocomplete="current-password" required></label><button class="btn primary">Войти</button></form>
 {% endif %}
 <div id="workspace" {% if admin %}hidden{% endif %}>
-<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
+<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button><button class="btn" id="gtd-tab">Проверить ГТД</button>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
 {% if admin %}
 <section id="application-settings" class="wh-card" hidden>
 <span class="wh-eyebrow">Управление приложением</span><h2>Настройки</h2><p id="settings-meta" class="wh-muted"></p>
@@ -36,6 +36,17 @@
 <button class="btn primary" id="token-submit">Обновить токен</button>
 <button class="btn" type="reset">Очистить</button>
 </form><p id="token-result" role="status" aria-live="polite"></p>
+</section>
+<section id="gtd-panel" class="wh-card" hidden>
+<span class="wh-eyebrow">True API · Сведения по КИ</span>
+<h2>Проверить ГТД</h2>
+<p class="wh-muted">Отсканируйте DataMatrix или вставьте код маркировки. Если сканер отправляет Enter, проверка запустится автоматически. GS/FNC1 и криптохвост могут присутствовать, но для поиска используется только КИ.</p>
+<form id="gtd-form">
+<label>Организация для запроса <select id="gtd-org" required></select></label>
+<label>Код маркировки <input id="gtd-code" type="text" maxlength="4096" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="01…21…"></label>
+<div class="wh-toolbar"><button id="gtd-submit" class="btn primary" type="submit">Проверить</button><button id="gtd-clear" class="btn" type="reset">Очистить</button></div>
+</form>
+<div id="gtd-result" role="status" aria-live="polite" hidden></div>
 </section>
 <details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
 <p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
