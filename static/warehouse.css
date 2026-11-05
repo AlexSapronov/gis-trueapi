@@ -77,6 +77,13 @@ summary { cursor:pointer; font-weight:650; line-height:1.5; }
 .wh-reply h3 { margin:0 0 6px; }.wh-reply p { white-space:pre-wrap; overflow-wrap:anywhere; }
 .wh-reply-history { padding:12px 16px; border-radius:10px; background:var(--surface-2); margin:10px 0; }
 #notice,#scan-feedback,#token-result { white-space:pre-wrap; overflow-wrap:anywhere; }
+#gtd-result { border:1px solid var(--border); border-radius:12px; padding:18px; margin-top:18px; background:var(--surface-2); overflow-wrap:anywhere; }
+#gtd-result h3 { margin:0 0 14px; }
+.wh-gtd-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 24px; margin:0; }
+.wh-gtd-field { padding:10px 0; border-bottom:1px solid var(--border); }
+.wh-gtd-field dt { color:var(--muted); font-size:12px; margin-bottom:6px; }
+.wh-gtd-field dd { margin:0; font-weight:650; overflow-wrap:anywhere; }
+@media(max-width:600px) { .wh-gtd-fields { grid-template-columns:1fr; } }
 #notice:not(:empty) { padding:12px 16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
 dialog { max-width:560px; width:calc(100% - 32px); border:1px solid var(--border); border-radius:16px; padding:26px; background:var(--surface); color:var(--text); box-shadow:var(--shadow-lg); }
 dialog::backdrop { background:#0008; }dialog h2 { font-size:22px; margin-top:0; }dialog p { line-height:1.5; }
