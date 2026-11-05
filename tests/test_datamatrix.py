@@ -229,3 +229,22 @@ class TestScannerPrefix:
         assert p.gtin == VALID_GTIN
         assert p.serial == "SERIAL"
         assert p.api_cis == f"01{VALID_GTIN}21SERIAL"
+
+
+@pytest.mark.parametrize('alias', ['<GS>', '<FNC>', '<FNC1>', '{FNC}', '{FNC1}', '[GS]'])
+def test_parse_fnc_alias_matches_real_gs(alias):
+    code = f'01{VALID_GTIN}21SERIAL{GS}91EE12{GS}92CRYPTO'
+    parsed = parse(alias + code.replace(GS, alias))
+    assert parsed.structure_valid
+    assert parsed.serial == 'SERIAL'
+    assert parsed.api_cis == f'01{VALID_GTIN}21SERIAL'
+    assert parsed.has_crypto
+
+
+def test_parse_radio_without_separators_handles_ai93():
+    code = f'01{VALID_GTIN}21' + 'S' * 20 + '93AB12' + '30100'
+    p = parse(code)
+    assert p.structure_valid
+    assert p.serial == 'S' * 20
+    assert p.tail == GS + '93AB12' + GS + '30100'
+    assert p.api_cis == f'01{VALID_GTIN}21' + 'S' * 20
