@@ -24,6 +24,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from datamatrix import full_code_for_check
+
 from models import CATEGORY_MESSAGES, ErrorCategory
 
 logger = logging.getLogger("gis.trueapi")
@@ -307,7 +309,7 @@ class TrueApiClient:
     # ---- check ----------------------------------------------------------
 
     async def check(self, cises: list[str], token: str) -> dict[str, Any]:
-        resp = await self._post_json(CHECK_PATH, {"codes": cises}, token=token)
+        resp = await self._post_json(CHECK_PATH, {"codes": [full_code_for_check(code) for code in cises]}, token=token)
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 401:
