@@ -170,3 +170,5 @@ body[data-admin="false"] .wh-main { max-width:940px; }
 }
 
 @media(max-width:600px) { .wh-filter-number { grid-column:1 / -1; } }
+
+.wh-gtd-changed {background:rgba(255,190,60,.18)}

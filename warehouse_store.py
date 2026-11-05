@@ -11,6 +11,7 @@ from pathlib import Path
 
 from warehouse_issues import WarehouseIssues
 from upd_store import UpdStore
+from gtd_excel_store import GtdExcelStore
 from app_settings import RuntimeSettings
 
 
@@ -25,7 +26,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore):
+class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +89,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore):
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
             self.init_settings(c)
             self.init_upd(c)
+            self.init_gtd_excel(c)
         c.close()
 
     @contextmanager
