@@ -35,6 +35,7 @@ AUTH_KEY_PATH = "/api/v3/true-api/auth/key"
 AUTH_SIGN_IN_PATH = "/api/v3/true-api/auth/simpleSignIn"
 # Cises
 INFO_PATH = "/api/v3/true-api/cises/info"
+SHORT_LIST_PATH = "/api/v3/true-api/cises/short/list"
 SEARCH_PATH = "/api/v4/true-api/cises/search"
 CHECK_PATH = "/cises/check"
 
@@ -49,6 +50,10 @@ class MarkingApiClient(Protocol):
 
     async def info(self, cises: list[str], token: str) -> list[dict[str, Any]]:
         """Сведения по КМ (batch). Возвращает список объектов cisInfo-уровня."""
+        ...
+
+    async def short_info(self, cises: list[str], token: str) -> list[dict[str, Any]]:
+        """Short KI information with optional customs declaration details."""
         ...
 
     async def search(
@@ -248,6 +253,27 @@ class TrueApiClient:
                 self._raise_http(resp)
             # 5xx и прочее
             self._raise_http(resp)
+        return results
+
+    async def short_info(self, cises: list[str], token: str) -> list[dict[str, Any]]:
+        """POST /cises/short/list, a normalized-KI list (max 1000 per request)."""
+        results: list[dict[str, Any]] = []
+        for start in range(0, len(cises), MAX_INFO_BATCH):
+            resp = await self._post_json(SHORT_LIST_PATH, cises[start:start + MAX_INFO_BATCH], token=token)
+            if resp.status_code == 401:
+                self._raise_401(resp)
+            if resp.status_code not in (200, 400, 404):
+                self._raise_http(resp)
+            try:
+                data = resp.json()
+            except ValueError:
+                self._raise_http(resp)
+            # True API may return an array of per-KI errors with HTTP 400/404.
+            if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+                if resp.status_code != 200:
+                    self._raise_http(resp)
+                raise TrueApiError(ErrorCategory.API_ERROR, "Некорректный ответ cises/short/list")
+            results.extend(data)
         return results
 
     async def product_info(self, gtins: list[str], token: str) -> list[dict[str, Any]]:
