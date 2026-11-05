@@ -65,6 +65,67 @@ def _normalize_scanner_prefix(s: str) -> str:
     return s
 
 
+# Scanner firmware and Excel files may represent FNC1 / Group Separator as
+# readable text rather than the actual ASCII 29 control character.
+_GS_ALIASES = re.compile(r"(?i)<(?:GS|FNC1?)>|\{(?:GS|FNC1?)\}|\[(?:GS|FNC1?)\]")
+
+# Certain radio labels have a fixed 20-character serial and fixed crypto fields.
+# Rebuild their separators even if the scanner discarded some or all of them.
+# Do not infer AI boundaries from arbitrary "30", "91", "92" in a serial.
+_RADIO_91_92 = re.compile(
+    r'\A(01[0-9]{14}21[!-~]{20})\x1d?(91[!-~]{4})\x1d?(92[!-~]{44})(?:\x1d?(30[0-9]{1,8}))?\Z'
+)
+_RADIO_93 = re.compile(
+    r'\A(01[0-9]{14}21[!-~]{20})\x1d?(93[!-~]{4})(?:\x1d?(30[0-9]{1,8}))?\Z'
+)
+
+
+def canonical_full(raw: str) -> str:
+    """Decode known scanner prefixes and separator representations.
+
+    An initial FNC1 marks the symbology; it is not part of the KM payload.
+    Other FNC1/GS markers are represented as ASCII 29 separators. Original
+    input stays in raw_code so exports do not silently rewrite source data.
+    """
+    s = normalize_scanner_layout(raw).strip(' \r\n')
+    s = _normalize_scanner_prefix(s)
+    s = _GS_ALIASES.sub(GS, s).replace('^]', GS).replace('\r', '').replace('\n', '')
+    return s.lstrip(GS)
+
+
+def restore_radio_separators(full: str) -> str:
+    """Reconstruct only unambiguous separator boundaries of radio KMs."""
+    for pattern in (_RADIO_91_92, _RADIO_93):
+        match = pattern.fullmatch(full)
+        if match:
+            return GS.join(group for group in match.groups() if group is not None)
+    return full
+
+
+def strip_ai30(full: str) -> str:
+    """Remove an optional *trailing* AI 30 without altering crypto contents.
+
+    An AI 30 with missing GS is handled for fixed-format radio codes by the
+    separator restorer. For ambiguous formats we never delete possible crypto.
+    """
+    full = restore_radio_separators(canonical_full(full))
+    return re.sub(r'\x1d30[0-9]{1,8}\Z', '', full)
+
+
+def full_code_for_check(raw: str) -> str:
+    """Produce the full KM for crypto validation (True API cises/check).
+
+    Unlike cises/info, cises/check needs the cryptographic tail and its real
+    ASCII 29 separators. Reconstruct only boundaries that are recognizable.
+    """
+    full = strip_ai30(raw)
+    parsed = parse(full)
+    if parsed.structure_valid and parsed.tail and not parsed.tail.startswith(GS):
+        return f'01{parsed.gtin}21{parsed.serial}{GS}{parsed.tail}'
+    return full
+
+
+
 @dataclass
 class ParsedCode:
     raw_code: str
@@ -127,18 +188,13 @@ def parse(raw: str) -> ParsedCode:
         raw = ""
 
     result = ParsedCode(raw_code=raw)
-    s = normalize_scanner_layout(raw).strip()
+    s = restore_radio_separators(canonical_full(raw))
 
     if not s:
         result.structure_valid = False
         result.structure_error = "Пустой код"
         return result
 
-    # Нормализация scanner prefix (]d2, ]C1, ]e0, ^]) — до разбора.
-    s = _normalize_scanner_prefix(s)
-    # Нормализация: некоторые сканеры передают замену FNC1 как {GS} или ^].
-    # Также пробельные символы в начале/середине (Windows CR) — убираем.
-    s = s.replace("{GS}", GS).replace("^]", GS).replace("\r", "").replace("\n", "")
 
     m = _PATTERN_01_21.search(s)
     if not m:

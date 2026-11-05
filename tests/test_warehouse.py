@@ -349,22 +349,39 @@ def test_receipt_accepts_marking_bm_label_with_ai30(store, svc, crypto_tail):
 
 
 @pytest.mark.parametrize('quantity_suffix', [
-    '\x1d30101',     # valid AI 30 with wrong quantity
-    '\x1d300',       # zero is not a valid positive package quantity
-    '\x1d30123456789',  # more than eight digits
-    '\x1d30100extra',   # additional garbage must not be ignored
+    '\x1d30101',   # AI 30 quantity is metadata and no longer validated
+    '\x1d300',     # even a different/zero value cannot change KM identity
+    '\x1d30100',
+    '30101',       # scanner dropped the GS before AI 30
 ])
-def test_receipt_rejects_invalid_or_wrong_ai30(store, svc, quantity_suffix):
+def test_receipt_ignores_ai30_value_and_separator(store, svc, quantity_suffix):
+    base = code('5pZpV1RbL3/uSA&!*"FB', tail='91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/')
+    d = document(store, 'receipt', rows=[['PN', GTIN, base, 100]])
+    add(store, d, base + quantity_suffix)
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert checked['can_complete'] and checked['result']['ok']
+    assert checked['result']['rows'][0]['actual'] == 100
+
+
+@pytest.mark.parametrize('quantity_suffix', [
+    '\x1d30123456789',  # invalid AI length
+    '\x1d30100extra',   # trailing garbage is not AI 30
+])
+def test_receipt_rejects_malformed_ai30(store, svc, quantity_suffix):
     base = code('5pZpV1RbL3/uSA&!*"FB', tail='91EE12\x1d92' + 'Ab+/_' * 8 + 'Ab+/')
     d = document(store, 'receipt', rows=[['PN', GTIN, base, 100]])
     add(store, d, base + quantity_suffix)
     checked = asyncio.run(check_document(store, svc, d['id']))
     assert not checked['can_complete']
     assert checked['result']['accepted_count'] == 0
-    assert checked['result']['rows'][0]['actual'] == 0
     assert checked['result']['codes'][0]['errors']
-    if quantity_suffix == '\x1d30101':
-        assert 'Количество в AI 30' in checked['result']['codes'][0]['errors'][0]
+
+
+def test_receipt_ai30_on_document_but_not_scan(store, svc):
+    base = code('5pZpV1RbL3/uSA&!*"FB', tail='93AB12')
+    d = document(store, 'receipt', rows=[['PN', GTIN, base + '\x1d30100', 100]])
+    add(store, d, base)
+    assert asyncio.run(check_document(store, svc, d['id']))['can_complete']
 
 
 def test_receipt_ai30_does_not_mask_changed_crypto_tail(store, svc):
@@ -427,16 +444,43 @@ def test_receipt_normalizes_scans_saved_by_old_version(store, svc):
     assert result['result']['accepted_count'] == 1
 
 
-def test_receipt_radio_recovery_rejects_corrupted_crypto_and_wrong_ai30(store, svc):
-    for wrong in (RADIO_SCANNER_59.replace('edaSR', 'XdaSR'),
-                  RADIO_SCANNER_59[:-2] + '58'):
-        d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
-        add(store, d, wrong)
-        result = asyncio.run(check_document(store, svc, d['id']))
-        assert not result['can_complete']
-        assert result['result']['accepted_count'] == 0
-        assert result['result']['rows'][0]['actual'] == 0
-        assert result['result']['codes'][0]['errors']
+def test_receipt_radio_recovery_rejects_corrupted_crypto(store, svc):
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
+    add(store, d, RADIO_SCANNER_59.replace('edaSR', 'XdaSR'))
+    result = asyncio.run(check_document(store, svc, d['id']))
+    assert not result['can_complete']
+    assert result['result']['accepted_count'] == 0
+    assert result['result']['rows'][0]['actual'] == 0
+    assert result['result']['codes'][0]['errors']
+
+
+@pytest.mark.parametrize('raw', [
+    RADIO_SCANNER_59[:-2] + '58',
+    RADIO_SCANNER_59[:-4],  # AI 30 absent entirely
+])
+def test_receipt_radio_ignores_missing_or_different_ai30(store, svc, raw):
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59 + '\x1d3059', 59]])
+    add(store, d, raw)
+    assert asyncio.run(check_document(store, svc, d['id']))['can_complete']
+
+
+@pytest.mark.parametrize('alias', ['<GS>', '<FNC>', '<FNC1>', '{GS}', '{FNC1}', '[GS]'])
+def test_receipt_accepts_separator_aliases_in_excel_and_scan(store, svc, alias):
+    source = RADIO_SOURCE_59.replace('\x1d', alias)
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', source, 59]])
+    scanned = RADIO_SCANNER_59.replace('3059', alias + '3059')
+    result = add(store, d, alias + scanned)
+    assert result['scan']['raw_code'] == alias + scanned
+    assert asyncio.run(check_document(store, svc, d['id']))['can_complete']
+
+
+def test_receipt_duplicate_scan_with_or_without_fnc_is_one_km(store):
+    d = document(store, 'receipt', rows=[['PN', '04640638340848', RADIO_SOURCE_59, 59]])
+    first = add(store, d, RADIO_SCANNER_59)
+    duplicate = add(store, d, RADIO_SOURCE_59.replace('\x1d', '<FNC>'))
+    assert not first['duplicate']
+    assert duplicate['duplicate']
+    assert len(store.get(d['id'])['scans']) == 1
 
 
 def test_radio_93_without_scanner_gs_and_no_91ee_in_serial():

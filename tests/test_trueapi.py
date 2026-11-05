@@ -182,3 +182,43 @@ async def test_rate_limit_429():
     with pytest.raises(TrueApiError) as ei:
         await c.info(["c1"], "tok")
     assert ei.value.category == "rate_limit"
+
+@pytest.mark.asyncio
+async def test_check_restores_fnc_and_drops_ai30():
+    captured = {}
+    serial = 'S' * 20
+    base = f'010464063834521821{serial}'
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured['codes'] = json.loads(request.content)['codes']
+        return httpx.Response(200, json={'result': True})
+    c = make_client(handler)
+    no_gs = base + '91AB12' + '92' + 'Q' * 44 + '30100'
+    await c.check(['<FNC>' + no_gs], 'tok')
+    assert captured['codes'] == [base + '\x1d91AB12\x1d92' + 'Q' * 44]
+
+
+@pytest.mark.asyncio
+async def test_info_keeps_short_cis_without_gs_or_crypto():
+    from service import Service
+    from tokens import FileTokenStore
+    from datamatrix import GS
+    from mockclient import MockTrueApiClient
+
+    class CapturingClient(MockTrueApiClient):
+        def __init__(self):
+            self.sent = []
+        async def info(self, cises, token):
+            self.sent += cises
+            return await super().info(cises, token)
+
+    from tempfile import TemporaryDirectory
+    from pathlib import Path
+    with TemporaryDirectory() as temp:
+        tokens = FileTokenStore(Path(temp) / 'tokens.json')
+        tokens.set('0000000001', 'token')
+        client = CapturingClient()
+        svc = Service(client, tokens)
+        raw = '01' + '04640638345218' + '21' + 'S' * 20 + '93AB12' + '30100'
+        result = await svc.scan_batch([raw], '0000000001')
+        assert result[0].structure_valid
+        assert client.sent == ['01' + '04640638345218' + '21' + 'S' * 20]

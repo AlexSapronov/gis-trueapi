@@ -11,7 +11,8 @@ from datetime import date, datetime
 import openpyxl
 import xlsxwriter
 
-from datamatrix import gtin_checksum_valid, normalize_scanner_layout, parse, GS
+from datamatrix import (gtin_checksum_valid, normalize_scanner_layout, parse, GS,
+                        canonical_full, restore_radio_separators)
 from organizations import registry
 from warehouse_store import WarehouseError
 
@@ -60,41 +61,6 @@ def read_excel_strings(content):
                 cell.clear()
             result[sheet.attrib['name']] = cells
         return result
-
-
-def canonical_full(raw):
-    s = normalize_scanner_layout(raw).strip(' \r\n')
-    for prefix in (']d2', ']C1', ']e0', '^]'):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    return s.replace('{GS}', GS).replace('^]', GS).replace('\r', '').replace('\n', '')
-
-
-# Hardware keyboard-wedge scanners may drop ALL ASCII 29 delimiters. Radio
-# labels have an exact 20-character serial and fixed-width crypto fields, so
-# their boundaries can be reconstructed without inspecting crypto contents or
-# mistaking the literal characters "30"/"91"/"92" inside those fields for AIs.
-# In particular, a comma can be the 20th serial character; it is not a GS.
-_RADIO_91_92 = re.compile(
-    r'\A(01[0-9]{14}21[!-~]{20})\x1d?(91[!-~]{4})\x1d?(92[!-~]{44})(?:\x1d?(30[0-9]{1,8}))?\Z'
-)
-_RADIO_93 = re.compile(
-    r'\A(01[0-9]{14}21[!-~]{20})\x1d?(93[!-~]{4})(?:\x1d?(30[0-9]{1,8}))?\Z'
-)
-
-
-def restore_radio_separators(full: str) -> str:
-    """Rebuild only unambiguous GS boundaries of supported radio KMs.
-
-    Unknown formats and malformed/truncated tails remain unchanged and cannot
-    accidentally pass exact receipt reconciliation.
-    """
-    for pattern in (_RADIO_91_92, _RADIO_93):
-        match = pattern.fullmatch(full)
-        if match:
-            return GS.join(group for group in match.groups() if group is not None)
-    return full
 
 
 def scan_data(raw):
