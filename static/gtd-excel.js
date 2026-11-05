@@ -56,6 +56,6 @@ class GtdExcel {
   renderRows() {
     const rows=(this.report?.rows || []).filter(r=>!this.$('gtd-excel-only-changed').checked||r.changed);
     const labels={changed:'Изменена / пересобрана',confirmed:'Подтверждена',unconfirmed:'Не подтверждена'};
-    this.$('gtd-excel-rows').innerHTML=rows.map(r=>`<tr class="${r.changed?'wh-gtd-changed':''}"><td>${this.esc(r.sheet)} / ${r.row}</td><td>${this.esc(r.number)}<br>${this.esc(r.pn)}</td><td>${this.esc(r.before)}</td><td>${this.esc(r.after)}</td><td>${labels[r.status]}</td><td>${this.esc(r.reason)}<br>${this.esc(r.match_source || '')}</td></tr>`).join('');
+    this.$('gtd-excel-rows').innerHTML=rows.map(r=>`<tr class="${r.changed?'wh-gtd-changed':''}"><td>${this.esc(r.sheet)} / ${r.row}</td><td>${this.esc(r.number)}<br>${this.esc(r.pn)}${r.warehouse_number?'<br>Склад: '+this.esc(r.warehouse_number):''}</td><td>${this.esc(r.before)}</td><td>${this.esc(r.after)}</td><td>${labels[r.status]}</td><td>${this.esc(r.reason)}<br>${this.esc(r.match_source || '')}</td></tr>`).join('');
   }
 }

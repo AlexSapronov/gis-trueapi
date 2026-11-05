@@ -1,5 +1,5 @@
 """Match a multi-document ERP workbook to completed scans and verified DTs."""
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import copy
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -72,10 +72,16 @@ def read_rows(book):
                 if any(sheet.cell(n,columns[key]).data_type=='f' for key in REQUIRED):
                     raise ValueError('Формулы в ключевых полях не поддерживаются')
                 source_date=data.get('Date')
-                if isinstance(source_date,(int,float)) and not isinstance(source_date,bool):
-                    source_date=openpyxl.utils.datetime.from_excel(source_date,book.epoch)
+                try:
+                    if isinstance(source_date,(int,float)) and not isinstance(source_date,bool):
+                        source_date=openpyxl.utils.datetime.from_excel(source_date,book.epoch)
+                    display_date=date_key(source_date)
+                except (ValueError,OverflowError):
+                    display_date=''  # Date is preserved in Excel, not used for matching.
                 item.update(number=identifier(data['Number']),org=identifier(data['FromINN']),recipient=identifier(data.get('ToINN')),
-                            date=date_key(source_date),quantity=positive_integer(data['Amount']))
+                            date=display_date)
+                item['quantity']=positive_integer(data['Amount'])
+                item['good_id']=identifier(data.get('GoodId'))
                 if not re.fullmatch(r'\d{10}|\d{12}',item['org']):raise ValueError('Некорректный FromINN')
                 if not item['number'] or not item['pn']:raise ValueError('Не заполнены номер накладной или PN')
                 if identifier(data.get('IsReturn',0)) not in ('','0'):raise ValueError('Возвраты не обрабатываются')
@@ -86,46 +92,94 @@ def read_rows(book):
     return rows
 
 
-def match_rows(store, rows, catalog):
-    docs={};aliases={};groups=defaultdict(list)
-    for item in rows:
-        if item['reason']:continue
-        org=item['org']
-        if org not in docs:
-            docs[org]=store.list(admin=True,kind='shipment',org_inn=org,status='completed')+store.list(admin=True,kind='shipment',org_inn=org,status='completed',archived=True)
-            aliases[org]=store.upd_aliases(org)
-        candidates=[d for d in docs[org] if d['number'].strip()==item['number']
-                    and (not item['date'] or d['date']==item['date'])
-                    and (not item['recipient'] or d['recipient_inn']==item['recipient'])]
-        if len(candidates)!=1:
-            item['reason']='Не найдена завершённая отгрузка' if not candidates else 'Найдено несколько отгрузок с этими реквизитами'
-            continue
-        doc=store.get(candidates[0]['id'])
-        if not doc['check_current'] or not (doc['result'] or {}).get('ok'):
-            item['reason']='У отгрузки нет актуальной успешной проверки';continue
-        pn=aliases[org].get(item['pn'],item['pn'])
-        good_id=identifier(item['data'].get('GoodId'))
-        gtin=catalog.get(good_id)
-        if gtin:
-            gtins={gtin} if gtin in {line['gtin'] for line in doc['lines']} else set()
-            item['match_source']='GoodID → GTIN'
-        else:
-            gtins={line['gtin'] for line in doc['lines'] if line['gtin'] and line['pn'].strip()==pn}
-            item['match_source']='PN'
-        if not gtins:
-            item['reason']='GTIN из справочника не найден в отгрузке' if gtin else 'Нет связи GoodID → GTIN и PN не найден в отгрузке'
-            continue
-        item['target_gtins']=sorted(gtins)
-        item['target_pn']='|'.join(sorted(gtins))
-        groups[(doc['id'],tuple(sorted(gtins)))].append(item)
-    conflicts=set()
-    keys=list(groups)
-    for i,left in enumerate(keys):
-        for right in keys[i+1:]:
-            if left[0]==right[0] and set(left[1]) & set(right[1]):conflicts.update((left,right))
-    for key in conflicts:
-        for item in groups.pop(key):item['reason']='Пересекающиеся сопоставления GTIN. Уточните справочник GoodID → GTIN'
+def resolve_product(item, doc, catalog, aliases):
+    """Resolve one ERP product to one GTIN, or an explicit unmarked PN."""
+    gtin=catalog.get(item.get('good_id',''))
+    pn=aliases.get(item['pn'],item['pn'])
+    if gtin:
+        if not any(line['gtin']==gtin for line in doc['lines']) and any(
+                not line['gtin'] and line['pn'].strip()==pn for line in doc['lines']):
+            return ('pn',pn),'Позиция без маркировки'
+        return ('gtin',gtin),'GoodID → GTIN'
+    gtins={line['gtin'] for line in doc['lines'] if line['pn'].strip()==pn and line['gtin']}
+    if len(gtins)==1:return ('gtin',next(iter(gtins))),'PN → GTIN'
+    if not gtins and any(not line['gtin'] and line['pn'].strip()==pn for line in doc['lines']):
+        return ('pn',pn),'Позиция без маркировки'
+    return None,''
 
+
+def warehouse_composition(doc):
+    result=Counter()
+    for line in doc['lines']:
+        key=('gtin',line['gtin']) if line['gtin'] else ('pn',line['pn'].strip())
+        result[key]+=line['quantity']
+    return result
+
+
+def match_rows(store, rows, catalog):
+    # BP numbers define invoice boundaries only. They are never compared with
+    # warehouse numbers. Every invoice must match the WHOLE shipment, 1 to 1.
+    invoices=defaultdict(list)
+    for item in rows:
+        key=(item.get('org'),item.get('recipient'),item['number'])
+        invoices[key].append(item)
+    by_org={};aliases={};snapshots={};matches={};groups=defaultdict(list)
+    for key,items in invoices.items():
+        org,recipient,number=key
+        if any(item['reason'] for item in items):
+            for item in items:
+                if not item['reason']:item['reason']='В документе есть некорректные строки; полный состав не подтверждён'
+            continue
+        if not recipient:
+            for item in items:item['reason']='Для сопоставления полного документа заполните ToINN'
+            continue
+        if org not in by_org:
+            listed=store.list(admin=True,kind='shipment',org_inn=org)+store.list(admin=True,kind='shipment',org_inn=org,archived=True)
+            by_org[org]=listed;aliases[org]=store.upd_aliases(org)
+        candidates=[];same_parties=False;stale=False;unfinished=False
+        for candidate in by_org[org]:
+            if candidate['recipient_inn']!=recipient:continue
+            same_parties=True
+            document_id=candidate['id']
+            if document_id not in snapshots:snapshots[document_id]=store.get(document_id)
+            doc=snapshots[document_id]
+            source=Counter();products=[]
+            for item in items:
+                product,method=resolve_product(item,doc,catalog,aliases[org])
+                if product is None:break
+                source[product]+=item['quantity'];products.append((product,method))
+            else:
+                if source!=warehouse_composition(doc):continue
+                if doc['status']!='completed':
+                    unfinished=True;continue
+                if not doc['check_current'] or not (doc['result'] or {}).get('ok'):
+                    stale=True;continue
+                candidates.append((doc,products))
+        if len(candidates)!=1:
+            if len(candidates)>1:reason='Несколько складских отгрузок с теми же ИНН и полным составом; автоматический выбор невозможен'
+            elif unfinished:reason='Полный состав совпал, но складская отгрузка ещё не завершена'
+            elif stale:reason='Полный состав совпал, но у складской отгрузки нет актуальной успешной проверки'
+            elif not same_parties:reason='Нет завершённой складской отгрузки с этими ИНН отправителя и получателя'
+            else:reason='Не найдено совпадение полного состава GTIN / количество; проверьте GoodID → GTIN и все строки документа'
+            for item in items:item['reason']=reason
+            continue
+        matches[key]=(items,*candidates[0])
+    # Do not reuse one set of warehouse KIs for two distinct BP invoice numbers.
+    claimed=defaultdict(list)
+    for key,(_,doc,_) in matches.items():claimed[doc['id']].append(key)
+    for key,(items,doc,products) in matches.items():
+        if len(claimed[doc['id']])>1:
+            for item in items:item['reason']='Одна складская отгрузка подходит нескольким номерам документов БП; требуется уточнение'
+            continue
+        for item,(product,method) in zip(items,products):
+            item.update(warehouse_number=doc['number'],warehouse_date=doc['date'],match_source=method+'; полный состав документа',
+                        _match_version=[doc['version'],doc['revision']])
+            if product[0]=='pn':
+                item['reason']='Складская отгрузка сопоставлена; позиция без маркировки не проверяется по КМ'
+                continue
+            gtin=product[1]
+            item['target_gtins']=[gtin];item['target_pn']=gtin
+            groups[(doc['id'],(gtin,))].append(item)
     return groups
 
 
@@ -257,10 +311,10 @@ def export_book(book, rows):
     name='Проверка ГТД'
     while name in book.sheetnames:name+='_' 
     report=book.create_sheet(name)
-    report.append(['Лист','Исходная строка','Накладная','PN','Исходная ГТД','ГТД из ЧЗ','Результат','Пояснение'])
+    report.append(['Лист','Исходная строка','Накладная БП','PN','Исходная ГТД','ГТД из ЧЗ','Результат','Пояснение','Складская накладная','Дата складской накладной'])
     for item in rows:
         report.append([item['sheet'],item['row'],item['number'],item['pn'],item['before'],item['after'],
-                       {'changed':'Изменена','confirmed':'Подтверждена','unconfirmed':'Не подтверждена'}[item['status']],item['reason']])
+                       {'changed':'Изменена','confirmed':'Подтверждена','unconfirmed':'Не подтверждена'}[item['status']],item['reason'],item.get('warehouse_number',''),item.get('warehouse_date','')])
         report.row_dimensions[report.max_row].height=45
         for cell in report[report.max_row]:
             cell.alignment=Alignment(wrap_text=True,vertical='top')
@@ -268,7 +322,7 @@ def export_book(book, rows):
             if item['changed']:cell.fill=YELLOW
     for cell in report[1]:cell.font=Font(bold=True)
     report.freeze_panes='A2';report.auto_filter.ref=report.dimensions
-    for col,width in {'A':20,'B':18,'C':20,'D':44,'E':34,'F':42,'G':24,'H':75}.items():report.column_dimensions[col].width=width
+    for col,width in {'A':20,'B':18,'C':20,'D':44,'E':34,'F':42,'G':24,'H':75,'I':24,'J':24}.items():report.column_dimensions[col].width=width
     stream=io.BytesIO();book.save(stream)
     return stream.getvalue()
 
@@ -285,7 +339,10 @@ async def process_excel_job(store, service, job_id):
         versions={'_catalog_revision':catalog['revision']};progress=0
         store.gtd_excel_progress(job_id,0,len(documents))
         for document_id,units in documents.items():
-            doc=store.get(document_id);versions[document_id]=[doc['version'],doc['revision']]
+            doc=store.get(document_id)
+            if any(item['_match_version']!=[doc['version'],doc['revision']] for items in units for item in items):
+                raise WarehouseError('Отгрузка изменилась после сопоставления. Проверьте Excel повторно.',409)
+            versions[document_id]=[doc['version'],doc['revision']]
             allocated=[]
             for items in units:
                 try:allocated.append((items,*allocate_items(doc,items)))
@@ -303,7 +360,7 @@ async def process_excel_job(store, service, job_id):
                     for item in items:item['reason']=str(exc) or 'Истекло время получения ГТД'
             progress+=1;store.gtd_excel_progress(job_id,progress,len(documents))
         output=await asyncio.to_thread(export_book,book,rows)
-        public=[{k:v for k,v in item.items() if k in {'sheet','row','number','pn','before','after','status','reason','changed','match_source'}} for item in rows]
+        public=[{k:v for k,v in item.items() if k in {'sheet','row','number','pn','before','after','status','reason','changed','match_source','warehouse_number','warehouse_date'}} for item in rows]
         report=dict(rows=public,total=len(rows),changed=sum(i['status']=='changed' for i in rows),
                     confirmed=sum(i['status']=='confirmed' for i in rows),unconfirmed=sum(i['status']=='unconfirmed' for i in rows))
         store.gtd_excel_finish(job_id,output,report,versions)
