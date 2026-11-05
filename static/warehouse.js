@@ -559,6 +559,58 @@
       section = 'token'; current = null; history.replaceState(null, '', '/admin?section=token');
       showSection(); await tokenStatus();
     });
+    $('gtd-tab').onclick = () => action(async () => {
+      if (dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1)
+        throw new Error('Сохраните или отмените изменения перед переходом.');
+      section = 'gtd'; current = null; history.replaceState(null, '', '/admin?section=gtd');
+      showSection(); $('gtd-code').focus();
+    });
+    $('gtd-form').onsubmit = e => {
+      e.preventDefault();
+      if (gtdBusy) return;
+      action(async () => {
+        gtdBusy = true;
+        $('gtd-submit').disabled = true;
+        $('gtd-result').hidden = true;
+        $('gtd-result').className = '';
+        try {
+          const data = await json(apiBase + '/gtd', {method:'POST',
+            body:{code:$('gtd-code').value, org_inn:$('gtd-org').value}});
+          const field = (name, value) => value
+            ? '<div class="wh-gtd-field"><dt>' + esc(name) + '</dt><dd>' + esc(value) + '</dd></div>'
+            : '';
+          const titleClass = data.declaration_number ? 'wh-good' : 'wh-stale';
+          const statusNames = {INTRODUCED:'В обороте', APPLIED:'Нанесён', EMITTED:'Эмитирован'};
+          $('gtd-result').innerHTML =
+            '<h3 class="' + titleClass + '">' + esc(data.message || 'Результат проверки') + '</h3>' +
+            '<dl class="wh-gtd-fields">' +
+              field('Номер ДТ (ГТД)', data.declaration_number) +
+              field('Дата ДТ', data.declaration_date) +
+              field('Идентификатор ДТ', data.declaration_id) +
+              field('GTIN', data.gtin) +
+              field('Товар', data.product_name) +
+              field('Статус КМ', statusNames[data.status] || data.status) +
+              field('Тип эмиссии', data.emission_type) +
+              field('Дата ввода в оборот', data.introduced_date) +
+              field('КИ (для запроса)', data.cis) + '</dl>';
+          $('gtd-result').hidden = false;
+          $('gtd-code').value = '';
+          $('gtd-code').focus();
+        } catch (err) {
+          $('gtd-result').textContent = err.message || 'Ошибка проверки';
+          $('gtd-result').className = 'wh-bad';
+          $('gtd-result').hidden = false;
+          throw err;
+        } finally {
+          gtdBusy = false;
+          $('gtd-submit').disabled = false;
+        }
+      });
+    };
+    $('gtd-form').onreset = () => {
+      $('gtd-result').hidden = true;
+      setTimeout(() => $('gtd-code').focus(), 0);
+    };
     $('settings-tab').onclick = () => action(async () => {
       if (dirty || caseDraft() || tokenDraft() || settingsEditor.isDirty() || busy > 1) throw new Error('Сохраните или отмените текущие изменения перед переходом.');
       section = 'settings'; current = null; history.replaceState(null, '', '/admin?section=settings');
