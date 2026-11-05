@@ -28,7 +28,7 @@ if '--server' in sys.argv:
         for s in data['scans']:
             c.execute('INSERT INTO warehouse_scans VALUES (?,?,?,?,?,?,?,?)',
                       (s['id'],d['id'],s['cis'],'raw','full',GTIN,1,'2026-11-05'))
-    async def lookup(cises,inn):return dict(zip(cises,[DT1,DT2]))
+    async def lookup(cises,inn,**kwargs):return dict(zip(cises,[DT1,DT2]))
     main.svc.lookup_gtd_batch=lookup
     Path(os.environ['UPD_TEST_DIR'],'id').write_text(d['id'])
     import uvicorn

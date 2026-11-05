@@ -20,7 +20,7 @@ from organizations import registry
 from warehouse_excel import MAX_FILE_SIZE, export_shipment, import_xlsx, scan_data, template
 from warehouse_service import check_document, resolve_pns
 from warehouse_store import WarehouseError
-from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, check_document as check_upd_document
+from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
 
 class ScanBody(BaseModel):
@@ -295,7 +295,18 @@ def install_warehouse(app, service_getter, store_getter, templates):
         if any(pn is not None and (not pn.strip() or len(pn) > 1000) for pn in body.mapping.values()):
             raise WarehouseError('Некорректный PN')
         root = await asyncio.to_thread(parse_xml, upload['source'])
-        allocated = allocate(root, doc, body.mapping)
+        try:
+            allocated = allocate(root, doc, body.mapping, regroup=body.fill_gtd)
+        except WarehouseError as exc:
+            if body.fill_gtd or exc.code != 'upd_pack_boundary':
+                raise
+            # Without a customs lookup we may suggest new boundaries, but must
+            # not transfer a 1C declaration across codes without evidence.
+            relaxed = allocate(root, doc, body.mapping, regroup=True)
+            plan = review_plan(root, body.mapping, relaxed)
+            store.upd_finish(document_id, upload_id, None, None, plan, {})
+            return {**plan, 'gtd_filled': False, 'saved_links': 0}
+
         aliases = {}
         if body.save_links:
             for row in info['rows']:
@@ -313,15 +324,19 @@ def install_warehouse(app, service_getter, store_getter, templates):
             try:
                 async with asyncio.timeout(180):
                     declarations = await service_getter().lookup_gtd_batch(
-                        [scan['cis'] for group in allocated for scan in group], doc['org_inn'])
+                        [scan['cis'] for group in allocated for scan in group], doc['org_inn'], allow_missing=True)
             except TimeoutError as exc:
                 raise WarehouseError('Истекло время получения ГТД. Повторите подготовку XML.', 504) from exc
             except AppError as exc:
                 raise WarehouseError(exc.message, 502) from exc
+        if declarations is not None and any(not dt for dt in declarations.values()):
+            plan = review_plan(root, body.mapping, allocated, declarations)
+            store.upd_finish(document_id, upload_id, None, None, plan, {})
+            return {**plan, 'gtd_filled': False, 'saved_links': 0}
         output, filename, summary = await asyncio.to_thread(
             enrich_xml, upload['source'], doc, body.mapping, allocated, declarations)
         store.upd_finish(document_id, upload_id, output, filename, summary, aliases)
-        return {'rows': summary, 'filename': filename, 'saved_links': len(aliases), 'gtd_filled': body.fill_gtd}
+        return {'ready': True, 'rows': summary, 'filename': filename, 'saved_links': len(aliases), 'gtd_filled': body.fill_gtd}
 
     @admin.get('/documents/{document_id}/upd/{upload_id}/download')
     def download_upd(document_id: str, upload_id: str):
