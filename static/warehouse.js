@@ -32,7 +32,7 @@
     target.className = error ? 'wh-bad' : 'wh-good';
   }
   function maybeReload() {
-    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !gtdExcel?.hasDraft() && !updEditor?.hasDraft() && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
+    if (pendingReload && !busy && !flushing && !queue.length && !input?.value && !dirty && !caseDraft() && !tokenDraft() && !settingsEditor?.isDirty() && !gtdBusy && !kmReport?.hasDraft() && !gtdExcel?.hasDraft() && !updEditor?.hasDraft() && !(admin && section === 'gtd' && $('gtd-code').value) && !document.querySelector('dialog[open]')) location.reload();
   }
   async function request(path, options = {}) {
     const headers = {...options.headers};
@@ -74,6 +74,7 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   const updEditor = admin ? new UpdEditor({request, json, download}) : null;
+  const kmReport = admin ? new KmReport({json, download}) : null;
   const gtdExcel = admin ? new GtdExcel({json, download}) : null;
   function pendingKey() { return current ? 'warehouse-unsent-' + current.id : ''; }
   function savePending() {
@@ -234,6 +235,7 @@
     } else if (section === 'settings') await settingsEditor.load();
     else if (!['gtd','gtd-excel'].includes(section)) await tokenStatus();
     gtdExcel.resume();
+    kmReport.resume();
     showSection();
     if (section === 'gtd') $('gtd-code').focus();
   }

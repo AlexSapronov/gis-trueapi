@@ -47,6 +47,14 @@
 <div class="wh-toolbar"><button id="gtd-submit" class="btn primary" type="submit">Проверить</button><button id="gtd-clear" class="btn" type="reset">Очистить</button></div>
 </form>
 <div id="gtd-result" role="status" aria-live="polite" hidden></div>
+<hr>
+<h3>Количество и ГТД по списку КМ</h3>
+<p>Загрузите .xlsx с кодами маркировки в столбце «КМ», «Код маркировки» или «DataMatrix». Одна строка — один код. Заголовок должен быть в первых 20 строках; обрабатываются все листы, до 50 000 КМ и 10 МБ на файл. Для запроса используется организация, выбранная выше.</p>
+<p class="wh-muted">Количество запрашивается из поля quantityInPack в ЧЗ. Можно загружать полный КМ или КИ без криптохвоста. Если ЧЗ не вернёт количество, поле останется пустым с пояснением. Статус из ЧЗ включается в результат: строки с другими статусами сохраняются для сверки. Повторные КМ сохраняются как отдельные строки. Номер ГТД берётся из доступных сведений ЧЗ; отсутствие номера отмечается отдельно.</p>
+<button id="km-report-template" type="button" class="btn">Скачать шаблон КМ</button>
+<form id="km-report-form"><fieldset id="km-report-fields"><label>Таблица КМ <input id="km-report-file" type="file" accept=".xlsx" required></label><button type="submit" class="btn primary">Получить количество и ГТД</button></fieldset></form>
+<p id="km-report-status" role="status" aria-live="polite"></p>
+<button id="km-report-download" type="button" class="btn primary" hidden>Скачать КМ, количество и ГТД</button>
 </section>
 <section id="gtd-excel-panel" class="wh-card" hidden>
 <h2>Перезаполнить ГТД в Excel</h2>
@@ -142,5 +150,5 @@
 {% if not admin %}<dialog id="report-dialog"><h2>Сообщить ответственному</h2><p>Результат проверки и коды будут доступны ответственному в админке.</p><form id="report-form"><label>Комментарий <textarea id="report-message" rows="3" maxlength="2000" placeholder="Что нужно уточнить? Необязательно"></textarea></label><div class="wh-toolbar"><button class="btn primary">Отправить</button><button id="report-cancel" class="btn" type="button">Отмена</button></div></form></dialog>{% endif %}
 <dialog id="duplicate"><h2>Этот код уже отсканирован</h2><p id="duplicate-info"></p><p>Если считали код случайно, продолжайте работу. Если хотите изъять его из документа, нажмите «Удалить код из документа».</p><p id="duplicate-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="duplicate-keep" autofocus>ОК, продолжить</button><button class="btn wh-danger" id="duplicate-remove">Удалить код из документа</button></div></dialog>
 {% if not admin %}<dialog id="complete-dialog"><h2>Всё совпадает</h2><p id="complete-description"></p><p id="complete-error" class="wh-bad" role="alert"></p><div class="wh-toolbar"><button class="btn primary" id="complete-confirm">Завершить документ</button><button class="btn" id="complete-later" autofocus>Продолжить работу</button></div></dialog>{% endif %}
-<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script><script src="/static/upd.js?v={{ build_id }}"></script><script src="/static/gtd-excel.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
+<script src="/static/scanner-focus.js?v={{ build_id }}"></script>{% if admin %}<script src="/static/admin-settings.js?v={{ build_id }}"></script><script src="/static/upd.js?v={{ build_id }}"></script><script src="/static/km-report.js?v={{ build_id }}"></script><script src="/static/gtd-excel.js?v={{ build_id }}"></script>{% endif %}<script src="/static/warehouse.js?v={{ build_id }}"></script>
 </body></html>

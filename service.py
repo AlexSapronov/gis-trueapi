@@ -218,6 +218,71 @@ class Service:
             raise AppError(ErrorCategory.API_ERROR, 'ЧЗ не вернул ГТД для КИ ' + sorted(missing)[0])
         return found
 
+    async def lookup_km_report_batch(self, cises: list[str], org_inn: str) -> dict[str, dict]:
+        """Read quantityInPack via info and DT via short/list, paired by KI."""
+        token = self._org_token(self._pick_org_inn(org_inn))
+        aliases = {key: cis for cis in cises for key in (cis, cis[2:16] + cis[18:])}
+        found = {cis: dict(quantity_in_pack=None, declaration_number=None, status=None, message='') for cis in cises}
+
+        def pair(records):
+            paired = {}
+            for record in records:
+                details = record.get('result') or record.get('cisInfo') or {}
+                nested = details.get('cisInfo') if isinstance(details, dict) else None
+                identities = [record.get('requestedCis'), record.get('cis')]
+                for source in (details, nested):
+                    if isinstance(source, dict):
+                        identities.extend([source.get('requestedCis'), source.get('cis')])
+                supplied = [key for key in identities if isinstance(key, str) and key]
+                keys = {aliases[key] for key in supplied if key in aliases}
+                if len(keys) != 1 or any(key not in aliases for key in supplied):
+                    raise ValueError('В ответе ЧЗ нет однозначной связи КИ и сведений')
+                cis = keys.pop()
+                if cis in paired:
+                    raise ValueError('ЧЗ вернул повторный ответ по КИ')
+                paired[cis] = record
+            return paired
+
+        for method, label in ((self.client.info, 'Количество'), (self.client.short_info, 'ГТД')):
+            try:
+                records = pair(await method(cises, token))
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, (ValueError, AppError, TrueApiError)) else 'Не удалось получить сведения из ЧЗ'
+                for result in found.values():
+                    result['message'] += label + ': ' + message + '; '
+                continue
+            for cis, result in found.items():
+                record = records.get(cis)
+                try:
+                    if record is None:
+                        raise ValueError('ЧЗ не вернул сведения по КИ')
+                    if record.get('errorMessage') or record.get('errorCode'):
+                        raise ValueError(str(record.get('errorMessage') or 'Ошибка ЧЗ ' + str(record['errorCode'])))
+                    if label == 'Количество':
+                        details = record.get('cisInfo') or {}
+                        if details.get('gtin') != cis[2:16]:
+                            raise ValueError('GTIN в ответе ЧЗ не совпадает с КИ')
+                        result['status'] = details.get('status')
+                        qty = details.get('quantityInPack')
+                        if qty is None:
+                            raise ValueError('quantityInPack не указан в ЧЗ')
+                        if isinstance(qty, bool) or not str(qty).isascii() or not str(qty).isdigit() or not 0 < int(qty) <= 2147483647:
+                            raise ValueError('Некорректное quantityInPack в ЧЗ')
+                        result['quantity_in_pack'] = int(qty)
+                    else:
+                        info = interpret_gtd_record(record, cis, cis[2:16])
+                        dt = info.get('declaration_number')
+                        if info.get('gtin') != cis[2:16] or (dt is not None and not isinstance(dt, str)):
+                            raise ValueError('GTIN или номер ГТД в ответе ЧЗ некорректен')
+                        if not dt or not dt.strip():
+                            raise ValueError('Номер ГТД не указан в доступных сведениях ЧЗ')
+                        result['declaration_number'] = dt.strip()
+                except ValueError as exc:
+                    result['message'] += label + ': ' + str(exc) + '; '
+        for result in found.values():
+            result['message'] = result['message'].rstrip('; ') or 'Сведения получены из ЧЗ'
+        return found
+
     async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
         """Read DT information via True API without exposing tokens or raw responses."""
         parsed = parse(strip_ai30(raw_code))
