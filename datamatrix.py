@@ -102,6 +102,15 @@ def restore_radio_separators(full: str) -> str:
     return full
 
 
+def radio_label_payload(full: str) -> str:
+    """Validate an imported full radio KM and restore its fixed GS boundaries."""
+    for pattern in (_RADIO_91_92, _RADIO_93):
+        match = pattern.fullmatch(full)
+        if match:
+            return GS.join(group for group in match.groups() if group is not None)
+    raise ValueError('Нужен полный КМ радиоэлектроники с криптохвостом 91/92 или 93')
+
+
 def strip_ai30(full: str) -> str:
     """Remove an optional *trailing* AI 30 without altering crypto contents.
 

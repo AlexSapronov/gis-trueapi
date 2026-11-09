@@ -35,3 +35,7 @@ et-xmlfile==2.0.0
 XlsxWriter==3.2.9
 # UPD XML parser and offline XSD validation
 lxml==6.1.1
+# GS1 DataMatrix label PDFs
+reportlab==4.4.9
+Pillow==12.3.0
+charset-normalizer==3.4.7

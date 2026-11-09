@@ -18,6 +18,7 @@ from buildinfo import get_build_id
 from config import settings
 from organizations import registry
 from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template
+from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
@@ -340,6 +341,20 @@ def install_warehouse(app, service_getter, store_getter, templates):
         d = store_getter().get(document_id)
         number = re.sub(r'[^\w.-]', '_', d['number'])[:100]
         return xlsx_response(export_shipment(d), 'Отгрузка_' + number + '_КМ.xlsx')
+
+    @admin.get('/documents/{document_id}/missing-labels')
+    def missing_labels(document_id: str):
+        store = store_getter()
+        doc = store.get(document_id)
+        pdf = missing_receipt_pdf(doc)
+        latest = store.get(document_id)
+        if latest['revision'] != doc['revision'] or latest['checking']:
+            raise WarehouseError('Документ изменился. Обновите приёмку и повторите выгрузку PDF.', 409)
+        number = re.sub(r'[^\w.-]', '_', doc['number'])[:100]
+        filename = quote(f'Приёмка_{number}_Недостающие_КМ.pdf')
+        return Response(pdf, media_type='application/pdf', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + filename,
+            'Cache-Control': 'no-store'})
 
     app.include_router(router)
     from gtd_excel_routes import install_gtd_excel
