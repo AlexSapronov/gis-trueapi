@@ -1,6 +1,7 @@
 """Business invariants and concurrent clients sharing durable SQLite state."""
 import asyncio
 import io
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -866,6 +867,66 @@ def test_admin_endpoints_require_header_not_url(clients):
     assert a.patch(base+'/documents/a',json={'version':0}).status_code == 403
     assert a.get('/admin/warehouse').status_code == 200
     assert 'test-admin' not in a.get('/admin/warehouse').text
+
+
+def test_admin_downloads_only_unscanned_receipt_labels(clients, store, svc, monkeypatch):
+    import warehouse_labels
+
+    a, _ = clients
+    headers = {'X-Admin-Key': 'test-admin'}
+    first = code('A' * 20, '93Aa+1')
+    rejected = code('B' * 20, '93Aa+2')
+    missing = code('C' * 20, '91EE12\x1d92' + 'a' * 44 + '\x1d3040')
+    d = document(store, 'receipt', rows=[
+        ['PN-1', GTIN, first, 100], ['PN-1', GTIN, rejected, 120], ['PN-1', GTIN, missing, 40],
+    ])
+    url = f"/api/admin/warehouse/documents/{d['id']}/missing-labels"
+    assert a.get(url).status_code == 403
+    assert a.get(url, headers=headers).status_code == 409
+    add(store, d, first)
+    add(store, d, code('B' * 20, '93Bad2'))
+    asyncio.run(check_document(store, svc, d['id']))
+
+    labels = []
+    draw = warehouse_labels.draw_label
+
+    def record(canvas, full, pn, quantity):
+        labels.append((full, pn, quantity))
+        draw(canvas, full, pn, quantity)
+
+    monkeypatch.setattr(warehouse_labels, 'draw_label', record)
+    response = a.get(url, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'] == 'application/pdf'
+    assert response.headers['cache-control'] == 'no-store'
+    assert response.headers['content-disposition'].endswith('.pdf')
+    assert len(re.findall(rb'/Type /Page\b', response.content)) == 1
+    assert labels == [(missing, 'PN-1', 40)]
+
+    add(store, d, missing)
+    assert a.get(url, headers=headers).status_code == 409
+    asyncio.run(check_document(store, svc, d['id']))
+    assert a.get(url, headers=headers).status_code == 409
+
+
+def test_missing_receipt_label_requires_crypto_and_encodes_literal_gs(clients, store, svc):
+    from datamatrix import radio_label_payload
+    from warehouse_labels import GS1Matrix
+
+    raw = code('A' * 20, '91EE12\x1d92' + 'x' * 44)
+    normalized = radio_label_payload(raw.replace('\x1d', ''))
+    assert normalized == raw
+    words = GS1Matrix(normalized)._encode_c40(normalized)
+    words = words[:words.index(129)]
+    assert words[0] == 232 and words.count(232) == 1 and words.count(30) == 2
+
+    a, _ = clients
+    d = document(store, 'receipt', rows=[['PN-1', GTIN, raw[:38], 40]])
+    asyncio.run(check_document(store, svc, d['id']))
+    response = a.get(f"/api/admin/warehouse/documents/{d['id']}/missing-labels",
+                     headers={'X-Admin-Key': 'test-admin'})
+    assert response.status_code == 422
+    assert 'криптохвост' in response.json()['message']
 
 
 def test_http_import_pn_and_shared_workflow(clients):

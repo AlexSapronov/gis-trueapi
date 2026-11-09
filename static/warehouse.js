@@ -343,6 +343,9 @@
       updEditor.setDocument(d);
       $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed' || !!d.archived_at;
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
+      const scanned = new Set(d.scans.map(scan => scan.cis));
+      $('missing-labels').hidden = !(d.kind === 'receipt' && d.status === 'active' && !d.deleted_at
+        && !d.archived_at && d.check_current && !d.checking && result?.missing.some(code => !scanned.has(code.cis)));
       $('archive-document').hidden = !!d.deleted_at || !!d.archived_at || d.status !== 'completed' || !d.check_current || !result?.ok || !!d.open_issues || !!d.pending_returns;
       $('unarchive-document').hidden = !d.archived_at || !!d.deleted_at;
       $('restore-document').hidden=!d.deleted_at; $('delete-document').hidden=!!d.deleted_at || !!d.archived_at;
@@ -728,6 +731,7 @@
     $('start').onclick = () => action(async () => { await json(apiBase + '/documents/' + current.id + '/start', {method:'POST'}); await refresh(); });
     $('reopen').onclick = () => { if (confirm('Возобновить документ? Итоговый состав станет доступен для изменений и потребуется повторная проверка.')) action(async () => { await json(apiBase + '/documents/' + current.id + '/reopen', {method:'POST'}); await refresh(); }); };
     $('export').onclick = () => action(() => download(apiBase + '/documents/' + current.id + '/export', 'shipment.xlsx'));
+    $('missing-labels').onclick = () => action(() => download(apiBase + '/documents/' + current.id + '/missing-labels', 'missing-labels.pdf'));
     $('cancel-edit').onclick = () => { dirty = false; render(); message('Несохранённые изменения отменены'); maybeReload(); };
     $('edit-form').addEventListener('input', () => { dirty = true; });
     $('edit-form').onsubmit = e => { e.preventDefault(); action(async () => {

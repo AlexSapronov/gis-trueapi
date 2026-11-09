@@ -568,6 +568,7 @@ Production: `/root/gis_app`, systemd-юнит `gis-trueapi.service`
 ```bash
 cd /root/gis_app
 git pull
+pip install -r requirements-lock.txt
 systemctl restart gis-trueapi.service
 systemctl status gis-trueapi.service
 ```
