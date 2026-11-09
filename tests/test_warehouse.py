@@ -1,13 +1,13 @@
 """Business invariants and concurrent clients sharing durable SQLite state."""
 import asyncio
 import io
-import re
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import openpyxl
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 import main
 from mockclient import MockTrueApiClient
@@ -888,19 +888,23 @@ def test_admin_downloads_only_unscanned_receipt_labels(clients, store, svc, monk
     asyncio.run(check_document(store, svc, d['id']))
 
     labels = []
-    draw = warehouse_labels.draw_label
+    render = warehouse_labels.render_label
 
-    def record(canvas, full, pn, quantity):
+    def record(full, pn, quantity):
         labels.append((full, pn, quantity))
-        draw(canvas, full, pn, quantity)
+        return render(full, pn, quantity)
 
-    monkeypatch.setattr(warehouse_labels, 'draw_label', record)
+    monkeypatch.setattr(warehouse_labels, 'render_label', record)
     response = a.get(url, headers=headers)
     assert response.status_code == 200, response.text
     assert response.headers['content-type'] == 'application/pdf'
     assert response.headers['cache-control'] == 'no-store'
     assert response.headers['content-disposition'].endswith('.pdf')
-    assert len(re.findall(rb'/Type /Page\b', response.content)) == 1
+    pages = PdfReader(io.BytesIO(response.content)).pages
+    assert len(pages) == 1
+    assert len(pages[0].images) == 1
+    text = pages[0].extract_text()
+    assert 'PN-1' in text and missing[:19] in text and missing[19:38] in text
     assert labels == [(missing, 'PN-1', 40)]
 
     add(store, d, missing)
@@ -911,7 +915,7 @@ def test_admin_downloads_only_unscanned_receipt_labels(clients, store, svc, monk
 
 def test_missing_receipt_label_requires_crypto_and_encodes_literal_gs(clients, store, svc):
     from datamatrix import radio_label_payload
-    from warehouse_labels import GS1Matrix
+    from marking_bm_pdf.labels import GS1Matrix
 
     raw = code('A' * 20, '91EE12\x1d92' + 'x' * 44)
     normalized = radio_label_payload(raw.replace('\x1d', ''))
