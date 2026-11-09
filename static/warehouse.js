@@ -151,7 +151,7 @@
     const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
     if (current?.id !== id || selectedIssue?.id !== issue) return;
     const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
-    const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
+    const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : e.actor === 'sales' ? 'Менеджер ОП' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
     if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
     eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
   }
@@ -310,6 +310,7 @@
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + (admin ? ' от ' + d.date : '');
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)}${d.archived_at ? ' · Архивирован ' + stamp(d.archived_at) : ''} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
+    if (d.sales_username) $('doc-status').textContent += ' · Задание ОП: ' + d.sales_username;
     $('doc-count').textContent = admin ? `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '') : `Считано: ${d.scans.length} КМ`;
     let state = d.checking ? 'Проверка выполняется…' : !result ? 'КМ накапливаются. Проверка не выполнялась.' : !d.check_current ? 'Данные предыдущей проверки. Состав или правила изменены, требуется повторная проверка.' : result.ok ? 'Проверено. Документ полностью совпадает.' : incompleteReceipt ? 'Приёмка ещё не заполнена. Продолжайте сканирование.' : 'Проверено. Есть расхождения.';
     if (!admin) {

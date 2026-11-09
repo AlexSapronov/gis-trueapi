@@ -129,6 +129,7 @@ async def admin_token_post(
 
 
 # ---- Warehouse documents ------------------------------------------------
+from sales_shipments import install_sales_shipments
 from warehouse_store import WarehouseStore
 from warehouse_routes import install_warehouse
 
@@ -136,6 +137,7 @@ warehouse = WarehouseStore(settings.warehouse_db)
 svc.policy_getter = lambda: warehouse.application_settings()['values']
 install_admin_sessions(app, lambda: settings.admin_key)
 install_warehouse(app, lambda: svc, lambda: warehouse, templates)
+install_sales_shipments(app, lambda: svc, lambda: warehouse, templates)
 
 
 # ---- static ------------------------------------------------------------

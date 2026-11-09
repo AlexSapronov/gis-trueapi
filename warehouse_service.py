@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from organizations import registry
 from datamatrix import strip_ai30
-from warehouse_excel import positive_integer
+from warehouse_excel import import_xlsx, positive_integer
 from warehouse_store import WarehouseError
 
 
@@ -35,6 +35,25 @@ async def resolve_pns(service, gtins, org_inn):
     if missing:
         warnings.append('Заполните PN вручную: ' + ', '.join(sorted(missing)))
     return found, warnings
+
+
+async def import_document(store, service, content, kind, org_inn=None,
+                          document_number=None, document_date=None, *, sales_username=None):
+    header, lines, expected = await asyncio.to_thread(
+        import_xlsx, content, kind, org_inn or None, document_number or None, document_date or None)
+    warnings = []
+    if kind == 'shipment' and store.application_settings()['values']['auto_pn']:
+        missing = [line['gtin'] for line in lines if line['gtin'] and not line['pn']]
+        try:
+            async with asyncio.timeout(90):
+                pns, warnings = await resolve_pns(service, missing, header['org_inn'])
+        except TimeoutError:
+            pns, warnings = {}, ['Получение PN заняло слишком много времени. Заполните PN вручную.']
+        for line in lines:
+            if not line['pn'] and line['gtin'] in pns:
+                line.update(pn=pns[line['gtin']], pn_source='trueapi')
+    document = await asyncio.to_thread(store.create, header, lines, expected, sales_username=sales_username)
+    return {**document, 'import_warnings': warnings}
 
 
 async def shipment_results(service, doc):

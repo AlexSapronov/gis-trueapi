@@ -17,8 +17,8 @@ from models import AppError, ErrorCategory
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
-from warehouse_excel import MAX_FILE_SIZE, export_shipment, import_xlsx, scan_data, template
-from warehouse_service import check_document, resolve_pns
+from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template
+from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
@@ -206,22 +206,9 @@ def install_warehouse(app, service_getter, store_getter, templates):
     async def create_document(kind: str = Form(...), org_inn: str = Form(''),
                               document_number: str = Form(''), document_date: str = Form(''),
                               file: UploadFile = File(...)):
-        content = await file.read(MAX_FILE_SIZE + 1)
-        header, lines, expected = await asyncio.to_thread(
-            import_xlsx, content, kind, org_inn or None, document_number or None, document_date or None)
-        warnings = []
-        values = store_getter().application_settings()['values']
-        if kind == 'shipment' and values['auto_pn']:
-            try:
-                async with asyncio.timeout(90):
-                    pns, warnings = await resolve_pns(service_getter(), [l['gtin'] for l in lines if l['gtin'] and not l['pn']], header['org_inn'])
-            except TimeoutError:
-                pns, warnings = {}, ['Получение PN заняло слишком много времени. Заполните PN вручную.']
-            for line in lines:
-                if not line['pn'] and line['gtin'] in pns:
-                    line.update(pn=pns[line['gtin']], pn_source='trueapi')
-        d = store_getter().create(header, lines, expected)
-        return {**d, 'import_warnings': warnings}
+        return await import_document(
+            store_getter(), service_getter(), await file.read(MAX_FILE_SIZE + 1),
+            kind, org_inn, document_number, document_date)
 
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
