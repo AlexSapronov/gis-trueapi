@@ -6,7 +6,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from warehouse_issues import WarehouseIssues
@@ -80,13 +80,19 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
               UNIQUE(document_id,request_id));
             CREATE INDEX IF NOT EXISTS warehouse_returns_doc ON warehouse_returns(document_id,acknowledged_at);
             ''')
-            if 'revision' not in {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}:
-                c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+            c.execute('BEGIN IMMEDIATE')
             columns = {r[1] for r in c.execute('PRAGMA table_info(warehouse_documents)')}
+            if 'revision' not in columns:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
             if 'deleted_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
             if 'archived_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
+            if 'sales_username' not in columns:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN sales_username TEXT')
+            c.execute('''CREATE INDEX IF NOT EXISTS warehouse_sales_tasks
+                ON warehouse_documents(sales_username, created_at DESC) WHERE sales_username IS NOT NULL''')
+            c.commit()
             self.init_settings(c)
             self.init_upd(c)
             self.init_gtd_excel(c)
@@ -127,16 +133,31 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
         c.execute('UPDATE warehouse_documents SET version=version+1, revision=revision+1, updated_at=? WHERE id=?',
                   (now(), document_id))
 
-    def create(self, header, lines, expected):
+    def create(self, header, lines, expected, *, sales_username=None):
         document_id, ts = uuid.uuid4().hex, now()
         with self.connection(True) as c:
+            if sales_username is not None and (
+                    header['kind'] != 'shipment' or not any(line['gtin'] for line in lines)):
+                raise WarehouseError('Для задания нужна хотя бы одна маркируемая позиция с GTIN')
+            if header['kind'] == 'shipment':
+                shipment_date = date.fromisoformat(header['date'])
+                existing = c.execute("""SELECT date FROM warehouse_documents
+                    WHERE kind='shipment' AND org_inn=? AND number=?
+                    AND (sales_username IS NOT NULL OR ? IS NOT NULL)""",
+                    (header['org_inn'], header['number'], sales_username))
+                if any(date.fromisoformat(row['date']) == shipment_date for row in existing):
+                    raise WarehouseError(
+                        'Накладная с таким номером и датой уже есть. Для изменений обратитесь к ответственному.',
+                        409, 'shipment_exists')
+                if sales_username is not None:
+                    header = {**header, 'date': shipment_date.isoformat()}
             header = {**header, 'strict_owner': header.get('strict_owner', self._settings(c)['values']['strict_owner_default'])}
             c.execute('''INSERT INTO warehouse_documents
                 (id,kind,number,date,org_inn,org_name,recipient_name,recipient_inn,
-                 strict_owner,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                 strict_owner,created_at,updated_at,sales_username) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (document_id, header['kind'], header['number'], header['date'],
                  header['org_inn'], header['org_name'], header.get('recipient_name', ''),
-                 header.get('recipient_inn', ''), int(header.get('strict_owner', True)), ts, ts))
+                 header.get('recipient_inn', ''), int(header['strict_owner']), ts, ts, sales_username))
             for line in lines:
                 if not line['gtin']:
                     c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',
@@ -147,8 +168,25 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
             for e in expected:
                 c.execute('INSERT INTO warehouse_expected VALUES (?,?,?,?,?,?)',
                           (document_id, e['cis'], e['raw_code'], e['full_code'], e['gtin'], e['quantity']))
-            self._event(c, document_id, 'created', {'number':header['number'],'kind':header['kind']}, actor='admin')
+            actor = 'sales' if sales_username is not None else 'admin'
+            details = {'number': header['number'], 'kind': header['kind']}
+            if sales_username is not None:
+                details['username'] = sales_username
+            self._event(c, document_id, 'created', details, actor=actor)
+            if sales_username is not None:
+                self._start(c, document_id, actor=actor)
+                return {'number': header['number']}
         return self.get(document_id)
+
+    def sales_shipments(self, username):
+        with self.connection() as c:
+            return [dict(row) for row in c.execute('''SELECT d.number, d.date, d.org_name,
+                d.recipient_name, d.status, d.updated_at, d.completed_at, d.archived_at, d.deleted_at,
+                (SELECT count(*) FROM warehouse_scans s WHERE s.document_id=d.id) AS scan_count,
+                EXISTS(SELECT 1 FROM warehouse_issues i
+                       WHERE i.document_id=d.id AND i.resolved_at IS NULL) AS has_open_issue
+                FROM warehouse_documents d WHERE d.sales_username=? AND d.kind='shipment'
+                ORDER BY d.created_at DESC, d.id''', (username,))]
 
     def _snapshot(self, c, document_id, include_deleted=False):
         d = self._doc(c, document_id, include_deleted)
@@ -239,16 +277,19 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
 
     def start(self, document_id, reopen=False):
         with self.connection(True) as c:
-            d = self._doc(c, document_id)
-            if d['archived_at']:
-                raise WarehouseError('Сначала верните документ из архива', 409)
-            if d['status'] != ('completed' if reopen else 'draft'):
-                raise WarehouseError('Недопустимый переход статуса', 409)
-            c.execute('''UPDATE warehouse_documents SET status='active',started_at=?,
-                completed_at=NULL, version=version+1, revision=revision+1, updated_at=? WHERE id=?''',
-                (now(), now(), document_id))
-            self._event(c, document_id, 'reopened' if reopen else 'started', actor='admin')
+            self._start(c, document_id, reopen)
         return self.get(document_id)
+
+    def _start(self, c, document_id, reopen=False, actor='admin'):
+        d = self._doc(c, document_id)
+        if d['archived_at']:
+            raise WarehouseError('Сначала верните документ из архива', 409)
+        if d['status'] != ('completed' if reopen else 'draft'):
+            raise WarehouseError('Недопустимый переход статуса', 409)
+        c.execute('''UPDATE warehouse_documents SET status='active',started_at=?,
+            completed_at=NULL, version=version+1, revision=revision+1, updated_at=? WHERE id=?''',
+            (now(), now(), document_id))
+        self._event(c, document_id, 'reopened' if reopen else 'started', actor=actor)
 
     def add_scan(self, document_id, scan):
         with self.connection(True) as c:

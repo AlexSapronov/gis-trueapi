@@ -1,7 +1,9 @@
 """Конфигурация приложения. Читает .env и env-переменные о кружения."""
 from __future__ import annotations
 
+import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,6 +27,7 @@ class Settings:
         self.base_url: str = os.getenv("GIS_BASE_URL", "https://markirovka.crpt.ru").rstrip("/")
         self.admin_key: str = os.getenv("ADMIN_KEY", "change-me-in-production")
         self.warehouse_db: Path = Path(os.getenv("WAREHOUSE_DB", str(BASE_DIR / "data" / "warehouse.sqlite3")))
+        self.sales_shipment_links = self._parse_sales_shipment_links(os.getenv("SALES_SHIPMENT_LINKS", "{}"))
         self.receipt_default_org: str = os.getenv("RECEIPT_DEFAULT_ORG", "").strip()
         self.tokens_file: Path = Path(
             os.getenv("TOKENS_FILE", str(BASE_DIR / "data" / "tokens.json"))
@@ -39,6 +42,24 @@ class Settings:
         self.organizations = self._parse_organizations(
             os.getenv("ORGANIZATIONS", DEFAULT_ORGANIZATIONS)
         )
+
+    @staticmethod
+    def _parse_sales_shipment_links(raw: str) -> dict[str, str]:
+        message = "SALES_SHIPMENT_LINKS: ожидается JSON с уникальными именами и ключами ссылок"
+        try:
+            configured = json.loads(raw or "{}")
+        except ValueError:
+            raise ValueError(message) from None
+        if not isinstance(configured, dict):
+            raise ValueError(message)
+        links = {}
+        for username, key in configured.items():
+            username = username.strip().casefold()
+            if (not 1 <= len(username) <= 100 or username in links or not isinstance(key, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", key) or key in links.values()):
+                raise ValueError(message)
+            links[username] = key
+        return links
 
     @staticmethod
     def _parse_organizations(raw: str) -> list[dict[str, str]]:

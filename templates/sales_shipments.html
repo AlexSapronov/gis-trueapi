@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Задания на отгрузку · Честный ЗНАК</title>
+<link rel="stylesheet" href="/static/style.css?v={{ build_id }}">
+<link rel="stylesheet" href="/static/warehouse.css?v={{ build_id }}">
+<script src="/static/theme.js?v={{ build_id }}"></script>
+<script defer src="/static/api-request.js?v={{ build_id }}"></script>
+<script defer src="/static/sales-shipments.js?v={{ build_id }}"></script>
+</head>
+<body class="warehouse-page">
+<header class="wh-header">
+  <div><span class="wh-eyebrow">Честный ЗНАК · Отдел продаж</span><h1>Задания на отгрузку</h1></div>
+  <div class="wh-header-actions"><button id="theme-btn" class="icon-btn" type="button" aria-label="Тема">☾</button></div>
+</header>
+<main class="wh-main">
+  <p id="notice" role="status" aria-live="polite"></p>
+  <form id="sales-login" class="wh-card wh-login" hidden>
+    <h2>Вход для менеджера ОП</h2>
+    <label>Имя пользователя <input id="sales-username" autocomplete="username" maxlength="100" required></label>
+    <button class="btn primary">Войти</button>
+  </form>
+  <section id="sales-workspace" hidden>
+    <div class="wh-section-heading">
+      <p id="sales-identity"></p>
+      <button id="sales-logout" class="btn" type="button">Выйти</button>
+    </div>
+    <section class="wh-card">
+      <h2>Новое задание на сканирование КМ</h2>
+      <p>Скачайте шаблон Excel и укажите номер и дату накладной из Фларпа, отправителя, получателя, GTIN и количество. После загрузки задание сразу появится у склада.</p>
+      <a class="wh-link" href="/api/sales-shipments/template" download>Скачать шаблон Excel</a>
+      <form id="sales-upload">
+        <label>Заполненный шаблон <input type="file" name="file" accept=".xlsx" required></label>
+        <button class="btn primary">Передать на склад</button>
+      </form>
+    </section>
+    <section class="wh-card">
+      <div class="wh-section-heading">
+        <h2>Мои задания</h2>
+        <button id="sales-refresh" class="btn" type="button">Обновить</button>
+      </div>
+      <p class="wh-muted">Статус «Сборка завершена» означает, что склад завершил проверку КМ по заданию.</p>
+      <div class="wh-table" tabindex="0" aria-label="Мои задания">
+        <table>
+          <thead><tr><th>Накладная</th><th>Получатель</th><th>Отправитель</th><th>Статус</th><th>Сканов КМ</th><th>Обновлено</th></tr></thead>
+          <tbody id="sales-tasks"></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+  <noscript>Для входа в кабинет менеджера ОП включите JavaScript.</noscript>
+</main>
+</body>
+</html>
