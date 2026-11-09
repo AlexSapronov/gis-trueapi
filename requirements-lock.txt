@@ -37,5 +37,6 @@ XlsxWriter==3.2.9
 lxml==6.1.1
 # GS1 DataMatrix label PDFs
 reportlab==4.4.9
+pypdf==6.10.0
 Pillow==12.3.0
 charset-normalizer==3.4.7
