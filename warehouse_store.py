@@ -42,6 +42,10 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
               updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
               check_id TEXT, check_until REAL, result TEXT,
               result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT);
+            CREATE TABLE IF NOT EXISTS warehouse_shipment_sources (
+              org_inn TEXT NOT NULL, invoice_id TEXT NOT NULL,
+              document_id TEXT NOT NULL UNIQUE REFERENCES warehouse_documents(id),
+              PRIMARY KEY(org_inn, invoice_id));
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -177,6 +181,76 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
                 self._start(c, document_id, actor=actor)
                 return {'number': header['number']}
         return self.get(document_id)
+
+    def sync_shipment_invoice(self, invoice_id, header, lines):
+        """One invoice per write transaction: scan/check operations serialize with sync."""
+        with self.connection(True) as c:
+            source = c.execute('SELECT document_id FROM warehouse_shipment_sources WHERE org_inn=? AND invoice_id=?',
+                               (header['org_inn'], invoice_id)).fetchone()
+            document_id = source['document_id'] if source else None
+            if not document_id:
+                # Older manual/sales tasks have no InvoiceId. Adopt only an unambiguous number.
+                matches = list(c.execute("SELECT id FROM warehouse_documents WHERE kind='shipment' AND org_inn=? AND number=?",
+                                         (header['org_inn'], header['number'])))
+                if len(matches) > 1:
+                    raise WarehouseError('Несколько заданий с этим номером: требуется разбор администратора', 409)
+                if matches:
+                    document_id = matches[0]['id']
+                    if c.execute('SELECT 1 FROM warehouse_shipment_sources WHERE document_id=?', (document_id,)).fetchone():
+                        raise WarehouseError('Номер уже связан с другим InvoiceId', 409)
+            if not document_id:
+                if not any(line['gtin'] for line in lines):
+                    return dict(status='skipped', message='Нет маркируемых позиций')
+                document_id, ts = uuid.uuid4().hex, now()
+                c.execute("""INSERT INTO warehouse_documents
+                    (id,kind,number,date,org_inn,org_name,recipient_name,recipient_inn,
+                     strict_owner,created_at,updated_at) VALUES (?,'shipment',?,?,?,?,?,?,?,?,?)""",
+                    (document_id, header['number'], header['date'], header['org_inn'], header['org_name'],
+                     '', header['recipient_inn'], int(self._settings(c)['values']['strict_owner_default']), ts, ts))
+                self._event(c, document_id, 'created', {'source': 'invoice_list', 'invoice_id': invoice_id})
+                outcome = 'created'
+            else:
+                d = self._snapshot(c, document_id, include_deleted=True)
+                canonical = lambda items: sorted((l['gtin'], l['pn'], l['quantity']) for l in items)
+                same = (canonical(lines) == canonical(d['lines']) and d['number'] == header['number']
+                        and d['recipient_inn'] == header['recipient_inn'])
+                if d['deleted_at']:
+                    raise WarehouseError('Задание удалено; сначала восстановите его вручную', 409)
+                if same:
+                    if not source:
+                        c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
+                                  (header['org_inn'], invoice_id, document_id))
+                    return dict(status='unchanged', document_id=document_id, message='Без изменений; сканы и статус сохранены')
+                if d['archived_at']:
+                    raise WarehouseError('Состав архивного задания изменён; сначала верните его из архива', 409)
+                if d['checking']:
+                    raise WarehouseError('Идёт проверка КМ; повторите загрузку после её завершения', 409)
+                outcome = 'updated'
+                self._event(c, document_id, 'invoice_synced',
+                            {'invoice_id': invoice_id, 'before': d['lines'], 'after': lines,
+                             'recipient_before': d['recipient_inn'], 'recipient_after': header['recipient_inn'],
+                             'number_before': d['number'], 'number_after': header['number']})
+                c.execute('DELETE FROM warehouse_lines WHERE document_id=?', (document_id,))
+                c.execute('DELETE FROM warehouse_unmarked_lines WHERE document_id=?', (document_id,))
+            for line in lines:
+                if line['gtin']:
+                    c.execute('INSERT INTO warehouse_lines VALUES (?,?,?,?,?)',
+                              (document_id, line['gtin'], line['pn'], 'excel', line['quantity']))
+                else:
+                    c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',
+                              (uuid.uuid4().hex, document_id, line['pn'], line['quantity']))
+            if not source:
+                c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
+                          (header['org_inn'], invoice_id, document_id))
+            c.execute("""UPDATE warehouse_documents SET number=?,
+                recipient_name=CASE WHEN recipient_inn=? THEN recipient_name ELSE '' END,
+                recipient_inn=?,status='active',
+                started_at=COALESCE(started_at,?),completed_at=NULL,result=NULL,result_version=NULL,
+                result_at=NULL,check_id=NULL,check_until=NULL WHERE id=?""",
+                (header['number'], header['recipient_inn'], header['recipient_inn'], now(), document_id))
+            self._bump(c, document_id)
+            return dict(status=outcome, document_id=document_id,
+                        message='Задание создано' if outcome == 'created' else 'Состав обновлён; сканы сохранены, требуется проверка')
 
     def sales_shipments(self, username):
         with self.connection() as c:
