@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from shipment_bulk import REQUIRED, import_bulk
+from shipment_bulk import LEGACY_REQUIRED as REQUIRED, import_bulk
 from warehouse_excel import make_xlsx, scan_data
 from warehouse_service import check_document
 from warehouse_store import WarehouseError, WarehouseStore

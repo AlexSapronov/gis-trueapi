@@ -13,6 +13,7 @@ from warehouse_issues import WarehouseIssues
 from upd_store import UpdStore
 from gtd_excel_store import GtdExcelStore
 from app_settings import RuntimeSettings
+from party_catalog import PartyCatalog
 
 
 class WarehouseError(Exception):
@@ -26,7 +27,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
+class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, PartyCatalog):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +101,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
             self.init_settings(c)
             self.init_upd(c)
             self.init_gtd_excel(c)
+            self.init_party_catalog(c)
         c.close()
 
     @contextmanager
@@ -206,7 +208,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
                     (id,kind,number,date,org_inn,org_name,recipient_name,recipient_inn,
                      strict_owner,created_at,updated_at) VALUES (?,'shipment',?,?,?,?,?,?,?,?,?)""",
                     (document_id, header['number'], header['date'], header['org_inn'], header['org_name'],
-                     '', header['recipient_inn'], int(self._settings(c)['values']['strict_owner_default']), ts, ts))
+                     header.get('recipient_name', ''), header['recipient_inn'], int(self._settings(c)['values']['strict_owner_default']), ts, ts))
                 self._event(c, document_id, 'created', {'source': 'invoice_list', 'invoice_id': invoice_id})
                 outcome = 'created'
             else:
@@ -217,6 +219,11 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
                 if d['deleted_at']:
                     raise WarehouseError('Задание удалено; сначала восстановите его вручную', 409)
                 if same:
+                    # A display-name change is metadata; keep a completed scan/check valid.
+                    recipient_name = header.get('recipient_name')
+                    if recipient_name and recipient_name != d['recipient_name']:
+                        c.execute('UPDATE warehouse_documents SET recipient_name=?,revision=revision+1 WHERE id=?',
+                                  (recipient_name, document_id))
                     if not source:
                         c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                                   (header['org_inn'], invoice_id, document_id))
@@ -243,11 +250,12 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
                 c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                           (header['org_inn'], invoice_id, document_id))
             c.execute("""UPDATE warehouse_documents SET number=?,
-                recipient_name=CASE WHEN recipient_inn=? THEN recipient_name ELSE '' END,
+                recipient_name=CASE WHEN ? != '' THEN ? WHEN recipient_inn=? THEN recipient_name ELSE '' END,
                 recipient_inn=?,status='active',
                 started_at=COALESCE(started_at,?),completed_at=NULL,result=NULL,result_version=NULL,
                 result_at=NULL,check_id=NULL,check_until=NULL WHERE id=?""",
-                (header['number'], header['recipient_inn'], header['recipient_inn'], now(), document_id))
+                (header['number'], header.get('recipient_name', ''), header.get('recipient_name', ''),
+                 header['recipient_inn'], header['recipient_inn'], now(), document_id))
             self._bump(c, document_id)
             return dict(status=outcome, document_id=document_id,
                         message='Задание создано' if outcome == 'created' else 'Состав обновлён; сканы сохранены, требуется проверка')

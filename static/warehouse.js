@@ -717,6 +717,24 @@
       } catch (e) { $('delete-dialog').close(); deletion = null; await refresh(); throw e; }
     }); };
     $('template').onclick = () => action(() => download(apiBase + '/templates/' + kind, 'template.xlsx'));
+    $('party-catalog-template').onclick = () => action(() => download(apiBase + '/party-catalog/template', 'INN-Name.xlsx'));
+    $('party-catalog-show').onclick = () => action(async () => {
+      const data = await json(apiBase + '/party-catalog');
+      $('party-catalog-report').innerHTML = `<p>Сохранено имён: ${data.rows.length}</p>`
+        + '<div class="wh-table"><table><thead><tr><th>ИНН</th><th>Имя</th></tr></thead><tbody>'
+        + data.rows.map(r => `<tr><td>${esc(r.inn)}</td><td>${esc(r.name)}</td></tr>`).join('') + '</tbody></table></div>';
+    });
+    $('party-catalog-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      const file = $('party-catalog-file').files[0];
+      const button = $('party-catalog-form').querySelector('button');
+      if (!file || button.disabled) return;
+      button.disabled = true;
+      try {
+        const form = new FormData(); form.set('file', file);
+        const data = await json(apiBase + '/party-catalog', {method:'POST', body:form});
+        $('party-catalog-report').textContent = `Справочник сохранён. Добавлено: ${data.added}. Уже было: ${data.existing}. Всего имён: ${data.total}.`;
+      } finally { button.disabled = false; }
+    }); };
     $('bulk-shipment-form').onsubmit = e => { e.preventDefault(); action(async () => {
       const file = $('bulk-shipment-file').files[0];
       if (!file) return;

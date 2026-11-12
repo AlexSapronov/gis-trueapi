@@ -17,11 +17,11 @@ from models import AppError, ErrorCategory
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
-from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template
+from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template, make_xlsx
 from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
-from shipment_bulk import import_bulk
+from shipment_bulk import import_bulk, read_party_catalog
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
 
@@ -211,6 +211,20 @@ def install_warehouse(app, service_getter, store_getter, templates):
         return await import_document(
             store_getter(), service_getter(), await file.read(MAX_FILE_SIZE + 1),
             kind, org_inn, document_number, document_date)
+
+    @admin.get('/party-catalog')
+    def party_catalog():
+        return store_getter().party_catalog()
+
+    @admin.get('/party-catalog/template')
+    def party_catalog_template():
+        return xlsx_response(make_xlsx({'Юрлица': [['ИНН', 'Имя']]}), 'INN-Name.xlsx')
+
+    @admin.post('/party-catalog')
+    async def upload_party_catalog(file: UploadFile = File(...)):
+        content = await file.read(MAX_FILE_SIZE + 1)
+        rows = await asyncio.to_thread(read_party_catalog, content)
+        return await asyncio.to_thread(store_getter().save_party_catalog, rows)
 
     @admin.post('/shipment-invoices')
     async def import_shipment_invoices(file: UploadFile = File(...)):
