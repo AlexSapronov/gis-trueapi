@@ -71,6 +71,12 @@
 <details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
 <p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
 <p id="import-unmarked-hint">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
+<details id="bulk-shipment-box"><summary>Массовые задания на отгрузку из списка накладных</summary>
+<p>Загрузите выгрузку без изменения её структуры, добавив столбцы «ИНН отправителя» и «ИНН получателя» в каждую строку. Отправитель должен быть нашей организацией. InvoiceId связывает повторные загрузки. Дата задания — дата первой загрузки, а не дата накладной.</p>
+<p>«Да» требует GTIN. «Нет» и «??» считаются товаром без маркировки. Новые накладные только с такими товарами пропускаются. Повторная загрузка сохраняет сканы. Изменённые задания возвращаются на проверку, лишние КМ остаются видны. Отсутствие накладной в файле не удаляет задание.</p>
+<form id="bulk-shipment-form"><label>Список накладных Excel <input id="bulk-shipment-file" type="file" accept=".xlsx" required></label><button class="btn primary">Создать / обновить задания на отгрузку</button></form>
+<div id="bulk-shipment-report" role="status" aria-live="polite"></div>
+</details>
 <button type="button" id="template" class="btn">Скачать шаблон</button>
 <form id="import-form"><label>Наша организация <select id="import-org"><option value="">Из файла</option></select></label>
 <div id="import-datamatrix-meta" hidden><p class="wh-muted">Для однолистного файла DataMatrix без реквизитов укажите номер и дату накладной здесь и выберите организацию. Для стандартных шаблонов поля не нужны.</p>

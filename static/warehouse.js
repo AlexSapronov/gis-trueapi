@@ -150,7 +150,7 @@
     const id=current.id, issue=selectedIssue.id;
     const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
     if (current?.id !== id || selectedIssue?.id !== issue) return;
-    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
+    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',invoice_synced:'Накладная обновлена из Excel',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
     const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : e.actor === 'sales' ? 'Менеджер ОП' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
     if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
     eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
@@ -193,6 +193,7 @@
     $('import-format-hint').textContent = kind === 'receipt'
       ? 'Приёмка: лист «Товары» содержит КМ / PN / Количество. GTIN автоматически извлекается из КМ. КМ, PN и ИНН на листе «Документ» храните как текст.'
       : 'Отгрузка: лист «Товары» содержит PN / GTIN / Количество. GTIN можно указать текстом или числом Excel: для 13 цифр добавится ведущий 0, 14 цифр сохранятся. ИНН храните как текст.';
+    $('bulk-shipment-box').hidden = kind !== 'shipment';
     $('import-datamatrix-meta').hidden = kind !== 'receipt';
     $('import-unmarked-hint').textContent = kind === 'receipt'
       ? 'Для товара без маркировки оставьте КМ пустым и заполните PN и количество. Такие позиции показываются справочно и не проверяются по КМ.'
@@ -247,7 +248,7 @@
     $('list-title').textContent=listPrefix()+(kind==='shipment'?'Отгрузки':'Приёмки');
     if (admin) $('import-box').hidden = $('filter-trash').value !== 'false';
     document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', b.dataset.kind === kind));
-    $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc ${d.open_issues ? 'wh-problem' : ''} ${d.pending_returns ? 'wh-returned' : ''}" data-doc="${esc(d.id)}"><span class="wh-badge" data-status="${d.deleted_at ? 'deleted' : d.archived_at ? 'completed' : esc(d.status)}">${d.deleted_at ? 'В корзине' : esc(status(d))}</span><b>№ ${esc(d.number)}</b><span class="wh-muted">${esc(d.date)} · ${esc(d.org_name)}</span>${d.recipient_name ? `<span>→ ${esc(d.recipient_name)}</span>` : ''}${d.pending_returns ? `<span class="wh-good">${admin ? 'Ответ передан · ждёт ознакомления' : 'Ответственный ответил — можно продолжать'}</span>` : ''}${d.open_issues ? `<span class="wh-bad">Проблемный · обращений: ${d.open_issues}</span>` : ''}<span>${d.scan_count} КМ · ${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span>${d.kind === 'shipment' ? `<span class="wh-muted">${d.strict_owner ? 'Строгое соответствие организации' : 'КМ наших организаций'}</span>` : ''}<span class="wh-muted">Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<div class="wh-card"><h3>Документы не найдены</h3><p class="wh-muted">Измените условия поиска или сбросьте фильтры.</p></div>';
+    $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc ${d.open_issues ? 'wh-problem' : ''} ${d.pending_returns ? 'wh-returned' : ''}" data-doc="${esc(d.id)}"><span class="wh-badge" data-status="${d.deleted_at ? 'deleted' : d.archived_at ? 'completed' : esc(d.status)}">${d.deleted_at ? 'В корзине' : esc(status(d))}</span><b>№ ${esc(d.number)}</b><span class="wh-muted">${esc(d.date)} · ${esc(d.org_name)}</span>${d.recipient_name || d.recipient_inn ? `<span>→ ${esc(d.recipient_name || 'ИНН ' + d.recipient_inn)}</span>` : ''}${d.pending_returns ? `<span class="wh-good">${admin ? 'Ответ передан · ждёт ознакомления' : 'Ответственный ответил — можно продолжать'}</span>` : ''}${d.open_issues ? `<span class="wh-bad">Проблемный · обращений: ${d.open_issues}</span>` : ''}<span>${d.scan_count} КМ · ${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span>${d.kind === 'shipment' ? `<span class="wh-muted">${d.strict_owner ? 'Строгое соответствие организации' : 'КМ наших организаций'}</span>` : ''}<span class="wh-muted">Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<div class="wh-card"><h3>Документы не найдены</h3><p class="wh-muted">Измените условия поиска или сбросьте фильтры.</p></div>';
 
   }
   async function returnToDocuments(text) {
@@ -308,7 +309,7 @@
     const incompleteReceipt = d.kind === 'receipt' && result?.missing.length > 0 && !result.codes.some(c => c.errors.length);
     $('doc-badge').textContent=d.deleted_at?'В корзине':status(d); $('doc-badge').dataset.status=d.deleted_at?'deleted':d.status;
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + (admin ? ' от ' + d.date : '');
-    $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name ? ` → ${d.recipient_name} · ИНН ${d.recipient_inn}` : '');
+    $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name || d.recipient_inn ? ` → ${d.recipient_name || 'Получатель'} · ИНН ${d.recipient_inn}` : '');
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)}${d.archived_at ? ' · Архивирован ' + stamp(d.archived_at) : ''} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     if (d.sales_username) $('doc-status').textContent += ' · Задание ОП: ' + d.sales_username;
     $('doc-count').textContent = admin ? `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '') : `Считано: ${d.scans.length} КМ`;
@@ -716,6 +717,22 @@
       } catch (e) { $('delete-dialog').close(); deletion = null; await refresh(); throw e; }
     }); };
     $('template').onclick = () => action(() => download(apiBase + '/templates/' + kind, 'template.xlsx'));
+    $('bulk-shipment-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      const file = $('bulk-shipment-file').files[0];
+      if (!file) return;
+      const button = $('bulk-shipment-form').querySelector('button');
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        const form = new FormData(); form.set('file', file);
+        const report = await json(apiBase + '/shipment-invoices', {method:'POST', body:form});
+        const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', skipped:'Пропущено', error:'Ошибка'};
+        $('bulk-shipment-report').innerHTML = '<p>' + Object.entries(report.counts).map(([key, count]) => `${labels[key]}: ${count}`).join(' · ') + '</p>'
+          + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody>'
+          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+        await list();
+      } finally { button.disabled = false; }
+    }); };
     $('import-form').onsubmit = e => { e.preventDefault(); action(async () => {
       if (!$('import-file').files[0]) return;
       const form = new FormData(); form.set('kind', kind); form.set('org_inn', $('import-org').value);

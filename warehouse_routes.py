@@ -21,6 +21,7 @@ from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template
 from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
+from shipment_bulk import import_bulk
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
 
@@ -210,6 +211,11 @@ def install_warehouse(app, service_getter, store_getter, templates):
         return await import_document(
             store_getter(), service_getter(), await file.read(MAX_FILE_SIZE + 1),
             kind, org_inn, document_number, document_date)
+
+    @admin.post('/shipment-invoices')
+    async def import_shipment_invoices(file: UploadFile = File(...)):
+        content = await file.read(MAX_FILE_SIZE + 1)
+        return await asyncio.to_thread(import_bulk, store_getter(), content)
 
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
