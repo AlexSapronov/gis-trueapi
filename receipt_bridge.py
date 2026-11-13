@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import time
 import uuid
 from datetime import date
 
@@ -121,7 +120,7 @@ class ReceiptBridgeStore:
         if len(candidates) != 1:
             conflict()
         d = candidates[0]
-        if d["org_inn"] != payload.org_inn or d["deleted_at"]:
+        if d["org_inn"] != payload.org_inn:
             conflict()
         if c.execute(
             "SELECT 1 FROM warehouse_receipt_sources WHERE document_id=?", (d["id"],)
@@ -153,8 +152,31 @@ class ReceiptBridgeStore:
             conflict()
         return d["id"]
 
+    def _replace_receipt_work(self, c, document_id, action, details, *, revoked=False):
+        """Retire slave work atomically; master revisions always take precedence."""
+        from warehouse_store import now
+
+        before = self._doc(c, document_id, include_deleted=True)
+        snapshot = {"document": before, **details}
+        for key, table in (("lines", "warehouse_lines"),
+                           ("unmarked_lines", "warehouse_unmarked_lines"),
+                           ("expected", "warehouse_expected"),
+                           ("scans", "warehouse_scans")):
+            snapshot[key] = [dict(r) for r in c.execute(
+                f"SELECT * FROM {table} WHERE document_id=?", (document_id,))]
+        self._event(c, document_id, action, snapshot, actor="marking-bm")
+        for table in ("warehouse_scans", "warehouse_expected", "warehouse_lines", "warehouse_unmarked_lines"):
+            c.execute(f"DELETE FROM {table} WHERE document_id=?", (document_id,))
+        c.execute("""UPDATE warehouse_documents SET status='draft',started_at=NULL,
+            completed_at=NULL,archived_at=NULL,deleted_at=?,check_id=NULL,check_until=NULL,
+            result=NULL,result_version=NULL,result_at=NULL WHERE id=?""",
+            (now() if revoked else None, document_id))
+        c.execute("UPDATE warehouse_issues SET resolved_at=?,resolution=? WHERE document_id=? AND resolved_at IS NULL",
+                  (now(), "Прежняя версия отозвана источником marking-bm", document_id))
+        self._bump(c, document_id)
+
     def revoke_receipt(self, payload):
-        from warehouse_store import WarehouseError, now
+        from warehouse_store import WarehouseError
 
         fingerprint = hashlib.sha256(payload.model_dump_json().encode()).hexdigest()
         with self.connection(True) as c:
@@ -181,22 +203,9 @@ class ReceiptBridgeStore:
                 raise WarehouseError("Устаревшая версия отзыва", 409)
             document_id = source["document_id"] if source else None
             if source:
-                d = self._doc(c, document_id, include_deleted=True)
-                if d["status"] != "draft" or d["archived_at"] or c.execute("SELECT 1 FROM warehouse_scans WHERE document_id=? LIMIT 1", (document_id,)).fetchone():
-                    raise WarehouseError("Приёмка уже в работе или архиве. Отзыв требует разбора администратором; сканы сохранены", 409)
-                if d["check_id"] and (d["check_until"] or 0) > time.time():
-                    raise WarehouseError("Приёмка проверяется; повторите позже", 409)
-                # Keep the complete old composition in the event before removing
-                # it from active matching and scan expectations.
-                old = {"reason": payload.reason, "revision": payload.revision,
-                       "source": json.loads(source["metadata"]),
-                       "lines": [dict(r) for r in c.execute("SELECT * FROM warehouse_lines WHERE document_id=?", (document_id,))],
-                       "expected": [dict(r) for r in c.execute("SELECT * FROM warehouse_expected WHERE document_id=?", (document_id,))]}
-                self._event(c, document_id, "receipt_revoked", old, actor="marking-bm")
-                c.execute("DELETE FROM warehouse_expected WHERE document_id=?", (document_id,))
-                c.execute("DELETE FROM warehouse_lines WHERE document_id=?", (document_id,))
-                c.execute("UPDATE warehouse_documents SET deleted_at=?,result=NULL,result_version=NULL,result_at=NULL WHERE id=?", (now(), document_id))
-                self._bump(c, document_id)
+                self._replace_receipt_work(c, document_id, "receipt_revoked",
+                    {"reason": payload.reason, "revision": payload.revision,
+                     "source": json.loads(source["metadata"])}, revoked=True)
             c.execute("""INSERT INTO warehouse_receipt_revocations VALUES(?,?,?,?,?)
                 ON CONFLICT(source_instance,source_document) DO UPDATE SET revision=excluded.revision,fingerprint=excluded.fingerprint,document_id=excluded.document_id""",
                 (payload.source_instance, payload.source_document, payload.revision, fingerprint, document_id))
@@ -218,14 +227,6 @@ class ReceiptBridgeStore:
             ).fetchone()
             if source:
                 document_id = source["document_id"]
-                d = self._doc(c, document_id, include_deleted=True)
-                if revoked and revoked["document_id"] == document_id and d["status"] == "draft" and not d["archived_at"]:
-                    c.execute("UPDATE warehouse_documents SET deleted_at=NULL WHERE id=?", (document_id,))
-                elif d["deleted_at"]:
-                    raise WarehouseError(
-                        "Связанная приёмка в корзине или архиве; требуется администратор",
-                        409,
-                    )
                 if payload.revision < source["revision"]:
                     raise WarehouseError("Устаревшая версия состава", 409)
                 if payload.revision == source["revision"]:
@@ -236,41 +237,11 @@ class ReceiptBridgeStore:
                         "revision": payload.revision,
                         "status": "unchanged",
                     }
-                if d["archived_at"]:
-                    raise WarehouseError(
-                        "Связанная приёмка в архиве; требуется администратор", 409
-                    )
-                if (
-                    d["status"] != "draft"
-                    or c.execute(
-                        "SELECT 1 FROM warehouse_scans WHERE document_id=? LIMIT 1",
-                        (document_id,),
-                    ).fetchone()
-                ):
-                    raise WarehouseError(
-                        "Приёмка уже запущена. Изменение состава требует разбора администратором; сканы сохранены",
-                        409,
-                    )
-                if d["check_id"] and (d["check_until"] or 0) > time.time():
-                    raise WarehouseError("Приёмка проверяется; повторите позже", 409)
-                c.execute(
-                    "DELETE FROM warehouse_expected WHERE document_id=?", (document_id,)
-                )
-                c.execute(
-                    "DELETE FROM warehouse_lines WHERE document_id=?", (document_id,)
-                )
-                c.execute(
-                    """UPDATE warehouse_documents SET number=?,date=?,org_inn=?,org_name=?,
-                    result=NULL,result_version=NULL,result_at=NULL WHERE id=?""",
-                    (
-                        payload.number,
-                        payload.date.isoformat(),
-                        org.inn,
-                        org.name,
-                        document_id,
-                    ),
-                )
-                self._bump(c, document_id)
+                self._replace_receipt_work(c, document_id, "receipt_superseded",
+                    {"revision": payload.revision, "previous_revision": source["revision"],
+                     "source": json.loads(source["metadata"])})
+                c.execute("""UPDATE warehouse_documents SET number=?,date=?,org_inn=?,org_name=? WHERE id=?""",
+                          (payload.number, payload.date.isoformat(), org.inn, org.name, document_id))
                 status = "updated"
             else:
                 if not expected:
