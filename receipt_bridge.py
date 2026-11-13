@@ -35,6 +35,16 @@ class ReceiptPayload(BaseModel):
     codes: list[ReceiptCode] = Field(max_length=50000)
 
 
+class RevokePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_instance: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    source_document: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    revision: int = Field(strict=True, ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    action: str = Field(pattern=r"^revoke$")
+    receipt: ReceiptPayload | None = None
+
+
 def prepare(payload):
     from warehouse_excel import gtin_checksum_valid, scan_data
     from warehouse_store import WarehouseError
@@ -76,6 +86,10 @@ class ReceiptBridgeStore:
             document_id TEXT NOT NULL UNIQUE REFERENCES warehouse_documents(id),
             revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, metadata TEXT NOT NULL,
             PRIMARY KEY(source_instance,source_document))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS warehouse_receipt_revocations (
+            source_instance TEXT NOT NULL, source_document TEXT NOT NULL,
+            revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, document_id TEXT,
+            PRIMARY KEY(source_instance,source_document))""")
         c.execute(
             "CREATE INDEX IF NOT EXISTS receipt_bridge_expected_cis ON warehouse_expected(cis,document_id)"
         )
@@ -87,7 +101,7 @@ class ReceiptBridgeStore:
 
         candidates = list(
             c.execute(
-                "SELECT DISTINCT d.* FROM warehouse_documents d WHERE d.kind='receipt' AND "
+                "SELECT DISTINCT d.* FROM warehouse_documents d WHERE d.kind='receipt' AND NOT EXISTS (SELECT 1 FROM warehouse_receipt_revocations v WHERE v.document_id=d.id) AND "
                 "((d.org_inn=? AND trim(d.number)=?) OR d.id IN "
                 "(SELECT document_id FROM warehouse_expected WHERE cis IN (SELECT value FROM json_each(?))))",
                 (
@@ -139,6 +153,55 @@ class ReceiptBridgeStore:
             conflict()
         return d["id"]
 
+    def revoke_receipt(self, payload):
+        from warehouse_store import WarehouseError, now
+
+        fingerprint = hashlib.sha256(payload.model_dump_json().encode()).hexdigest()
+        with self.connection(True) as c:
+            previous = c.execute("SELECT * FROM warehouse_receipt_revocations WHERE source_instance=? AND source_document=?", (payload.source_instance, payload.source_document)).fetchone()
+            source = c.execute("SELECT * FROM warehouse_receipt_sources WHERE source_instance=? AND source_document=?", (payload.source_instance, payload.source_document)).fetchone()
+            if previous:
+                if payload.revision < previous["revision"] or (payload.revision == previous["revision"] and fingerprint != previous["fingerprint"]):
+                    raise WarehouseError("Устаревший или противоречивый отзыв", 409)
+                if payload.revision == previous["revision"]:
+                    return {"document_id": previous["document_id"] or payload.source_document, "revision": payload.revision, "status": "revoked"}
+            if not source and payload.receipt:
+                original = payload.receipt
+                if (original.source_instance != payload.source_instance
+                    or original.source_document != payload.source_document
+                    or original.revision >= payload.revision):
+                    raise WarehouseError("Исходная приёмка не соответствует отзыву", 409)
+                _, lines, expected = prepare(original)
+                matched = self._match_existing_receipt(c, original, lines, expected)
+                if matched:
+                    metadata = json.dumps({"supplier": original.supplier, "atks": sorted({i.atk for i in original.codes}), "source_document": original.source_document}, ensure_ascii=False)
+                    c.execute("INSERT INTO warehouse_receipt_sources VALUES(?,?,?,?,?,?)", (original.source_instance, original.source_document, matched, original.revision, hashlib.sha256(original.model_dump_json().encode()).hexdigest(), metadata))
+                    source = c.execute("SELECT * FROM warehouse_receipt_sources WHERE source_instance=? AND source_document=?", (payload.source_instance, payload.source_document)).fetchone()
+            if source and payload.revision <= source["revision"]:
+                raise WarehouseError("Устаревшая версия отзыва", 409)
+            document_id = source["document_id"] if source else None
+            if source:
+                d = self._doc(c, document_id, include_deleted=True)
+                if d["status"] != "draft" or d["archived_at"] or c.execute("SELECT 1 FROM warehouse_scans WHERE document_id=? LIMIT 1", (document_id,)).fetchone():
+                    raise WarehouseError("Приёмка уже в работе или архиве. Отзыв требует разбора администратором; сканы сохранены", 409)
+                if d["check_id"] and (d["check_until"] or 0) > time.time():
+                    raise WarehouseError("Приёмка проверяется; повторите позже", 409)
+                # Keep the complete old composition in the event before removing
+                # it from active matching and scan expectations.
+                old = {"reason": payload.reason, "revision": payload.revision,
+                       "source": json.loads(source["metadata"]),
+                       "lines": [dict(r) for r in c.execute("SELECT * FROM warehouse_lines WHERE document_id=?", (document_id,))],
+                       "expected": [dict(r) for r in c.execute("SELECT * FROM warehouse_expected WHERE document_id=?", (document_id,))]}
+                self._event(c, document_id, "receipt_revoked", old, actor="marking-bm")
+                c.execute("DELETE FROM warehouse_expected WHERE document_id=?", (document_id,))
+                c.execute("DELETE FROM warehouse_lines WHERE document_id=?", (document_id,))
+                c.execute("UPDATE warehouse_documents SET deleted_at=?,result=NULL,result_version=NULL,result_at=NULL WHERE id=?", (now(), document_id))
+                self._bump(c, document_id)
+            c.execute("""INSERT INTO warehouse_receipt_revocations VALUES(?,?,?,?,?)
+                ON CONFLICT(source_instance,source_document) DO UPDATE SET revision=excluded.revision,fingerprint=excluded.fingerprint,document_id=excluded.document_id""",
+                (payload.source_instance, payload.source_document, payload.revision, fingerprint, document_id))
+        return {"document_id": document_id or payload.source_document, "revision": payload.revision, "status": "revoked"}
+
     def sync_receipt(self, payload):
         from warehouse_store import WarehouseError, now
 
@@ -146,6 +209,9 @@ class ReceiptBridgeStore:
         encoded = payload.model_dump_json()
         fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
         with self.connection(True) as c:
+            revoked = c.execute("SELECT * FROM warehouse_receipt_revocations WHERE source_instance=? AND source_document=?", (payload.source_instance, payload.source_document)).fetchone()
+            if revoked and payload.revision <= revoked["revision"]:
+                raise WarehouseError("Версия состава уже отозвана", 409)
             source = c.execute(
                 "SELECT * FROM warehouse_receipt_sources WHERE source_instance=? AND source_document=?",
                 (payload.source_instance, payload.source_document),
@@ -153,7 +219,9 @@ class ReceiptBridgeStore:
             if source:
                 document_id = source["document_id"]
                 d = self._doc(c, document_id, include_deleted=True)
-                if d["deleted_at"]:
+                if revoked and revoked["document_id"] == document_id and d["status"] == "draft" and not d["archived_at"]:
+                    c.execute("UPDATE warehouse_documents SET deleted_at=NULL WHERE id=?", (document_id,))
+                elif d["deleted_at"]:
                     raise WarehouseError(
                         "Связанная приёмка в корзине или архиве; требуется администратор",
                         409,
@@ -300,6 +368,7 @@ class ReceiptBridgeStore:
                     metadata,
                 ),
             )
+            c.execute("DELETE FROM warehouse_receipt_revocations WHERE source_instance=? AND source_document=?", (payload.source_instance, payload.source_document))
             self._event(
                 c,
                 document_id,
@@ -315,8 +384,15 @@ class ReceiptBridgeStore:
 
 
 def install_receipt_bridge(app, store_getter):
+    @app.post("/api/integrations/marking-bm/receipts/revoke")
+    async def revoke(request: Request):
+        return await handle(request, revoking=True)
+
     @app.post("/api/integrations/marking-bm/receipts")
     async def receive(request: Request):
+        return await handle(request, revoking=False)
+
+    async def handle(request, revoking):
         key = settings.receipt_bridge_key
         supplied = request.headers.get("X-Receipt-Bridge-Key", "")
         if (
@@ -331,10 +407,10 @@ def install_receipt_bridge(app, store_getter):
             if len(content) > 32 * 1024 * 1024:
                 raise HTTPException(413, "Превышен размер состава")
         try:
-            payload = ReceiptPayload.model_validate_json(content)
+            payload = (RevokePayload if revoking else ReceiptPayload).model_validate_json(content)
         except ValidationError:
             # Do not return raw marking codes in error responses/logs.
             raise HTTPException(422, "Некорректный формат состава приёмки") from None
         import asyncio
 
-        return await asyncio.to_thread(store_getter().sync_receipt, payload)
+        return await asyncio.to_thread(store_getter().revoke_receipt if revoking else store_getter().sync_receipt, payload)
