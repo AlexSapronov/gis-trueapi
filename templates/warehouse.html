@@ -93,7 +93,11 @@
 <label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label><button class="btn primary">Загрузить документ</button></form>
 </details>
 {% endif %}
-<div id="list-heading" class="wh-section-heading"><div><span class="wh-eyebrow">Документы</span><h2 id="list-title">Отгрузки</h2></div></div>
+<div id="list-heading" class="wh-section-heading"><div><span class="wh-eyebrow">Документы</span><h2 id="list-title">Отгрузки</h2></div>
+<div class="wh-view-switch" role="group" aria-label="Вид документов">
+<button class="btn" type="button" data-document-view="list" aria-pressed="true" aria-controls="document-list">Список</button>
+<button class="btn" type="button" data-document-view="cards" aria-pressed="false" aria-controls="document-list">Карточки</button>
+</div></div>
 <form id="document-filters" class="wh-card wh-filters">
 <label>Наша организация <select id="filter-org"><option value="">Все организации</option></select></label>
 <label>Сканирование <select id="filter-scans"><option value="all">Все документы</option><option value="unscanned">Ещё не начато</option><option value="scanned">Есть сканы</option></select></label>
@@ -108,13 +112,15 @@
 <label>Обращения склада <select id="filter-issues"><option value="all">Все</option><option value="open">Проблемные</option><option value="closed">Разобраны</option><option value="none">Без обращений</option></select></label>
 <label>Раздел <select id="filter-trash"><option value="false">Документы</option><option value="archive">Архив</option><option value="true">Корзина</option></select></label>
 {% endif %}
-<button class="btn" type="reset">Сбросить фильтры</button><span id="filter-count" role="status"></span>
+<button class="btn" type="reset">Сбросить фильтры</button>
 </form>
-<section id="document-list" class="wh-list" aria-label="Список документов"></section>
+<div id="list-tools" class="wh-list-tools"><span id="filter-count" role="status"></span>
+<label>Порядок <select id="document-sort"><option value="priority">Сначала ответы и обращения</option><option value="number">По номеру накладной</option><option value="date">Сначала новые по дате</option><option value="unscanned">Сначала без сканов</option></select></label></div>
+<section id="document-list" class="wh-list" data-view="list" aria-label="Список документов"></section>
 <section id="document" class="wh-card" hidden>
 {% if admin %}<div class="wh-doc-heading"><button id="back" class="btn wh-back">← К списку</button><span id="doc-badge" class="wh-badge"></span></div><h2 id="doc-title"></h2><p id="doc-parties" class="wh-muted"></p>
 <p id="doc-status" class="wh-muted"></p><p id="doc-count" class="wh-progress"></p><p id="check-state" class="wh-check-state" role="status"></p>
-{% else %}<div class="wh-worker-heading"><button id="back" class="btn wh-back" aria-label="К списку документов">←</button><div><h2 id="doc-title"></h2><p id="worker-org"></p></div></div>
+{% else %}<div class="wh-worker-heading"><button id="back" class="btn wh-back" aria-label="К списку документов">← К списку</button><div><h2 id="doc-title"></h2><p id="worker-org"></p></div></div>
 <div class="wh-worker-progress"><p id="doc-count"></p><span id="worker-plan"></span></div>
 {% endif %}
 <div id="warehouse-replies" class="wh-replies" aria-live="polite"></div>
