@@ -67,25 +67,40 @@ def test_draft_updates_but_old_and_conflicting_revisions_are_rejected(store):
             store.sync_receipt(bad)
 
 
-def test_active_receipt_retries_acknowledge_but_changes_preserve_scans(store):
+@pytest.mark.parametrize("slave_state", ["active", "completed", "archived", "deleted", "checking"])
+def test_master_revision_replaces_active_receipt_and_preserves_scans_in_history(store, slave_state):
     first = store.sync_receipt(payload())
     store.start(first["document_id"])
     store.add_scan(first["document_id"], scan_data(code()))
+    doc_id = first["document_id"]
+    if slave_state == "checking":
+        store.begin_check(doc_id)
+    with store.connection(True) as c:
+        if slave_state == "completed":
+            c.execute("UPDATE warehouse_documents SET status='completed' WHERE id=?", (doc_id,))
+        elif slave_state == "archived":
+            c.execute("UPDATE warehouse_documents SET archived_at='2026-11-13' WHERE id=?", (doc_id,))
+        elif slave_state == "deleted":
+            c.execute("UPDATE warehouse_documents SET deleted_at='2026-11-13' WHERE id=?", (doc_id,))
     assert store.sync_receipt(payload())["status"] == "unchanged"
-    with pytest.raises(WarehouseError, match="запущена"):
-        store.sync_receipt(payload(2, number="changed"))
+    assert store.sync_receipt(payload(2, number="changed"))["status"] == "updated"
     doc = store.get(first["document_id"])
-    assert doc["number"] == "INV/1" and len(doc["scans"]) == 1
-    assert doc["receipt_source"]["revision"] == 1
+    assert doc["number"] == "changed" and doc["scans"] == [] and doc["status"] == "draft"
+    assert doc["receipt_source"]["revision"] == 2
+    with store.connection() as c:
+        event = c.execute("SELECT details FROM warehouse_events WHERE action='receipt_superseded'").fetchone()
+    import json
+    assert len(json.loads(event["details"])["scans"]) == 1
 
 
-def test_deleted_receipt_is_not_recreated(store):
+def test_new_master_revision_restores_deleted_receipt(store):
     first = store.sync_receipt(payload())
     doc = store.get(first["document_id"])
     store.delete(doc["id"], doc["version"], doc["revision"])
-    with pytest.raises(WarehouseError, match="корзине"):
-        store.sync_receipt(payload())
+    assert store.sync_receipt(payload())["status"] == "unchanged"
     assert len(store.list(admin=True, kind="receipt", trash=True)) == 1
+    assert store.sync_receipt(payload(2))["status"] == "updated"
+    assert store.get(doc["id"])["deleted_at"] is None
 
 
 @pytest.mark.parametrize(
@@ -202,7 +217,7 @@ def test_full_code_match_finds_existing_receipt_with_different_number(store):
 
 @pytest.mark.parametrize(
     "mismatch",
-    ["quantity", "pn", "crypto", "partial", "duplicate", "deleted", "different_source"],
+    ["quantity", "pn", "crypto", "partial", "duplicate", "different_source"],
 )
 def test_conflicting_existing_receipt_blocks_duplicate_without_mutation(
     store, mismatch
@@ -221,8 +236,6 @@ def test_conflicting_existing_receipt_blocks_duplicate_without_mutation(
     doc = manual_receipt(store, ReceiptPayload.model_validate(original))
     if mismatch == "duplicate":
         manual_receipt(store)
-    if mismatch == "deleted":
-        store.delete(doc["id"], doc["version"], doc["revision"])
     if mismatch == "different_source":
         store.sync_receipt(payload(source_document="another-invoice"))
     with store.connection() as c:
@@ -274,13 +287,33 @@ def test_revoke_before_delivery_leaves_tombstone_and_does_not_create_old_receipt
     assert store.sync_receipt(payload(3))['status'] == 'created'
 
 
-def test_revoke_never_erases_started_receipt(store):
+@pytest.mark.parametrize("status", ["active", "completed", "archived", "deleted", "checking"])
+def test_master_revoke_overrides_any_slave_state_and_old_check(store, status):
+    import json
     original = store.sync_receipt(payload())
-    store.start(original['document_id'])
+    doc_id = original["document_id"]
+    store.start(doc_id)
+    store.add_scan(doc_id, scan_data(code()))
+    check_id, checked = store.begin_check(doc_id)
+    with store.connection(True) as c:
+        if status == "completed":
+            c.execute("UPDATE warehouse_documents SET status='completed' WHERE id=?", (doc_id,))
+        elif status == "archived":
+            c.execute("UPDATE warehouse_documents SET archived_at='2026-11-13' WHERE id=?", (doc_id,))
+        elif status == "deleted":
+            c.execute("UPDATE warehouse_documents SET deleted_at='2026-11-13' WHERE id=?", (doc_id,))
+    assert store.revoke_receipt(revoke_payload())["status"] == "revoked"
     with pytest.raises(WarehouseError):
-        store.revoke_receipt(revoke_payload())
-    assert store.get(original['document_id'])['status'] == 'active'
-    assert store.get(original['document_id'])['expected']
+        store.start(doc_id)
+    with store.connection() as c:
+        event = c.execute("SELECT details FROM warehouse_events WHERE action='receipt_revoked'").fetchone()
+    assert len(json.loads(event["details"])["scans"]) == 1
+    store.sync_receipt(payload(3))
+    # A check started against the former version cannot publish its result.
+    store.finish_check(doc_id, check_id, checked["version"], {"ok": True})
+    doc = store.get(doc_id)
+    assert doc["status"] == "draft" and doc["scans"] == []
+    assert doc["result"] is None and not doc["checking"]
 
 
 def test_revoke_route_requires_bridge_key_and_returns_exact_revision(store, monkeypatch):
