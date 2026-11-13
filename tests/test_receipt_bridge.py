@@ -129,3 +129,116 @@ def test_ingress_uses_only_dedicated_key_and_does_not_echo_codes(store, monkeypa
     assert response.status_code == 422 and code() not in response.text
     monkeypatch.setattr(settings, "receipt_bridge_key", "")
     assert c.post(url, json=body, headers=headers).status_code == 403
+
+
+def manual_receipt(store, body=None, number="INV/1"):
+    from receipt_bridge import prepare
+
+    body = body or payload()
+    org, lines, expected = prepare(body)
+    return store.create(
+        {
+            "kind": "receipt",
+            "number": number,
+            "date": "2026-10-01",
+            "org_inn": org.inn,
+            "org_name": org.name,
+        },
+        lines,
+        expected,
+    )
+
+
+@pytest.mark.parametrize("status", ["draft", "active", "completed", "archived"])
+def test_existing_receipt_adopted_without_changing_composition_scans_or_check(
+    store, status
+):
+    doc = manual_receipt(store)
+    with store.connection(True) as c:
+        c.execute(
+            "UPDATE warehouse_documents SET status=?,archived_at=? WHERE id=?",
+            (
+                "completed" if status == "archived" else status,
+                "2026-11-12" if status == "archived" else None,
+                doc["id"],
+            ),
+        )
+    if status == "active":
+        store.add_scan(doc["id"], scan_data(code()))
+    before = store.get(doc["id"])
+    result = store.sync_receipt(payload())
+    after = store.get(doc["id"])
+    assert result["status"] == "matched" and result["document_id"] == doc["id"]
+    assert all(
+        after[k] == before[k]
+        for k in (
+            "status",
+            "date",
+            "number",
+            "scans",
+            "expected",
+            "lines",
+            "version",
+            "revision",
+            "result",
+            "archived_at",
+        )
+    )
+    assert store.sync_receipt(payload())["document_id"] == doc["id"]
+    with store.connection() as c:
+        assert (
+            c.execute(
+                "SELECT COUNT(*) FROM warehouse_documents WHERE kind='receipt'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_full_code_match_finds_existing_receipt_with_different_number(store):
+    doc = manual_receipt(store, number="supplier-export-123")
+    assert store.sync_receipt(payload())["document_id"] == doc["id"]
+    assert store.get(doc["id"])["number"] == "supplier-export-123"
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["quantity", "pn", "crypto", "partial", "duplicate", "deleted", "different_source"],
+)
+def test_conflicting_existing_receipt_blocks_duplicate_without_mutation(
+    store, mismatch
+):
+    original = payload().model_dump(mode="json")
+    if mismatch == "quantity":
+        original["codes"][0]["quantity"] = 51
+    if mismatch == "pn":
+        original["codes"][0]["pn"] = "OTHER"
+    if mismatch == "crypto":
+        original["codes"][0]["raw"] = code(tail="91EE12\x1d92OTHERcrypto+/=")
+    if mismatch == "partial":
+        original["codes"].append(
+            {"raw": code("OtherCode"), "pn": "PN-1", "quantity": 1, "atk": "0" * 25}
+        )
+    doc = manual_receipt(store, ReceiptPayload.model_validate(original))
+    if mismatch == "duplicate":
+        manual_receipt(store)
+    if mismatch == "deleted":
+        store.delete(doc["id"], doc["version"], doc["revision"])
+    if mismatch == "different_source":
+        store.sync_receipt(payload(source_document="another-invoice"))
+    with store.connection() as c:
+        before = [tuple(r) for r in c.execute("SELECT * FROM warehouse_documents")]
+    with pytest.raises(WarehouseError) as err:
+        store.sync_receipt(payload())
+    assert err.value.code == "receipt_match_conflict"
+    with store.connection() as c:
+        assert [
+            tuple(r) for r in c.execute("SELECT * FROM warehouse_documents")
+        ] == before
+
+
+def test_parallel_manual_adoption_links_once(store):
+    doc = manual_receipt(store)
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(lambda _: store.sync_receipt(payload()), range(4)))
+    assert {r["document_id"] for r in results} == {doc["id"]}
+    assert sum(r["status"] == "matched" for r in results) == 1
