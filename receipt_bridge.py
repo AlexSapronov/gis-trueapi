@@ -76,6 +76,68 @@ class ReceiptBridgeStore:
             document_id TEXT NOT NULL UNIQUE REFERENCES warehouse_documents(id),
             revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, metadata TEXT NOT NULL,
             PRIMARY KEY(source_instance,source_document))""")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS receipt_bridge_expected_cis ON warehouse_expected(cis,document_id)"
+        )
+
+    def _match_existing_receipt(self, c, payload, lines, expected):
+        """Adopt only a single complete match; never overwrite an imported receipt."""
+        from warehouse_service import _receipt_full_code_error
+        from warehouse_store import WarehouseError
+
+        candidates = list(
+            c.execute(
+                "SELECT DISTINCT d.* FROM warehouse_documents d WHERE d.kind='receipt' AND "
+                "((d.org_inn=? AND trim(d.number)=?) OR d.id IN "
+                "(SELECT document_id FROM warehouse_expected WHERE cis IN (SELECT value FROM json_each(?))))",
+                (
+                    payload.org_inn,
+                    payload.number.strip(),
+                    json.dumps([e["cis"] for e in expected]),
+                ),
+            )
+        )
+        if not candidates:
+            return None
+        message = "Существующая приёмка не совпадает с накладной или найдены несколько кандидатов. Нужен разбор администратора"
+
+        def conflict():
+            raise WarehouseError(message, 409, "receipt_match_conflict")
+
+        if len(candidates) != 1:
+            conflict()
+        d = candidates[0]
+        if d["org_inn"] != payload.org_inn or d["deleted_at"]:
+            conflict()
+        if c.execute(
+            "SELECT 1 FROM warehouse_receipt_sources WHERE document_id=?", (d["id"],)
+        ).fetchone():
+            conflict()
+        original = {
+            e["cis"]: dict(e)
+            for e in c.execute(
+                "SELECT * FROM warehouse_expected WHERE document_id=?", (d["id"],)
+            )
+        }
+        if set(original) != {e["cis"] for e in expected}:
+            conflict()
+        if any(
+            original[e["cis"]]["quantity"] != e["quantity"]
+            or _receipt_full_code_error(
+                original[e["cis"]]["full_code"], e["full_code"], e["quantity"]
+            )
+            for e in expected
+        ):
+            conflict()
+        actual_lines = {
+            r["gtin"]: (r["pn"].strip(), r["quantity"])
+            for r in c.execute(
+                "SELECT * FROM warehouse_lines WHERE document_id=?", (d["id"],)
+            )
+        }
+        if actual_lines != {r["gtin"]: (r["pn"], r["quantity"]) for r in lines}:
+            conflict()
+        return d["id"]
 
     def sync_receipt(self, payload):
         from warehouse_store import WarehouseError, now
@@ -91,7 +153,7 @@ class ReceiptBridgeStore:
             if source:
                 document_id = source["document_id"]
                 d = self._doc(c, document_id, include_deleted=True)
-                if d["deleted_at"] or d["archived_at"]:
+                if d["deleted_at"]:
                     raise WarehouseError(
                         "Связанная приёмка в корзине или архиве; требуется администратор",
                         409,
@@ -106,6 +168,10 @@ class ReceiptBridgeStore:
                         "revision": payload.revision,
                         "status": "unchanged",
                     }
+                if d["archived_at"]:
+                    raise WarehouseError(
+                        "Связанная приёмка в архиве; требуется администратор", 409
+                    )
                 if (
                     d["status"] != "draft"
                     or c.execute(
@@ -141,6 +207,39 @@ class ReceiptBridgeStore:
             else:
                 if not expected:
                     raise WarehouseError("Нельзя создать пустую приёмку")
+                matched = self._match_existing_receipt(c, payload, lines, expected)
+                if matched:
+                    metadata = json.dumps(
+                        {
+                            "supplier": payload.supplier,
+                            "atks": sorted({i.atk for i in payload.codes}),
+                            "source_document": payload.source_document,
+                        },
+                        ensure_ascii=False,
+                    )
+                    c.execute(
+                        "INSERT INTO warehouse_receipt_sources VALUES (?,?,?,?,?,?)",
+                        (
+                            payload.source_instance,
+                            payload.source_document,
+                            matched,
+                            payload.revision,
+                            fingerprint,
+                            metadata,
+                        ),
+                    )
+                    self._event(
+                        c,
+                        matched,
+                        "receipt_matched",
+                        {"revision": payload.revision},
+                        actor="marking-bm",
+                    )
+                    return {
+                        "document_id": matched,
+                        "revision": payload.revision,
+                        "status": "matched",
+                    }
                 document_id, ts = uuid.uuid4().hex, now()
                 c.execute(
                     """INSERT INTO warehouse_documents
