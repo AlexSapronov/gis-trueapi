@@ -57,7 +57,7 @@ summary { cursor:pointer; font-weight:650; line-height:1.5; }
 .wh-table table { width:100%; border-collapse:collapse; white-space:nowrap; font-size:14px; }
 .wh-table th,.wh-table td { padding:13px 15px; border-bottom:1px solid var(--border); text-align:left; }
 .wh-table th { background:var(--surface-2); color:var(--muted); font-weight:650; }
-.wh-table tr:last-child td { border-bottom:0; }.wh-table td:nth-child(n+3) { text-align:right; }
+.wh-table tr:last-child td { border-bottom:0; }.wh-table th:nth-child(n+3),.wh-table td:nth-child(n+3) { text-align:right; }
 .wh-table tbody tr:hover { background:var(--surface-2); }
 .wh-table-hint { margin:0; font-size:12px; }
 .wh-line-filters { gap:8px 20px; margin:8px 0; }
@@ -172,3 +172,46 @@ body[data-admin="false"] .wh-main { max-width:940px; }
 @media(max-width:600px) { .wh-filter-number { grid-column:1 / -1; } }
 
 .wh-gtd-changed {background:rgba(255,190,60,.18)}
+
+/* Invoice views share the same controls, data and keyboard-operable buttons. */
+.wh-section-heading { flex-wrap:wrap; }
+.wh-view-switch { display:flex; gap:4px; padding:4px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.wh-view-switch .btn { min-width:90px; border-color:transparent; }
+.wh-list-tools { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; margin:0 0 12px; }
+.wh-list-tools label { display:flex; align-items:center; gap:10px; margin:0; }
+.wh-list-tools select { width:auto; max-width:100%; margin:0; }
+.wh-list-empty { grid-column:1/-1; margin:0; text-align:center; }
+.wh-list-empty h3 { margin-top:0; }
+.wh-doc:focus-visible { outline:3px solid var(--primary); outline-offset:2px; }
+.wh-doc .wh-doc-arrow { display:none; }
+.wh-doc .wh-doc-identity,.wh-doc .wh-doc-parties,.wh-doc .wh-doc-state,.wh-doc .wh-doc-scans { min-width:0; margin:0; }
+.wh-list-columns { display:none; }
+.wh-list[data-view=list] { display:flex; flex-direction:column; gap:0; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.wh-list[data-view=list] .wh-list-columns,.wh-list[data-view=list] .wh-doc { display:grid; grid-template-columns:minmax(130px,1fr) minmax(180px,1.8fr) minmax(160px,1.3fr) minmax(100px,.8fr) 20px; gap:16px; align-items:center; padding:12px 18px; }
+.wh-list[data-view=list] .wh-list-columns { font-size:12px; font-weight:650; color:var(--muted); background:var(--surface-2); border-radius:12px 12px 0 0; }
+.wh-list[data-view=list] .wh-doc { width:100%; min-height:80px; border:0; border-top:1px solid var(--border); border-radius:0; box-shadow:none; transform:none; }
+.wh-list[data-view=list] .wh-doc:last-child { border-radius:0 0 12px 12px; }
+.wh-list[data-view=list] .wh-doc:hover { background:var(--surface-2); }
+.wh-list[data-view=list] .wh-doc b { margin:0; font-size:16px; }
+.wh-list[data-view=list] .wh-doc span { margin:0; }
+.wh-list[data-view=list] .wh-doc .wh-muted { font-size:12px; }
+.wh-list[data-view=list] .wh-doc-parties > span + span,.wh-list[data-view=list] .wh-doc-state > span + span { margin-top:4px; }
+.wh-list[data-view=list] .wh-doc .wh-doc-extra { display:none; }
+.wh-list[data-view=list] .wh-doc .wh-doc-arrow { display:block; color:var(--muted); }
+.wh-list[data-view=list] .wh-problem { box-shadow:inset 4px 0 var(--warn); }
+.wh-list[data-view=list] .wh-returned { box-shadow:inset 4px 0 var(--primary); }
+@media(max-width:760px) {
+ .wh-list[data-view=list] .wh-list-columns { display:none; }
+ .wh-list[data-view=list] .wh-doc { grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; padding:14px; }
+ .wh-list[data-view=list] .wh-doc:first-of-type { border-top:0; border-radius:12px 12px 0 0; }
+ .wh-list[data-view=list] .wh-doc-identity { grid-column:1; grid-row:1; }
+ .wh-list[data-view=list] .wh-doc-scans { grid-column:2; grid-row:1; text-align:right; }
+ .wh-list[data-view=list] .wh-doc-parties { grid-column:1/-1; grid-row:2; }
+ .wh-list[data-view=list] .wh-doc-state { grid-column:1/-1; grid-row:3; }
+ .wh-list[data-view=list] .wh-doc-state > span { display:inline-flex; margin-right:8px; }
+ .wh-list[data-view=list] .wh-doc .wh-doc-arrow { display:none; }
+ .wh-list-tools label { width:100%; min-width:0; }
+ .wh-list-tools select { flex:1; min-width:0; }
+}
+@media(prefers-reduced-motion:reduce) { .wh-doc { transition:none; } }
+.wh-worker-heading .wh-back { font-size:14px; padding:8px 10px; white-space:nowrap; }

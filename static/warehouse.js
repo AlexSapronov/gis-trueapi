@@ -4,6 +4,15 @@
   const admin = document.body.dataset.admin === 'true';
   GisTheme.bind($('theme-btn'));
   let authenticated = false;
+  let listedDocuments = [];
+  const viewKey = 'warehouse-document-view-' + (admin ? 'admin' : 'worker');
+  const sortKey = 'warehouse-document-sort-' + (admin ? 'admin' : 'worker');
+  let documentView = 'list';
+  try {
+    if (localStorage.getItem(viewKey) === 'cards') documentView = 'cards';
+    const savedSort = localStorage.getItem(sortKey);
+    if ([...$('document-sort').options].some(o => o.value === savedSort)) $('document-sort').value = savedSort;
+  } catch (_) { /* Preferences are optional on restricted TSD browsers. */ }
   let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
   if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd') section = 'gtd';
@@ -187,6 +196,7 @@
     document.body.classList.toggle('wh-worker-document', !admin && !!current);
     $('document-filters').hidden = !!current || (admin && section !== 'documents');
     $('list-heading').hidden=$('document-filters').hidden;
+    $('list-tools').hidden=$('document-filters').hidden;
     $('list-title').textContent=listPrefix() + (kind==='shipment' ? 'Отгрузки' : 'Приёмки');
     document.querySelectorAll('[data-mode]').forEach(a=>{a.classList.toggle('current',a.dataset.mode===(admin?'admin':kind));if(a.classList.contains('current'))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
     if (!admin) return;
@@ -248,9 +258,47 @@
     $('list-title').textContent=listPrefix()+(kind==='shipment'?'Отгрузки':'Приёмки');
     if (admin) $('import-box').hidden = $('filter-trash').value !== 'false';
     document.querySelectorAll('[data-kind]').forEach(b => b.classList.toggle('primary', b.dataset.kind === kind));
-    $('document-list').innerHTML = data.documents.length ? data.documents.map(d => `<button class="wh-doc ${d.open_issues ? 'wh-problem' : ''} ${d.pending_returns ? 'wh-returned' : ''}" data-doc="${esc(d.id)}"><span class="wh-badge" data-status="${d.deleted_at ? 'deleted' : d.archived_at ? 'completed' : esc(d.status)}">${d.deleted_at ? 'В корзине' : esc(status(d))}</span><b>№ ${esc(d.number)}</b><span class="wh-muted">${esc(d.date)} · ${esc(d.org_name)}</span>${d.recipient_name || d.recipient_inn ? `<span>→ ${esc(d.recipient_name || 'ИНН ' + d.recipient_inn)}</span>` : ''}${d.pending_returns ? `<span class="wh-good">${admin ? 'Ответ передан · ждёт ознакомления' : 'Ответственный ответил — можно продолжать'}</span>` : ''}${d.open_issues ? `<span class="wh-bad">Проблемный · обращений: ${d.open_issues}</span>` : ''}<span>${d.scan_count} КМ · ${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span>${d.kind === 'shipment' ? `<span class="wh-muted">${d.strict_owner ? 'Строгое соответствие организации' : 'КМ наших организаций'}</span>` : ''}<span class="wh-muted">Изменён: ${esc(stamp(d.updated_at))}</span></button>`).join('') : '<div class="wh-card"><h3>Документы не найдены</h3><p class="wh-muted">Измените условия поиска или сбросьте фильтры.</p></div>';
-
+    listedDocuments = data.documents;
+    renderDocumentList();
   }
+  function renderDocumentList() {
+    const container = $('document-list');
+    container.dataset.view = documentView;
+    document.querySelectorAll('[data-document-view]').forEach(button => {
+      const selected = button.dataset.documentView === documentView;
+      button.setAttribute('aria-pressed', String(selected));
+      button.classList.toggle('primary', selected);
+    });
+    const order = $('document-sort').value;
+    const documents = [...listedDocuments];
+    // The priority option preserves the server's ordering of replies/issues/new tasks.
+    if (order !== 'priority') documents.sort((a, b) => {
+      if (order === 'number') return String(a.number).localeCompare(String(b.number), 'ru', {numeric:true});
+      if (order === 'date') return String(b.date).localeCompare(String(a.date));
+      return Number(a.scan_count > 0) - Number(b.scan_count > 0);
+    });
+    const header = '<div class="wh-list-columns" aria-hidden="true"><span>Накладная / дата</span><span>Организация / получатель</span><span>Статус</span><span>Считано</span><span></span></div>';
+    const html = documents.length ? header + documents.map(d => {
+      const badge = d.deleted_at ? 'В корзине' : status(d);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date.split('-').reverse().join('.') : d.date;
+      return `<button type="button" class="wh-doc ${d.open_issues ? 'wh-problem' : ''} ${d.pending_returns ? 'wh-returned' : ''}" data-doc="${esc(d.id)}">
+        <span class="wh-doc-identity"><b>№ ${esc(d.number)}</b><span class="wh-muted">${esc(date)}</span></span>
+        <span class="wh-doc-parties"><span>${esc(d.org_name)}</span>${d.recipient_name || d.recipient_inn ? `<span class="wh-muted">→ ${esc(d.recipient_name || 'ИНН ' + d.recipient_inn)}</span>` : ''}</span>
+        <span class="wh-doc-state"><span class="wh-badge" data-status="${d.deleted_at ? 'deleted' : d.archived_at ? 'completed' : esc(d.status)}">${esc(badge)}</span>${d.pending_returns ? `<span class="wh-good">${admin ? 'Ответ передан · ждёт ознакомления' : 'Ответственный ответил — можно продолжать'}</span>` : ''}${d.open_issues ? `<span class="wh-bad">Обращений: ${d.open_issues}</span>` : ''}</span>
+        <span class="wh-doc-scans"><strong>${esc(d.scan_count)} КМ</strong><span class="wh-muted">${d.scan_count ? 'Есть сканы' : 'Ещё не начато'}</span></span>
+        <span class="wh-doc-arrow" aria-hidden="true">→</span>
+        <span class="wh-doc-extra wh-muted">${d.kind === 'shipment' ? (d.strict_owner ? 'Строгое соответствие организации · ' : 'КМ наших организаций · ') : ''}Изменён: ${esc(stamp(d.updated_at))}</span>
+      </button>`;
+    }).join('') : '<div class="wh-card wh-list-empty"><h3>Документы не найдены</h3><p class="wh-muted">Проверьте выбранный раздел и условия поиска.</p><button class="btn" type="button" data-reset-filters>Сбросить фильтры</button></div>';
+    // Polling must not replace unchanged buttons and interrupt keyboard navigation.
+    if (container._renderedHTML !== html) {
+      const focusedId = document.activeElement?.closest('[data-doc]')?.dataset.doc;
+      container.innerHTML = html;
+      container._renderedHTML = html;
+      if (focusedId) [...container.querySelectorAll('[data-doc]')].find(b => b.dataset.doc === focusedId)?.focus({preventScroll:true});
+    }
+  }
+
   async function returnToDocuments(text) {
     if (!admin && current && (queue.length || input.value)) {
       savePending(); queue = []; input.value = '';
@@ -507,7 +555,20 @@
     $('complete-error').textContent = '';
     updateCompletionPrompt(); $('complete-dialog').showModal();
   }
-  $('document-list').onclick = e => { const b = e.target.closest('[data-doc]'); if (b) action(() => open(b.dataset.doc)); };
+  document.querySelectorAll('[data-document-view]').forEach(button => button.onclick = () => {
+    documentView = button.dataset.documentView;
+    try { localStorage.setItem(viewKey, documentView); } catch (_) { /* optional preference */ }
+    renderDocumentList();
+  });
+  $('document-sort').onchange = () => {
+    try { localStorage.setItem(sortKey, $('document-sort').value); } catch (_) { /* optional preference */ }
+    renderDocumentList();
+  };
+  $('document-list').onclick = e => {
+    if (e.target.closest('[data-reset-filters]')) { $('document-filters').reset(); return; }
+    const button = e.target.closest('[data-doc]');
+    if (button) action(() => open(button.dataset.doc));
+  };
   document.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => action(async () => {
     if (queue.length || flushing || input?.value || dirty || caseDraft() || tokenDraft() || settingsEditor?.isDirty() || busy > 1) { message('Сохраните текущий ввод перед переходом.', true); return; }
     kind = b.dataset.kind; loadFilters(); section = 'documents'; current = null; $('document').hidden = true; $('document-list').hidden = false;
