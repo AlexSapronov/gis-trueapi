@@ -14,6 +14,7 @@ from upd_store import UpdStore
 from gtd_excel_store import GtdExcelStore
 from app_settings import RuntimeSettings
 from party_catalog import PartyCatalog
+from receipt_bridge import ReceiptBridgeStore
 
 
 class WarehouseError(Exception):
@@ -27,7 +28,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, PartyCatalog):
+class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, PartyCatalog):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +103,7 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, 
             self.init_upd(c)
             self.init_gtd_excel(c)
             self.init_party_catalog(c)
+            self.init_receipt_bridge(c)
         c.close()
 
     @contextmanager
@@ -273,6 +275,8 @@ class WarehouseStore(WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, 
     def _snapshot(self, c, document_id, include_deleted=False):
         d = self._doc(c, document_id, include_deleted)
         self._issue_counts(c, d)
+        source = c.execute('SELECT metadata,revision FROM warehouse_receipt_sources WHERE document_id=?', (document_id,)).fetchone()
+        d['receipt_source'] = {**json.loads(source['metadata']), 'revision': source['revision']} if source else None
         d['lines'] = [dict(r) for r in c.execute(
             'SELECT gtin,pn,pn_source,quantity FROM warehouse_lines WHERE document_id=? ORDER BY gtin', (document_id,))]
         d['lines'] += [dict(r) for r in c.execute(
