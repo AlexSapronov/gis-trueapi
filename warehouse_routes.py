@@ -376,6 +376,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
             'Content-Disposition': "attachment; filename*=UTF-8''" + filename,
             'Cache-Control': 'no-store'})
 
+    from receipt_bridge import install_receipt_bridge
+    install_receipt_bridge(app, store_getter)
     app.include_router(router)
     from gtd_excel_routes import install_gtd_excel
     install_gtd_excel(app, admin, service_getter, store_getter)

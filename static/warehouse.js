@@ -310,6 +310,7 @@
     $('doc-badge').textContent=d.deleted_at?'В корзине':status(d); $('doc-badge').dataset.status=d.deleted_at?'deleted':d.status;
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + (admin ? ' от ' + d.date : '');
     $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name || d.recipient_inn ? ` → ${d.recipient_name || 'Получатель'} · ИНН ${d.recipient_inn}` : '');
+    if (d.receipt_source) $('doc-parties').textContent += ` · Поставщик: ${d.receipt_source.supplier} · АТК: ${d.receipt_source.atks.join(', ')} · marking-bm, версия ${d.receipt_source.revision}`;
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)}${d.archived_at ? ' · Архивирован ' + stamp(d.archived_at) : ''} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     if (d.sales_username) $('doc-status').textContent += ' · Задание ОП: ' + d.sales_username;
     $('doc-count').textContent = admin ? `Накоплено: ${d.scans.length} уникальных КМ` + (d.kind === 'receipt' ? ` · Ожидается: ${d.expected.length} · Проверено: ${result?.checked_count ?? 0} · Подтверждено: ${result?.accepted_count ?? 0}/${d.expected.length}` : '') : `Считано: ${d.scans.length} КМ`;

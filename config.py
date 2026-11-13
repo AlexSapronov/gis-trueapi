@@ -25,6 +25,7 @@ class Settings:
     def __init__(self) -> None:
         self.mode: str = os.getenv("GIS_MODE", "mock").strip().lower()
         self.base_url: str = os.getenv("GIS_BASE_URL", "https://markirovka.crpt.ru").rstrip("/")
+        self.receipt_bridge_key: str = os.getenv("RECEIPT_BRIDGE_KEY", "")
         self.admin_key: str = os.getenv("ADMIN_KEY", "change-me-in-production")
         self.warehouse_db: Path = Path(os.getenv("WAREHOUSE_DB", str(BASE_DIR / "data" / "warehouse.sqlite3")))
         self.sales_shipment_links = self._parse_sales_shipment_links(os.getenv("SALES_SHIPMENT_LINKS", "{}"))
