@@ -195,6 +195,8 @@ body[data-admin="false"] .wh-main { max-width:940px; }
 .wh-list[data-view=list] .wh-doc b { margin:0; font-size:16px; }
 .wh-list[data-view=list] .wh-doc span { margin:0; }
 .wh-list[data-view=list] .wh-doc .wh-muted { font-size:12px; }
+.wh-list[data-view=list] .wh-doc .wh-doc-parties > span { font-size:18px; font-weight:600; line-height:1.4; }
+.wh-list[data-view=list] .wh-doc .wh-doc-parties > .wh-muted { font-size:16px; font-weight:500; color:var(--text); }
 .wh-list[data-view=list] .wh-doc-parties > span + span,.wh-list[data-view=list] .wh-doc-state > span + span { margin-top:4px; }
 .wh-list[data-view=list] .wh-doc .wh-doc-extra { display:none; }
 .wh-list[data-view=list] .wh-doc .wh-doc-arrow { display:block; color:var(--muted); }
