@@ -242,3 +242,68 @@ def test_parallel_manual_adoption_links_once(store):
         results = list(pool.map(lambda _: store.sync_receipt(payload()), range(4)))
     assert {r["document_id"] for r in results} == {doc["id"]}
     assert sum(r["status"] == "matched" for r in results) == 1
+
+
+def revoke_payload(revision=2):
+    from receipt_bridge import RevokePayload
+    return RevokePayload(source_instance='bm-test', source_document='invoice-1', revision=revision, reason='Исправление груза', action='revoke')
+
+
+def test_revoke_hides_old_receipt_rejects_stale_delivery_and_accepts_new_composition(store):
+    original = store.sync_receipt(payload())
+    result = store.revoke_receipt(revoke_payload())
+    assert result['status'] == 'revoked'
+    assert store.revoke_receipt(revoke_payload()) == result
+    with pytest.raises(WarehouseError):
+        store.get(original['document_id'])
+    with pytest.raises(WarehouseError):
+        store.sync_receipt(payload())
+    with pytest.raises(WarehouseError):
+        store.start(original['document_id'])
+    new = store.sync_receipt(payload(3, number='CORRECTED'))
+    assert new['document_id'] == original['document_id']
+    assert store.get(new['document_id'])['number'] == 'CORRECTED'
+    with pytest.raises(WarehouseError):
+        store.revoke_receipt(revoke_payload())
+
+
+def test_revoke_before_delivery_leaves_tombstone_and_does_not_create_old_receipt(store):
+    store.revoke_receipt(revoke_payload())
+    with pytest.raises(WarehouseError):
+        store.sync_receipt(payload())
+    assert store.sync_receipt(payload(3))['status'] == 'created'
+
+
+def test_revoke_never_erases_started_receipt(store):
+    original = store.sync_receipt(payload())
+    store.start(original['document_id'])
+    with pytest.raises(WarehouseError):
+        store.revoke_receipt(revoke_payload())
+    assert store.get(original['document_id'])['status'] == 'active'
+    assert store.get(original['document_id'])['expected']
+
+
+def test_revoke_route_requires_bridge_key_and_returns_exact_revision(store, monkeypatch):
+    monkeypatch.setattr(main, 'warehouse', store)
+    monkeypatch.setattr(settings, 'receipt_bridge_key', 'k'*48)
+    c = TestClient(main.app)
+    url = '/api/integrations/marking-bm/receipts/revoke'
+    body = revoke_payload().model_dump(mode='json')
+    assert c.post(url, json=body).status_code == 403
+    r = c.post(url, json=body, headers={'X-Receipt-Bridge-Key':'k'*48})
+    assert r.status_code == 200, r.text
+    assert r.json()['revision'] == 2 and r.json()['status'] == 'revoked'
+    body['revision'] = True
+    assert c.post(url, json=body, headers={'X-Receipt-Bridge-Key':'k'*48}).status_code == 422
+
+
+def test_revoke_matches_old_manual_receipt_by_exact_composition(store):
+    from receipt_bridge import RevokePayload
+    original = payload()
+    doc = manual_receipt(store, original)['id']
+    request = revoke_payload().model_dump()
+    request['receipt'] = original.model_dump()
+    result = store.revoke_receipt(RevokePayload.model_validate(request))
+    assert result['document_id'] == doc
+    with pytest.raises(WarehouseError):
+        store.get(doc)
