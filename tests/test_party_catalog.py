@@ -97,7 +97,7 @@ def test_numeric_inn_and_bad_catalog(store):
     book.active['B2'] = '=1+1'
     stream = io.BytesIO()
     book.save(stream)
-    for data in (catalog(('123', 'Клиент')), stream.getvalue(), catalog((CLIENT, None))):
+    for data in (catalog(('', 'Клиент')), stream.getvalue(), catalog((CLIENT, None))):
         with pytest.raises(WarehouseError, match='строка 2'):
             read_party_catalog(data)
     with pytest.raises(WarehouseError):
@@ -159,3 +159,34 @@ def test_catalog_endpoints_protected_and_template(store, monkeypatch):
     assert response.status_code == 200 and response.json()['added'] == 1
     assert client.get(path, headers=headers).json()['rows'] == [{'inn': CLIENT, 'name': CLIENT_NAME}]
     assert client.post(path, headers=headers, files={'file': ('bad.xlsx', b'bad')}).status_code == 422
+
+
+@pytest.mark.parametrize('identifier', ['123456789', 123456789, '123456789012', 'BY-001234567', '001234567'])
+def test_client_identifiers_without_russian_length_restriction(store, identifier):
+    store.save_party_catalog(read_party_catalog(catalog((ORG, SENDER_NAME), (identifier, CLIENT_NAME))))
+    result = import_bulk(store, invoice(named_row()))
+    assert result['counts']['created'] == 1
+    doc = store.get(result['results'][0]['document_id'])
+    assert doc['recipient_inn'] == str(identifier)
+    assert import_bulk(store, invoice(named_row()))['counts']['unchanged'] == 1
+    from test_shipment_bulk import excel
+    legacy = row(recipient=identifier)
+    assert import_bulk(store, excel(legacy))['counts']['unchanged'] == 1
+
+
+def test_standard_shipment_accepts_foreign_client_identifier():
+    from test_warehouse import workbook
+    from warehouse_excel import import_xlsx
+    book = openpyxl.load_workbook(io.BytesIO(workbook()))
+    book['Документ']['B6'] = '123456789'
+    stream = io.BytesIO()
+    book.save(stream)
+    header, _, _ = import_xlsx(stream.getvalue(), 'shipment')
+    assert header['recipient_inn'] == '123456789'
+
+
+@pytest.mark.parametrize('value', [None, '', '   ', True, 12.5])
+def test_empty_or_non_identifier_values_rejected(value):
+    from party_catalog import inn_text
+    with pytest.raises(ValueError):
+        inn_text(value)
