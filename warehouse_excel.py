@@ -222,8 +222,6 @@ def import_xlsx(content, kind, org_override=None, document_number=None, document
         org = registry.get(inn)
         if not org:
             raise WarehouseError('ИНН нашей организации отсутствует в справочнике')
-        if kind == 'shipment' and not re.fullmatch(r'(?:[0-9]{10}|[0-9]{12})', meta['ИНН получателя']):
-            raise WarehouseError('ИНН получателя должен содержать 10 или 12 цифр')
         header = dict(kind=kind, number=meta['Номер документа'], date=meta['Дата документа'],
                       org_inn=inn, org_name=org.name, recipient_name=meta.get('Получатель', ''),
                       recipient_inn=meta.get('ИНН получателя', ''))

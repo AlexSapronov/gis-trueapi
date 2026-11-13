@@ -14,13 +14,16 @@ def name_key(value):
 
 
 def inn_text(value):
+    # Client tax identifiers are opaque: foreign identifiers need not use Russian INN length.
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError('Заполните ИНН / налоговый идентификатор')
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if isinstance(value, float) and not value.is_integer():
             raise ValueError('ИНН должен быть целым числом')
         value = str(int(value))
     inn = str(value or '').strip()
-    if not inn.isascii() or not inn.isdigit() or len(inn) not in (10, 12):
-        raise ValueError('ИНН должен содержать 10 или 12 цифр')
+    if not inn:
+        raise ValueError('Заполните ИНН / налоговый идентификатор')
     return inn
 
 
