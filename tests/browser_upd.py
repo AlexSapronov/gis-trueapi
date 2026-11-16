@@ -66,16 +66,22 @@ with tempfile.TemporaryDirectory(prefix='upd-browser-') as directory:
             page.locator('[data-upd-row="0"]').select_option('pn:0')
             page.locator('#upd-save-links').check()
             page.locator('#upd-fill-gtd').check()
+            expect(page.locator('#upd-withdrawal-reason')).to_have_value('')
+            page.locator('#upd-withdrawal-reason').select_option('3')
             page.locator('#upd-mapping-form button').click()
             expect(page.locator('#upd-status')).to_contain_text('Сохранено связей: 1')
             expect(page.locator('#upd-preview tbody tr')).to_have_count(2)
             with page.expect_download() as download:
                 page.locator('#upd-download').click()
-            parse_xml(Path(download.value.path()).read_bytes())
+            result = parse_xml(Path(download.value.path()).read_bytes())
+            assert result.find('.//ТекстИнф[@Идентиф="СвВыбытияМАРК"]').get('Значен') == '3'
+            page.locator('#upd-withdrawal-reason').select_option('1')
+            expect(page.locator('#upd-download')).to_be_hidden()
             # Upload again: saved PN alias must be selected without manual choice.
             page.locator('#upd-file').set_input_files({'name':'next.xml','mimeType':'application/xml','buffer':xml()})
             page.locator('#upd-upload-form button').click()
             expect(page.locator('[data-upd-row="0"]')).to_have_value('pn:0')
+            expect(page.locator('#upd-withdrawal-reason')).to_have_value('')
             expect(page.locator('#upd-mapping-rows')).to_contain_text('Сохранённая связь')
             expect(page.locator('#upd-download')).to_be_hidden()
             assert not errors,errors

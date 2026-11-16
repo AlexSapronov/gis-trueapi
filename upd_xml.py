@@ -74,6 +74,40 @@ def check_document(doc):
         raise WarehouseError('XML доступен для завершённой отгрузки с актуальной успешной проверкой', 409)
 
 
+def withdrawal_nodes(root):
+    return [node for node in root.findall('Документ/СвСчФакт/ИнфПолФХЖ1/ТекстИнф')
+            if node.get('Идентиф', '').casefold() == 'СвВыбытияМАРК'.casefold()]
+
+
+def withdrawal_reason(root):
+    nodes = withdrawal_nodes(root)
+    if not nodes:
+        return ''
+    if len(nodes) == 1 and nodes[0].get('Значен') in {'1', '2', '3', '4'}:
+        return nodes[0].get('Значен')
+    return None  # Preserve unusual source data unless the user explicitly replaces it.
+
+
+def set_withdrawal_reason(root, reason):
+    if reason is None:
+        return
+    if not isinstance(reason, str) or reason not in {'', '1', '2', '3', '4'}:
+        raise WarehouseError('Некорректная причина вывода из оборота')
+    invoice = root.find('Документ/СвСчФакт')
+    details = invoice.find('ДопСвФХЖ1')
+    if reason == '4' and (details is None or not details.get('ИдГосКон', '').strip()):
+        raise WarehouseError('Для причины 4 заполните идентификатор государственного контракта '
+                             '(ИдГосКон) в 1С и загрузите XML повторно')
+    for node in withdrawal_nodes(root):
+        node.getparent().remove(node)
+    if reason:
+        info = invoice.find('ИнфПолФХЖ1')
+        if info is None:
+            # ИнфПолФХЖ1 is the final child of СвСчФакт in UPD 5.03.
+            info = E.SubElement(invoice, 'ИнфПолФХЖ1')
+        E.SubElement(info, 'ТекстИнф', Идентиф='СвВыбытияМАРК', Значен=reason)
+
+
 def inspect_xml(content, doc, aliases):
     check_document(doc)
     root = parse_xml(content)
@@ -103,6 +137,7 @@ def inspect_xml(content, doc, aliases):
                          declarations=[n.get('НомерДТ', '') for n in row.findall('СвДТ')], target_pn=target,
                          source='saved' if saved in choices else 'exact' if target else ''))
     return dict(rows=rows, choices=list(choices.values()), seller_inn=seller,
+                withdrawal_reason=withdrawal_reason(root),
                 number=root.find('Документ/СвСчФакт').get('НомерДок'),
                 warnings=['PN взят из артикула или наименования. Проверьте распознавание и сопоставление.',
                           'Страна происхождения сохраняется из XML; запрос ГТД её не подтверждает.'])
@@ -365,8 +400,9 @@ def split_amounts(original, clones, quantities):
             clone.find('СумНал/СумНал').text = f'{tax_parts[i]:.2f}'
 
 
-def enrich_xml(content, doc, mapping, allocated, declarations=None):
+def enrich_xml(content, doc, mapping, allocated, declarations=None, withdrawal_reason=None):
     root = parse_xml(content)
+    set_withdrawal_reason(root, withdrawal_reason)
     table = root.find('Документ/ТаблСчФакт')
     summary = []
     source_rows = list(table.findall('СведТов'))

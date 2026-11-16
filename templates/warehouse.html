@@ -135,6 +135,16 @@
 <div class="wh-table"><table><thead><tr><th>Строка</th><th>PN в XML / наименование</th><th>Количество / ГТД в XML</th><th>PN в сканах</th></tr></thead><tbody id="upd-mapping-rows"></tbody></table></div>
 <label><input id="upd-save-links" type="checkbox"> Сохранить связи PN для следующих загрузок этой организации</label>
 <label><input id="upd-fill-gtd" type="checkbox"> Получать и подставлять ГТД из ЧЗ</label><p class="wh-muted">Без флажка ГТД сохраняются из исходного XML, запросы ГТД в ЧЗ не выполняются.</p>
+<label for="upd-withdrawal-reason">Вывод маркированного товара из оборота</label>
+<select id="upd-withdrawal-reason">
+<option value="">Без вывода — передать КМ покупателю</option>
+<option value="1">1 — Покупка для собственных нужд без последующей продажи</option>
+<option value="2">2 — Безвозмездная передача без последующей продажи</option>
+<option value="3">3 — Использование для производственных целей без последующей продажи</option>
+<option value="4">4 — Продажа по государственному / муниципальному контракту</option>
+<option value="keep" hidden>Сохранить нестандартный признак исходного XML</option>
+</select>
+<p class="wh-muted">Выбор применяется ко всему УПД. Исходный признак подставляется при загрузке XML. Для причины 4 идентификатор госконтракта должен быть заполнен в исходном XML из 1С.</p>
 <button class="btn primary" type="submit">Подготовить XML</button></fieldset></form>
 <div id="upd-preview" hidden></div><button id="upd-download" class="btn primary" type="button" hidden>Скачать заполненный XML</button>
 </details>
