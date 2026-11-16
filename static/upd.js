@@ -37,6 +37,8 @@ class UpdEditor {
     const form=new FormData();form.append('file',file);
     const info=await this.json('/api/admin/warehouse/documents/'+doc.id+'/upd',{method:'POST',body:form});
     if(key!==this.key)return;
+    this.$('upd-withdrawal-reason').value=info.withdrawal_reason ?? 'keep';
+    this.$('upd-withdrawal-reason').querySelector('[value="keep"]').hidden=info.withdrawal_reason!==null;
     this.info=info;this.url='/api/admin/warehouse/documents/'+doc.id+'/upd/'+info.upload_id;
     this.$('upd-source').textContent='УПД № '+info.number+' · '+info.rows.length+' строк';
     this.$('upd-mapping-rows').innerHTML=info.rows.map(row=>`<tr><td>${this.esc(row.number)}</td><td><b>${this.esc(row.pn)}</b><br>${this.esc(row.name)}<br><small>${row.source==='saved'?'Сохранённая связь':row.source==='exact'?'PN совпадает':'Выберите соответствие'}</small></td><td>${this.esc(row.quantity)}<br><small>ГТД: ${this.esc((row.declarations || []).join('; ') || 'не указана')}</small></td><td><select required data-upd-row="${this.esc(row.id)}" aria-label="PN в сканах для строки ${this.esc(row.number)}"><option value="">Выберите PN</option><option value="unmarked">Без маркировки — оставить строку</option>${info.choices.map((c,i)=>`<option value="pn:${i}" ${c.pn===row.target_pn?'selected':''}>${this.esc(c.pn)} · ${c.quantity} шт. · ${this.esc(c.gtins.join(', '))}</option>`).join('')}</select></td></tr>`).join('');
@@ -53,8 +55,10 @@ class UpdEditor {
       mapping[select.dataset.updRow]=select.value==='unmarked'?null:info.choices[Number(select.value.slice(3))].pn;
     }
     const fillGtd=this.$('upd-fill-gtd').checked;
+    const withdrawalReason=this.$('upd-withdrawal-reason').value;
+    const withdrawalLabel=this.$('upd-withdrawal-reason').selectedOptions[0].textContent;
     this.$('upd-status').textContent=fillGtd?'Получаем ГТД из ЧЗ и проверяем XML. Дождитесь результата…':'Заполняем КМ и проверяем XML…';this.$('upd-status').className='';
-    const result=await this.json(url+'/prepare',{method:'POST',body:{mapping,fill_gtd:fillGtd,save_links:this.$('upd-save-links').checked}});
+    const result=await this.json(url+'/prepare',{method:'POST',body:{mapping,withdrawal_reason:withdrawalReason==='keep'?null:withdrawalReason,fill_gtd:fillGtd,save_links:this.$('upd-save-links').checked}});
     if(key!==this.key)return;
     if(result.ready===false) {
       const packs=items=>(items || []).map(p=>`${p.codes} × ${p.quantity} шт.`).join('; ');
@@ -67,7 +71,7 @@ class UpdEditor {
     }
     this.$('upd-preview').innerHTML='<h4>Результат заполнения</h4><div class="wh-table"><table><thead><tr><th>Исходная строка</th><th>PN / GTIN</th><th>ГТД</th><th>Количество, шт.</th><th>КМ</th></tr></thead><tbody>'+result.rows.map(r=>`<tr><td>${this.esc((r.source_rows || [r.source_row]).join(', '))}</td><td>${this.esc(r.pn)}<br>${this.esc(r.gtin)}</td><td>${this.esc(r.declaration_number)}</td><td>${r.quantity}</td><td>${r.codes}</td></tr>`).join('')+'</tbody></table></div>';
     this.$('upd-preview').hidden=false;this.$('upd-download').hidden=false;
-    this.$('upd-status').textContent='XML подготовлен и проверен по XSD 5.03. Итоги документа сохранены. '+(result.gtd_filled?'ГТД получены из ЧЗ. ':'ГТД сохранены из исходного XML. ')+'Сохранено связей: '+result.saved_links+'. Страна происхождения взята из исходного XML.';
+    this.$('upd-status').textContent='XML подготовлен и проверен по XSD 5.03. Итоги документа сохранены. '+(result.gtd_filled?'ГТД получены из ЧЗ. ':'ГТД сохранены из исходного XML. ')+'Вывод из оборота: '+withdrawalLabel+'. Сохранено связей: '+result.saved_links+'. Страна происхождения взята из исходного XML.';
     this.$('upd-status').className='wh-good';
   });}
 }

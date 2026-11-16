@@ -183,12 +183,12 @@ def test_routes_protected_roundtrip_restart_aliases_and_stale(monkeypatch,tmp_pa
             plain_output=client.get(url+'/download',headers=headers)
             assert len(parse_xml(plain_output.content).findall('.//СведТов'))==1
             assert parse_xml(plain_output.content).find('.//СвДТ').get('НомерДТ')==DT1
-        response=client.post(url+'/prepare',json={'mapping':{'0':'SCAN-PN'},'save_links':True,'fill_gtd':True},headers=headers)
+        response=client.post(url+'/prepare',json={'mapping':{'0':'SCAN-PN'},'save_links':True,'fill_gtd':True,'withdrawal_reason':'3'},headers=headers)
         assert response.status_code==200,response.text
         assert len(response.json()['rows'])==2
         out=client.get(url+'/download',headers=headers)
         assert out.status_code==200
-        parse_xml(out.content)
+        assert inspect_xml(out.content, d, {})['withdrawal_reason'] == '3'
         restarted=WarehouseStore(store.path)
         assert restarted.upd_aliases(ORG)=={'XML-PN':'SCAN-PN'}
         assert restarted.upd_aliases('other')=={}
@@ -414,3 +414,49 @@ def test_route_regroup_and_missing_dt_returns_plan_instead_of_old_boundary_error
         assert result.json()['ready'] is True and api.calls==calls
         rows=parse_xml(client.get(url+'/download',headers=headers).content).findall('.//СведТов')
         assert [row.find('СвДТ').get('НомерДТ') for row in rows]==[DT1,DT2]
+
+
+@pytest.mark.parametrize('reason', ['1', '2', '3', '4'])
+def test_withdrawal_selection_roundtrip_and_source_detection(reason):
+    root = parse_xml(xml())
+    invoice = root.find('Документ/СвСчФакт')
+    contract = E.Element('ДопСвФХЖ1', ИдГосКон='12345678901234567890')
+    invoice.insert(list(invoice).index(invoice.find('ДенИзм')) + 1, contract)
+    info = E.SubElement(invoice, 'ИнфПолФХЖ1', ИдФайлИнфПол='00000000-0000-0000-0000-000000000002')
+    E.SubElement(info, 'ТекстИнф', Идентиф='Other', Значен='preserved')
+    # Replace all old spelling variants; leave exactly one current reason.
+    for name in ['СвВыбытияМАРК', 'СвВыбытияМарк']:
+        E.SubElement(info, 'ТекстИнф', Идентиф=name, Значен='2')
+    content = E.tostring(root, encoding='utf-8')
+    assert inspect_xml(content, doc(), {})['withdrawal_reason'] is None
+    allocated = allocate(root, doc(), {'0': 'SCAN-PN'})
+    output, _, _ = enrich_xml(content, doc(), {'0': 'SCAN-PN'}, allocated,
+                              withdrawal_reason=reason)
+    result = parse_xml(output)  # validates schema/order, including reason 4
+    info = result.find('Документ/СвСчФакт/ИнфПолФХЖ1')
+    assert info.get('ИдФайлИнфПол') == '00000000-0000-0000-0000-000000000002'
+    assert [(n.get('Идентиф'), n.get('Значен')) for n in info] == [
+        ('Other', 'preserved'), ('СвВыбытияМАРК', reason)]
+    assert inspect_xml(output, doc(), {})['withdrawal_reason'] == reason
+    # Explicit no-withdrawal removes the reason; omitted option preserves it.
+    kept, _, _ = enrich_xml(output, doc(), {'0': 'SCAN-PN'}, allocated)
+    assert inspect_xml(kept, doc(), {})['withdrawal_reason'] == reason
+    cleared, _, _ = enrich_xml(output, doc(), {'0': 'SCAN-PN'}, allocated,
+                               withdrawal_reason='')
+    assert inspect_xml(cleared, doc(), {})['withdrawal_reason'] == ''
+    assert parse_xml(cleared).find('.//ТекстИнф').get('Идентиф') == 'Other'
+
+
+def test_withdrawal_new_block_contract_requirement_and_invalid_api_value():
+    from warehouse_routes import UpdMapping
+    from pydantic import ValidationError
+    content = xml()
+    allocated = allocate(parse_xml(content), doc(), {'0': 'SCAN-PN'})
+    output, _, _ = enrich_xml(content, doc(), {'0': 'SCAN-PN'}, allocated,
+                              withdrawal_reason='1')
+    assert inspect_xml(output, doc(), {})['withdrawal_reason'] == '1'
+    with pytest.raises(WarehouseError, match='ИдГосКон'):
+        enrich_xml(content, doc(), {'0': 'SCAN-PN'}, allocated, withdrawal_reason='4')
+    for invalid in ['0', '5', 1, True, []]:
+        with pytest.raises(ValidationError):
+            UpdMapping(mapping={'0': 'SCAN-PN'}, withdrawal_reason=invalid)

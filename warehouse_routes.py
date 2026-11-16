@@ -34,6 +34,7 @@ class GtdBody(ScanBody):
 
 
 class UpdMapping(BaseModel):
+    withdrawal_reason: Literal['', '1', '2', '3', '4'] | None = None
     fill_gtd: bool = False
     mapping: dict[str, str | None] = Field(max_length=5000)
     save_links: bool = False
@@ -342,7 +343,7 @@ def install_warehouse(app, service_getter, store_getter, templates):
             store.upd_finish(document_id, upload_id, None, None, plan, {})
             return {**plan, 'gtd_filled': False, 'saved_links': 0}
         output, filename, summary = await asyncio.to_thread(
-            enrich_xml, upload['source'], doc, body.mapping, allocated, declarations)
+            enrich_xml, upload['source'], doc, body.mapping, allocated, declarations, body.withdrawal_reason)
         store.upd_finish(document_id, upload_id, output, filename, summary, aliases)
         return {'ready': True, 'rows': summary, 'filename': filename, 'saved_links': len(aliases), 'gtd_filled': body.fill_gtd}
 
