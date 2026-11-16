@@ -1,12 +1,12 @@
-# UPD 5.03 seller title
+# XSD титула продавца УПД 5.03
 
-`ON_NSCHFDOPPR_1_997_01_05_03_05.xsd` is the unmodified standalone schema
-published by Kontur Diadoc, downloaded 2026-11-05:
+Редакция документации: 16.11.2026.
 
-https://developer.kontur.ru/doc/diadoc-api/_downloads/0b1399ca5ad7c850733f8ef413b97db0/ON_NSCHFDOPPR_1_997_01_05_03_05.xsd
+`ON_NSCHFDOPPR_1_997_01_05_03_05.xsd` — самостоятельная схема, опубликованная Контур.Диадок. Файл схемы не изменён в рамках обновления документации.
 
-Index: https://developer.kontur.ru/doc/diadoc-api/docflows/formats.html#xsd
+- [Источник XSD](https://developer.kontur.ru/doc/diadoc-api/_downloads/0b1399ca5ad7c850733f8ef413b97db0/ON_NSCHFDOPPR_1_997_01_05_03_05.xsd)
+- [Каталог форматов](https://developer.kontur.ru/doc/diadoc-api/docflows/formats.html#xsd)
 
-Validation is offline. XSD annotations include proprietary Schematron extensions;
-only XSD constraints are executed by lxml. Application checks add quantity,
-party, KI allocation and money-preservation invariants.
+`lxml` выполняет офлайн-проверку ограничений XSD. Дополнительные Schematron-аннотации не исполняются. Приложение отдельно проверяет реквизиты сторон, распределение КИ и количества, целые упаковки и сохранение денежных итогов. Прохождение XSD не подтверждает приём файла конкретной версией учётной системы или ЭДО.
+
+[Подготовка XML УПД](../docs/UPD_XML.md) · [README](../README.md).
