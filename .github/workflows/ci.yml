@@ -30,14 +30,17 @@ jobs:
         run: |
           python -m pytest -q
 
-      - name: Check JS syntax
+      - name: Run Node.js unit tests
         run: |
-          node --check static/theme.js
-          node --check static/admin-settings.js
-          node --check static/api-request.js
-          node --check static/app.js
-          node --check static/scanner-focus.js
-          node --check static/warehouse.js
-          node --check static/upd.js
-          node --check static/gtd-excel.js
-          echo "app.js syntax OK"
+          node --test tests/*.test.cjs
+
+      - name: Check JS syntax (all browser scripts)
+        run: |
+          for f in static/*.js; do node --check "$f"; done
+          echo "all static/*.js syntax OK"
+
+  # Browser smoke tests (tests/browser_*.py) need Playwright + Chromium and are
+  # not run here: on the current main the admin-login step does not make
+  # #workspace visible in headless Chromium, so the scenarios fail. They are
+  # kept in tests/ for local repair and are NOT wired into CI until they pass.
+  # See the audit report for details.
