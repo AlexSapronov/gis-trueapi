@@ -1,15 +1,17 @@
 import asyncio
+import io
 from concurrent.futures import ThreadPoolExecutor
 
+import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
 import main
-from shipment_bulk import LEGACY_REQUIRED as REQUIRED, import_bulk
+from shipment_bulk import REQUIRED, import_bulk
 from warehouse_excel import make_xlsx, scan_data
 from warehouse_service import check_document
 from warehouse_store import WarehouseError, WarehouseStore
-from test_warehouse import ORG, ORG2, GTIN, code, svc
+from test_warehouse import ORG, ORG2, GTIN, code, svc, workbook
 
 
 @pytest.fixture
@@ -24,6 +26,14 @@ def row(invoice=1, good=10, pn='PN', quantity=100, gtin=GTIN, flag='Да', org=O
 def excel(*rows):
     # Extra export columns are ignored and columns may be reordered.
     return make_xlsx({'Лист1': [REQUIRED] + list(rows)})
+
+
+def flarp_excel(*rows, recipient_name='Получатель из Фларпа'):
+    # The actual export places both names before the two explicit INN columns.
+    headers = (*REQUIRED[:-2], 'Отправитель', 'Получатель', *REQUIRED[-2:], 'Кол-во КМ к заказу')
+    return make_xlsx({'Лист1': [headers, *[
+        [*values[:-2], 'Отправитель из Фларпа', recipient_name, *values[-2:], None] for values in rows
+    ]]})
 
 
 def upload(store, *rows):
@@ -43,6 +53,13 @@ def test_repeat_completed_is_unchanged_and_restart(store, svc):
     assert result['status'] == 'unchanged'
     assert restarted.get(d['id']) == completed
     assert len(restarted.list(admin=True)) == 1
+
+    updated_name = import_bulk(restarted, flarp_excel(row()))['results'][0]
+    assert updated_name['status'] == 'unchanged'
+    renamed = restarted.get(d['id'])
+    assert renamed['recipient_name'] == 'Получатель из Фларпа'
+    assert renamed['status'] == 'completed' and renamed['check_current']
+    assert renamed['scans'] == completed['scans']
 
 
 def test_changed_quantity_reopens_and_preserves_codes(store, svc):
@@ -137,7 +154,7 @@ def test_http_auth_and_endpoint(store, monkeypatch):
     monkeypatch.setattr(main.settings, 'admin_key', 'bulk-test')
     client = TestClient(main.app)
     path = '/api/admin/warehouse/shipment-invoices'
-    files = {'file': ('invoices.xlsx', excel(row()))}
+    files = {'file': ('invoices.xlsx', flarp_excel(row()))}
     assert client.post(path, files=files).status_code == 403
     result = client.post(path, files=files, headers={'X-Admin-Key': 'bulk-test'})
     assert result.status_code == 200 and result.json()['counts']['created'] == 1
@@ -169,3 +186,59 @@ def test_recipient_rename_and_new_gtin_require_fresh_check(store):
     assert after['number'] == 'RENAMED' and after['recipient_inn'] == '2222222222'
     assert len(after['lines']) == 2 and len(after['scans']) == 1
     assert not after['check_current'] and not after['can_complete']
+
+
+
+@pytest.mark.parametrize('identifier', [123456789, '123456789012', 'BY-001234567', '001234567'])
+def test_flarp_export_uses_explicit_inns_for_same_named_recipients(store, identifier):
+    content = flarp_excel(row(recipient=identifier), row(invoice=2, recipient='2222222222'))
+    result = import_bulk(store, content)
+    assert result['counts']['created'] == 2
+    docs = [store.get(entry['document_id']) for entry in result['results']]
+    assert [d['recipient_inn'] for d in docs] == [str(identifier), '2222222222']
+    assert all(d['recipient_name'] == 'Получатель из Фларпа' for d in docs)
+    assert all(d['status'] == 'active' for d in docs)
+
+
+@pytest.mark.parametrize('value', [None, '', '   ', True, 12.5])
+def test_missing_or_invalid_explicit_inn_is_reported(store, value):
+    content = flarp_excel(row(recipient=value))
+    result = import_bulk(store, content)['results'][0]
+    assert result['status'] == 'error' and 'Строка 2: ИНН получателя' in result['message']
+    assert not store.list(admin=True)
+
+
+def test_name_only_export_requires_the_new_inn_columns(store):
+    headers = (*REQUIRED[:-2], 'Отправитель', 'Получатель')
+    with pytest.raises(WarehouseError, match='ИНН отправителя, ИНН получателя'):
+        import_bulk(store, make_xlsx({'Лист1': [headers, row()]}))
+
+
+def test_reimport_releases_legacy_draft_with_existing_scans(store):
+    doc_id = upload(store, row())['results'][0]['document_id']
+    store.add_scan(doc_id, scan_data(code()))
+    before = store.get(doc_id)
+    with store.connection(True) as c:
+        c.execute("ALTER TABLE warehouse_documents ADD COLUMN recipient_choice_key TEXT NOT NULL DEFAULT ''")
+        c.execute("""UPDATE warehouse_documents
+            SET recipient_choice_key='legacy',recipient_inn='',status='draft' WHERE id=?""", (doc_id,))
+    reopened = WarehouseStore(store.path)
+    assert reopened.get(doc_id)['awaiting_invoice_inn'] and not reopened.list()
+    with pytest.raises(WarehouseError, match='Повторно загрузите'):
+        reopened.start(doc_id)
+
+    result = import_bulk(reopened, flarp_excel(row()))['results'][0]
+    assert result['status'] == 'updated' and result['document_id'] == doc_id
+    after = reopened.list()[0]
+    assert after['recipient_inn'] == '1234567890' and not after['awaiting_invoice_inn']
+    assert reopened.get(doc_id)['scans'] == before['scans']
+
+
+def test_standard_shipment_accepts_foreign_client_identifier():
+    from warehouse_excel import import_xlsx
+    book = openpyxl.load_workbook(io.BytesIO(workbook()))
+    book['Документ']['B6'] = '123456789'
+    stream = io.BytesIO()
+    book.save(stream)
+    header, _, _ = import_xlsx(stream.getvalue(), 'shipment')
+    assert header['recipient_inn'] == '123456789'

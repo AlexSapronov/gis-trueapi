@@ -13,7 +13,6 @@ from warehouse_issues import WarehouseIssues
 from upd_store import UpdStore
 from gtd_excel_store import GtdExcelStore
 from app_settings import RuntimeSettings
-from party_catalog import PartyCatalog
 from receipt_bridge import ReceiptBridgeStore
 
 
@@ -28,7 +27,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore, PartyCatalog):
+class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,11 +95,8 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
             if 'sales_username' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN sales_username TEXT')
-            if 'recipient_choice_key' not in columns:
-                c.execute("ALTER TABLE warehouse_documents ADD COLUMN recipient_choice_key TEXT NOT NULL DEFAULT ''")
             c.execute('''CREATE INDEX IF NOT EXISTS warehouse_sales_tasks
                 ON warehouse_documents(sales_username, created_at DESC) WHERE sales_username IS NOT NULL''')
-            self.init_party_catalog(c)
             c.commit()
             self.init_settings(c)
             self.init_upd(c)
@@ -208,26 +204,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             if d and d['deleted_at']:
                 raise WarehouseError('Задание удалено; сначала восстановите его вручную', 409)
 
-            recipient_key = header.get('recipient_key', '')
             recipient_inn = header['recipient_inn']
-            choice_key = ''
-            if recipient_key:
-                inns = self._party_inns(c, recipient_key)
-                if tuple(inns) != header['recipient_inns']:
-                    raise WarehouseError('Справочник ИНН изменился во время импорта. Повторите загрузку.', 409)
-                same_choice = d and d['recipient_choice_key'] == recipient_key
-                if same_choice and d['recipient_inn'] in inns:
-                    choice_key, recipient_inn = recipient_key, d['recipient_inn']
-                elif len(inns) > 1 or (same_choice and d['recipient_pending']):
-                    choice_key = recipient_key
-                else:
-                    recipient_inn = inns[0]
-            elif d and d['recipient_pending']:
-                raise WarehouseError('Выберите ИНН получателя в карточке накладной перед повторным импортом с ИНН', 409)
-            elif d and d['recipient_inn'] == recipient_inn:
-                choice_key = d['recipient_choice_key']
-            pending = bool(choice_key and not recipient_inn)
-            pending_message = 'Откройте накладную и выберите ИНН получателя для отправки на склад'
 
             if not document_id:
                 if not any(line['gtin'] for line in lines):
@@ -243,7 +220,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             else:
                 canonical = lambda items: sorted((l['gtin'], l['pn'], l['quantity']) for l in items)
                 same = (canonical(lines) == canonical(d['lines']) and d['number'] == header['number']
-                        and d['recipient_inn'] == recipient_inn and d['recipient_choice_key'] == choice_key)
+                        and d['recipient_inn'] == recipient_inn)
                 if same:
                     # A display-name change is metadata; keep a completed scan/check valid.
                     recipient_name = header.get('recipient_name')
@@ -253,8 +230,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                     if not source:
                         c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                                   (header['org_inn'], invoice_id, document_id))
-                    return dict(status='needs_recipient' if pending else 'unchanged', document_id=document_id,
-                                message=pending_message if pending else 'Без изменений; сканы и статус сохранены')
+                    return dict(status='unchanged', document_id=document_id, message='Без изменений; сканы и статус сохранены')
                 if d['archived_at']:
                     raise WarehouseError('Состав архивного задания изменён; сначала верните его из архива', 409)
                 if d['checking']:
@@ -278,15 +254,12 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                           (header['org_inn'], invoice_id, document_id))
             c.execute("""UPDATE warehouse_documents SET number=?,
                 recipient_name=CASE WHEN ? != '' THEN ? WHEN recipient_inn=? THEN recipient_name ELSE '' END,
-                recipient_inn=?,recipient_choice_key=?,status=?,
+                recipient_inn=?,status='active',
                 started_at=COALESCE(started_at,?),completed_at=NULL,result=NULL,result_version=NULL,
                 result_at=NULL,check_id=NULL,check_until=NULL WHERE id=?""",
                 (header['number'], header.get('recipient_name', ''), header.get('recipient_name', ''),
-                 recipient_inn, recipient_inn, choice_key, 'draft' if pending else 'active',
-                 None if pending else now(), document_id))
+                 recipient_inn, recipient_inn, now(), document_id))
             self._bump(c, document_id)
-            if pending:
-                return dict(status='needs_recipient', document_id=document_id, message=pending_message)
             return dict(status=outcome, document_id=document_id,
                         message='Задание создано' if outcome == 'created' else 'Состав обновлён; сканы сохранены, требуется проверка')
 
@@ -302,9 +275,8 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
 
     def _snapshot(self, c, document_id, include_deleted=False):
         d = self._doc(c, document_id, include_deleted)
-        d['recipient_pending'] = bool(d['recipient_choice_key'] and not d['recipient_inn'])
-        if d['recipient_pending']:
-            d['recipient_options'] = self._party_inns(c, d['recipient_choice_key'])
+        d['awaiting_invoice_inn'] = self._awaiting_invoice_inn(d)
+        d.pop('recipient_choice_key', None)
         self._issue_counts(c, d)
         source = c.execute('SELECT metadata,revision FROM warehouse_receipt_sources WHERE document_id=?', (document_id,)).fetchone()
         d['receipt_source'] = {**json.loads(source['metadata']), 'revision': source['revision']} if source else None
@@ -372,7 +344,8 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             result = []
             for r in rows:
                 d = dict(r)
-                d['recipient_pending'] = bool(d.pop('recipient_choice_key') and not d['recipient_inn'])
+                d['awaiting_invoice_inn'] = self._awaiting_invoice_inn(d)
+                d.pop('recipient_choice_key', None)
                 d['result'] = json.loads(d['result']) if d['result'] else None
                 d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
                 d.pop('check_id', None); d.pop('check_until', None)
@@ -398,20 +371,10 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             self._start(c, document_id, reopen)
         return self.get(document_id)
 
-    def select_shipment_recipient(self, document_id, inn, version, revision):
-        with self.connection(True) as c:
-            d = self._doc(c, document_id)
-            if d['version'] != version or d['revision'] != revision:
-                raise WarehouseError('Документ изменён другим сотрудником. Обновите карточку.', 409)
-            key = d['recipient_choice_key']
-            if d['kind'] != 'shipment' or d['status'] != 'draft' or d['archived_at'] or not key or d['recipient_inn']:
-                raise WarehouseError('Накладная не ожидает выбора ИНН получателя', 409)
-            if inn not in self._party_inns(c, key):
-                raise WarehouseError('ИНН получателя отсутствует в актуальном справочнике. Обновите карточку.', 409)
-            c.execute('UPDATE warehouse_documents SET recipient_inn=? WHERE id=?', (inn, document_id))
-            self._event(c, document_id, 'recipient_selected', {'inn': inn}, actor='admin')
-            self._start(c, document_id)
-            return self._snapshot(c, document_id)
+    @staticmethod
+    def _awaiting_invoice_inn(d):
+        # Drafts from the former catalog workflow must receive their INN by reimport.
+        return bool(d.get('recipient_choice_key') and not d['recipient_inn'])
 
     def _start(self, c, document_id, reopen=False, actor='admin'):
         d = self._doc(c, document_id)
@@ -419,8 +382,8 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             raise WarehouseError('Сначала верните документ из архива', 409)
         if d['status'] != ('completed' if reopen else 'draft'):
             raise WarehouseError('Недопустимый переход статуса', 409)
-        if d['recipient_choice_key'] and not d['recipient_inn']:
-            raise WarehouseError('Сначала выберите ИНН получателя', 409)
+        if self._awaiting_invoice_inn(d):
+            raise WarehouseError('Повторно загрузите накладную из выгрузки с ИНН получателя', 409)
         c.execute('''UPDATE warehouse_documents SET status='active',started_at=?,
             completed_at=NULL, version=version+1, revision=revision+1, updated_at=? WHERE id=?''',
             (now(), now(), document_id))
