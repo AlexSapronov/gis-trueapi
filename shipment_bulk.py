@@ -61,7 +61,9 @@ def parse_bulk(content, parties=None):
             except ValueError as exc:
                 # An unidentifiable row cannot safely be excluded from any invoice.
                 raise WarehouseError(f'Строка {n}: {exc}') from exc
-            group = groups.setdefault(invoice_id, dict(invoice_id=invoice_id, number='', lines=[], errors=[], org_inn='', recipient_inn='', recipient_name=''))
+            group = groups.setdefault(invoice_id, dict(invoice_id=invoice_id, number='', lines=[], errors=[],
+                                                      org_inn='', recipient_inn='', recipient_name='',
+                                                      recipient_key='', recipient_inns=()))
             try:
                 if any(c.data_type == 'f' for c in cells.values()):
                     raise ValueError('Формулы в используемых столбцах не допускаются')
@@ -76,12 +78,25 @@ def parse_bulk(content, parties=None):
                 for column, field in party_columns:
                     value = cells[column].value
                     if by_name:
-                        party = parties.get(name_key(value))
-                        if party is None:
+                        key = name_key(value)
+                        matches = parties.get(key)
+                        if not matches:
                             raise ValueError(f'{column}: имя «{value}» не найдено в справочнике ИНН — Имя')
-                        inn = party['inn']
                         if field == 'recipient_inn':
-                            group['recipient_name'] = party['name']
+                            inns = tuple(party['inn'] for party in matches)
+                            if group['recipient_inns'] and (
+                                    group['recipient_inns'] != inns or
+                                    (len(inns) > 1 and group['recipient_key'] != key)):
+                                raise ValueError(f'{column}: разные юрлица в одной накладной')
+                            if not group['recipient_key']:
+                                group.update(recipient_key=key, recipient_name=matches[0]['name'], recipient_inns=inns)
+                            continue
+                        sender_inns = [party['inn'] for party in matches if registry.has(party['inn'])]
+                        if not sender_inns:
+                            raise ValueError('ИНН отправителя отсутствует в наших организациях')
+                        if len(sender_inns) > 1:
+                            raise ValueError(f'Отправитель «{value}»: несколько наших ИНН. Загрузите накладную со столбцами «ИНН отправителя» и «ИНН получателя».')
+                        inn = sender_inns[0]
                     else:
                         inn = inn_text(value)
                     if group[field] and group[field] != inn:
@@ -112,7 +127,9 @@ def parse_bulk(content, parties=None):
 
 
 def import_bulk(store, content):
-    parties = {name_key(r['name']): r for r in store.party_catalog()['rows']}
+    parties = {}
+    for row in store.party_catalog()['rows']:
+        parties.setdefault(name_key(row['name']), []).append(row)
     groups = parse_bulk(content, parties)
     report = []
     for group in groups:
@@ -142,14 +159,15 @@ def import_bulk(store, content):
         header = dict(kind='shipment', number=group['number'],
                       date=datetime.now(ZoneInfo('Europe/Moscow')).date().isoformat(),
                       org_inn=org.inn, org_name=org.name, recipient_inn=group['recipient_inn'],
-                      recipient_name=group['recipient_name'])
+                      recipient_name=group['recipient_name'], recipient_key=group['recipient_key'],
+                      recipient_inns=group['recipient_inns'])
         try:
             result = store.sync_shipment_invoice(group['invoice_id'], header, list(merged.values()))
             report.append({**base, **result})
         except WarehouseError as exc:
             report.append({**base, 'status': 'error', 'message': exc.message})
     return dict(results=report, counts={key: sum(r['status'] == key for r in report)
-                                       for key in ('created', 'updated', 'unchanged', 'skipped', 'error')})
+                                       for key in ('created', 'updated', 'unchanged', 'needs_recipient', 'skipped', 'error')})
 
 
 def read_party_catalog(content):
