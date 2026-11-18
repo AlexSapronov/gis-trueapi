@@ -91,16 +91,6 @@ async def test_info_short_cis_without_prefix_is_passed_verbatim():
 
 # ---- Service: response-order independence and scanner-prefix hygiene ----
 
-def _svc_with_records(records):
-    class Client(MockTrueApiClient):
-        async def info(self, cises, token):
-            # Deliberately echo records in REVERSE order to prove pairing is by
-            # requestedCis, never by position (True API may reorder).
-            return [r for r in records if r["cisInfo"]["requestedCis"] in cises][::-1]
-    tokens = FileTokenStore.__new__(FileTokenStore)
-    return Service(Client(), tokens)
-
-
 @pytest.mark.asyncio
 async def test_scan_batch_pairs_by_identity_not_by_order(tmp_path):
     tokens = FileTokenStore(tmp_path / "tokens.json")
