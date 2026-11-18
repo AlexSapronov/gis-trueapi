@@ -226,5 +226,5 @@ SQLite приведён в [руководстве склада](WAREHOUSE.md#х
 складские документы. `upd_xml.py` и `upd_store.py` готовят и сохраняют УПД;
 `gtd_excel.py`, `gtd_excel_store.py`, `gtd_excel_routes.py` — сводные проверки;
 `km_report.py` — отчёты по списку КМ; `warehouse_labels.py` — недостающие PDF;
-`shipment_bulk.py` и `party_catalog.py` — массовые задания и контрагенты;
+`shipment_bulk.py` — массовый импорт заданий на отгрузку;
 `receipt_bridge.py` — приёмки из marking-bm; `sales_shipments.py` — кабинет ОП.

@@ -72,19 +72,8 @@
 <p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
 <p id="import-unmarked-hint">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
 <details id="bulk-shipment-box"><summary>Массовые задания на отгрузку из списка накладных</summary>
-<p>Загрузите выгрузку без изменения её структуры, добавив столбцы «Отправитель» и «Получатель» с наименованиями юрлиц в каждую строку. ИНН определяются по сохранённому справочнику «ИНН — Имя». Отправитель должен быть нашей организацией. InvoiceId связывает повторные загрузки. Дата задания — дата первой загрузки, а не дата накладной.</p>
+<p>Загрузите обновлённую выгрузку Фларпа с колонками «ИНН отправителя» и «ИНН получателя». Получатель отображается по одноимённому столбцу. Отправитель должен быть нашей организацией. Повторная загрузка находит задание по ИНН отправителя и InvoiceId.</p>
 <p>«Да» требует GTIN. «Нет» и «??» считаются товаром без маркировки. Новые накладные только с такими товарами пропускаются. Повторная загрузка сохраняет сканы. Изменённые задания возвращаются на проверку, лишние КМ остаются видны. Отсутствие накладной в файле не удаляет задание.</p>
-<details><summary>Справочник юрлиц «ИНН — Имя»</summary>
-<p>Один раз загрузите .xlsx с заголовками «ИНН» и «Имя». Включите наших отправителей и клиентов, в том числе ИП и клиентов из РБ. Поле «ИНН» принимает непустой налоговый идентификатор без ограничения на 10/12 цифр; ведущие нули храните текстом. Имена должны совпадать с выгрузкой; регистр, лишние пробелы и вид двойных кавычек не учитываются. Разные варианты имени одного ИНН можно добавить отдельными строками. Неизвестные имена блокируют только соответствующую накладную.</p>
-<button id="party-catalog-template" class="btn" type="button">Скачать шаблон справочника</button>
-<button id="party-catalog-show" class="btn" type="button">Показать сохранённый справочник</button>
-<form id="party-catalog-form"><label>Справочник юрлиц Excel <input id="party-catalog-file" type="file" accept=".xlsx" required></label>
-<label><input id="party-catalog-replace" type="checkbox"> Заменить справочник целиком</label>
-<button class="btn">Загрузить справочник</button></form>
-<button id="party-catalog-clear" class="btn wh-danger" type="button">Очистить справочник</button>
-<p>Для одного имени можно указать разные ИНН в отдельных строках. Если у получателя несколько ИНН, выберите нужный в карточке накладной для отправки на склад.</p>
-<div id="party-catalog-report" role="status" aria-live="polite"></div>
-</details>
 <form id="bulk-shipment-form"><label>Список накладных Excel <input id="bulk-shipment-file" type="file" accept=".xlsx" required></label><button class="btn primary">Создать / обновить задания на отгрузку</button></form>
 <div id="bulk-shipment-report" role="status" aria-live="polite"></div>
 </details>
@@ -129,11 +118,7 @@
 <div id="warehouse-replies" class="wh-replies" aria-live="polite"></div>
 <p id="issue-state" class="wh-stale" role="status"></p>
 {% if admin %}
-<form id="shipment-recipient-form" class="wh-settings" hidden>
-<p id="shipment-recipient-help"></p>
-<label>ИНН получателя <select id="shipment-recipient-inn" required></select></label>
-<button class="btn primary" id="shipment-recipient-submit">Сохранить ИНН и отправить на склад</button>
-</form>
+<p id="legacy-recipient-hint" class="wh-stale" hidden>Повторно загрузите эту накладную из обновлённой выгрузки с ИНН получателя для отправки задания на склад.</p>
 <div class="wh-toolbar"><button id="start" class="btn primary">Начать операцию</button><button id="reopen" class="btn">Возобновить операцию</button><button id="export" class="btn primary">Скачать файл КМ</button><button id="missing-labels" class="btn" hidden>Сгенерировать недостающие PDF</button><button id="archive-document" class="btn">В архив</button><button id="unarchive-document" class="btn primary" hidden>Вернуть из архива</button><button id="delete-document" class="btn wh-danger">Удалить документ</button><button id="restore-document" class="btn primary" hidden>Восстановить из корзины</button><button id="show-issues" class="btn" hidden>Разобрать обращения</button></div>
 <details id="upd-panel" class="wh-settings" hidden><summary>Заполнить XML УПД кодами маркировки и ГТД</summary>
 <p>Загрузите неподписанный XML УПД 5.03 из 1С БП. Сопоставьте PN из XML с PN отсканированного товара. По желанию включите получение ГТД из ЧЗ: программа пересоберёт строки одного PN по ГТД из ЧЗ, сохранив общие суммы, даже если 1С разделила их иначе.</p>

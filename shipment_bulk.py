@@ -9,14 +9,12 @@ from zoneinfo import ZoneInfo
 import openpyxl
 
 from organizations import registry
-from party_catalog import inn_text, name_key
 from warehouse_excel import MAX_FILE_SIZE, MAX_ROWS, positive_integer, shipment_gtin_cell
 from warehouse_store import WarehouseError
 
 BASE_COLUMNS = ('InvoiceId', 'GoodId', 'Наименование', 'Количество шт.',
             'Номер накладной', 'GTIN', 'Требуется маркировка')
-REQUIRED = BASE_COLUMNS + ('Отправитель', 'Получатель')
-LEGACY_REQUIRED = BASE_COLUMNS + ('ИНН отправителя', 'ИНН получателя')
+REQUIRED = BASE_COLUMNS + ('ИНН отправителя', 'ИНН получателя')
 
 
 def open_book(content):
@@ -34,19 +32,36 @@ def open_book(content):
     return book
 
 
-def parse_bulk(content, parties=None):
+def inn_text(value):
+    # Client tax identifiers are opaque: foreign identifiers need not use Russian INN length.
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError('Заполните ИНН / налоговый идентификатор')
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError('ИНН должен быть целым числом')
+        value = str(int(value))
+    inn = str(value or '').strip()
+    if not inn:
+        raise ValueError('Заполните ИНН / налоговый идентификатор')
+    return inn
+
+
+def parse_bulk(content):
     book = open_book(content)
-    parties = parties or {}
     groups = {}
     try:
         if len(book.sheetnames) != 1:
             raise WarehouseError('Ожидается однолистная выгрузка списка накладных')
         sheet = book.active
-        heads = [str(c.value or '').strip() for c in next(sheet.iter_rows(min_row=1, max_row=1))]
-        by_name = 'Отправитель' in heads or 'Получатель' in heads
-        columns = REQUIRED if by_name else LEGACY_REQUIRED
-        if any(heads.count(name) != 1 for name in columns):
-            raise WarehouseError('Ожидаются столбцы: ' + ', '.join(REQUIRED))
+        headers = next(sheet.iter_rows(min_row=1, max_row=1), ())
+        heads = [str(c.value or '').strip() for c in headers]
+        missing = [name for name in REQUIRED if name not in heads]
+        if missing:
+            raise WarehouseError('Выгрузите список накладных с обязательными столбцами. Не найдены: ' + ', '.join(missing))
+        columns = REQUIRED + ('Получатель',) if 'Получатель' in heads else REQUIRED
+        repeated = [name for name in columns if heads.count(name) > 1]
+        if repeated:
+            raise WarehouseError('В выгрузке повторяются столбцы: ' + ', '.join(repeated))
         indices = {name: heads.index(name) for name in columns}
         for n, row in enumerate(sheet.iter_rows(min_row=2), 2):
             if n > MAX_ROWS + 1:
@@ -62,8 +77,7 @@ def parse_bulk(content, parties=None):
                 # An unidentifiable row cannot safely be excluded from any invoice.
                 raise WarehouseError(f'Строка {n}: {exc}') from exc
             group = groups.setdefault(invoice_id, dict(invoice_id=invoice_id, number='', lines=[], errors=[],
-                                                      org_inn='', recipient_inn='', recipient_name='',
-                                                      recipient_key='', recipient_inns=()))
+                                                      org_inn='', recipient_inn='', recipient_name=''))
             try:
                 if any(c.data_type == 'f' for c in cells.values()):
                     raise ValueError('Формулы в используемых столбцах не допускаются')
@@ -73,35 +87,16 @@ def parse_bulk(content, parties=None):
                 if group['number'] and group['number'] != number:
                     raise ValueError('У одного InvoiceId разные номера накладной')
                 group['number'] = number
-                party_columns = (('Отправитель', 'org_inn'), ('Получатель', 'recipient_inn')) if by_name else (
-                    ('ИНН отправителя', 'org_inn'), ('ИНН получателя', 'recipient_inn'))
-                for column, field in party_columns:
-                    value = cells[column].value
-                    if by_name:
-                        key = name_key(value)
-                        matches = parties.get(key)
-                        if not matches:
-                            raise ValueError(f'{column}: имя «{value}» не найдено в справочнике ИНН — Имя')
-                        if field == 'recipient_inn':
-                            inns = tuple(party['inn'] for party in matches)
-                            if group['recipient_inns'] and (
-                                    group['recipient_inns'] != inns or
-                                    (len(inns) > 1 and group['recipient_key'] != key)):
-                                raise ValueError(f'{column}: разные юрлица в одной накладной')
-                            if not group['recipient_key']:
-                                group.update(recipient_key=key, recipient_name=matches[0]['name'], recipient_inns=inns)
-                            continue
-                        sender_inns = [party['inn'] for party in matches if registry.has(party['inn'])]
-                        if not sender_inns:
-                            raise ValueError('ИНН отправителя отсутствует в наших организациях')
-                        if len(sender_inns) > 1:
-                            raise ValueError(f'Отправитель «{value}»: несколько наших ИНН. Загрузите накладную со столбцами «ИНН отправителя» и «ИНН получателя».')
-                        inn = sender_inns[0]
-                    else:
-                        inn = inn_text(value)
+                for column, field in (('ИНН отправителя', 'org_inn'), ('ИНН получателя', 'recipient_inn')):
+                    try:
+                        inn = inn_text(cells[column].value)
+                    except ValueError as exc:
+                        raise ValueError(f'{column}: {exc}') from exc
                     if group[field] and group[field] != inn:
-                        raise ValueError(f'{column}: разные юрлица в одной накладной')
+                        raise ValueError(f'{column}: разные значения в одной накладной')
                     group[field] = inn
+                if 'Получатель' in cells and not group['recipient_name']:
+                    group['recipient_name'] = str(cells['Получатель'].value or '').strip()
                 good_id = str(positive_integer(cells['GoodId'].value))
                 pn = str(cells['Наименование'].value or '').strip()
                 if not pn or len(pn) > 1000:
@@ -127,10 +122,7 @@ def parse_bulk(content, parties=None):
 
 
 def import_bulk(store, content):
-    parties = {}
-    for row in store.party_catalog()['rows']:
-        parties.setdefault(name_key(row['name']), []).append(row)
-    groups = parse_bulk(content, parties)
+    groups = parse_bulk(content)
     report = []
     for group in groups:
         base = dict(invoice_id=group['invoice_id'], number=group['number'])
@@ -159,42 +151,11 @@ def import_bulk(store, content):
         header = dict(kind='shipment', number=group['number'],
                       date=datetime.now(ZoneInfo('Europe/Moscow')).date().isoformat(),
                       org_inn=org.inn, org_name=org.name, recipient_inn=group['recipient_inn'],
-                      recipient_name=group['recipient_name'], recipient_key=group['recipient_key'],
-                      recipient_inns=group['recipient_inns'])
+                      recipient_name=group['recipient_name'])
         try:
             result = store.sync_shipment_invoice(group['invoice_id'], header, list(merged.values()))
             report.append({**base, **result})
         except WarehouseError as exc:
             report.append({**base, 'status': 'error', 'message': exc.message})
     return dict(results=report, counts={key: sum(r['status'] == key for r in report)
-                                       for key in ('created', 'updated', 'unchanged', 'needs_recipient', 'skipped', 'error')})
-
-
-def read_party_catalog(content):
-    book = open_book(content)
-    try:
-        if len(book.sheetnames) != 1:
-            raise WarehouseError('Справочник: ожидается один лист со столбцами ИНН и Имя')
-        sheet = book.active
-        heads = [str(c.value or '').strip() for c in next(sheet.iter_rows(min_row=1, max_row=1))]
-        if any(heads.count(name) != 1 for name in ('ИНН', 'Имя')):
-            raise WarehouseError('Справочник: нужны столбцы ИНН и Имя')
-        indices = [heads.index('ИНН'), heads.index('Имя')]
-        entries = []
-        for n, row in enumerate(sheet.iter_rows(min_row=2), 2):
-            if n > MAX_ROWS + 1:
-                raise WarehouseError('В файле больше 50000 строк')
-            if all(c.value is None for c in row):
-                continue
-            inn_cell, name_cell = [row[i] for i in indices]
-            try:
-                if any(c.data_type == 'f' for c in (inn_cell, name_cell)):
-                    raise ValueError('Формулы не допускаются')
-                inn = inn_text(inn_cell.value)
-                name_key(name_cell.value)
-                entries.append({'inn': inn, 'name': name_cell.value.strip()})
-            except ValueError as exc:
-                raise WarehouseError(f'Справочник, строка {n}: {exc}') from exc
-        return entries
-    finally:
-        book.close()
+                                       for key in ('created', 'updated', 'unchanged', 'skipped', 'error')})
