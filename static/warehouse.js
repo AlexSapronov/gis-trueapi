@@ -32,7 +32,7 @@
   const apiBase = admin ? '/api/admin/warehouse' : '/api/warehouse';
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const stamp = s => s ? new Date(s).toLocaleString('ru-RU') : '—';
-  const status = d => d.archived_at ? 'В архиве' : ({draft:d.kind === 'shipment' ? 'Ожидает сборки' : 'Ожидает приёмки',active:d.kind === 'shipment' ? 'В сборке' : 'В приёмке',completed:d.kind === 'shipment' ? 'Собран' : 'Принят'}[d.status]);
+  const status = d => d.archived_at ? 'В архиве' : d.recipient_pending ? 'Ожидает выбора ИНН' : ({draft:d.kind === 'shipment' ? 'Ожидает сборки' : 'Ожидает приёмки',active:d.kind === 'shipment' ? 'В сборке' : 'В приёмке',completed:d.kind === 'shipment' ? 'Собран' : 'Принят'}[d.status]);
   function message(s, error = false) {
     clearTimeout(noticeTimer);
     const target = !admin && current ? $('scan-feedback') : $('notice');
@@ -159,7 +159,7 @@
     const id=current.id, issue=selectedIssue.id;
     const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
     if (current?.id !== id || selectedIssue?.id !== issue) return;
-    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',invoice_synced:'Накладная обновлена из Excel',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
+    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',invoice_synced:'Накладная обновлена из Excel',recipient_selected:'Выбран ИНН получателя',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
     const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : e.actor === 'sales' ? 'Менеджер ОП' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
     if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
     eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
@@ -357,7 +357,7 @@
     const incompleteReceipt = d.kind === 'receipt' && result?.missing.length > 0 && !result.codes.some(c => c.errors.length);
     $('doc-badge').textContent=d.deleted_at?'В корзине':status(d); $('doc-badge').dataset.status=d.deleted_at?'deleted':d.status;
     $('doc-title').textContent = (d.kind === 'shipment' ? 'Отгрузка' : 'Приёмка') + ' № ' + d.number + (admin ? ' от ' + d.date : '');
-    $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name || d.recipient_inn ? ` → ${d.recipient_name || 'Получатель'} · ИНН ${d.recipient_inn}` : '');
+    $('doc-parties').textContent = `${d.org_name} · ИНН ${d.org_inn}` + (d.recipient_name || d.recipient_inn ? ` → ${d.recipient_name || 'Получатель'}` : '') + (d.recipient_inn ? ` · ИНН ${d.recipient_inn}` : '');
     if (d.receipt_source) $('doc-parties').textContent += ` · Поставщик: ${d.receipt_source.supplier} · АТК: ${d.receipt_source.atks.join(', ')} · marking-bm, версия ${d.receipt_source.revision}`;
     $('doc-status').textContent = `${d.deleted_at ? 'В корзине · ' : ''}${status(d)}${d.archived_at ? ' · Архивирован ' + stamp(d.archived_at) : ''} · Изменён ${stamp(d.updated_at)}` + (d.kind === 'shipment' ? ` · ${d.strict_owner ? 'Строгое соответствие юридическому лицу' : 'Допустимы КМ наших организаций'}` : '');
     if (d.sales_username) $('doc-status').textContent += ' · Задание ОП: ' + d.sales_username;
@@ -391,7 +391,22 @@
     }
     if (admin) {
       updEditor.setDocument(d);
-      $('start').hidden = d.status !== 'draft'; $('reopen').hidden = d.status !== 'completed' || !!d.archived_at;
+      $('start').hidden = d.status !== 'draft' || d.recipient_pending; $('reopen').hidden = d.status !== 'completed' || !!d.archived_at;
+      const recipientForm = $('shipment-recipient-form');
+      recipientForm.hidden = !d.recipient_pending || !!d.deleted_at || !!d.archived_at;
+      if (!recipientForm.hidden) {
+        const inns = d.recipient_options || [];
+        const select = $('shipment-recipient-inn');
+        const key = JSON.stringify([d.id, d.revision, inns]);
+        if (select.dataset.optionsKey !== key) {
+          select.replaceChildren(new Option('Выберите ИНН', ''), ...inns.map(inn => new Option(inn, inn)));
+          select.dataset.optionsKey = key;
+        }
+        $('shipment-recipient-help').textContent = inns.length
+          ? 'Выберите ИНН получателя, чтобы склад мог начать сканирование.'
+          : 'В актуальном справочнике нет ИНН для этого получателя. Загрузите его в справочник юрлиц.';
+        select.disabled = $('shipment-recipient-submit').disabled = !inns.length;
+      }
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
       const scanned = new Set(d.scans.map(scan => scan.cis));
       $('missing-labels').hidden = !(d.kind === 'receipt' && d.status === 'active' && !d.deleted_at
@@ -435,7 +450,7 @@
       else if (current) {
         const id = current.id, next = await json(apiBase + '/documents/' + id);
         if (current?.id === id) {
-          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.archived_at,d.open_issues,d.issue_count,d.pending_returns,d.runtime_settings?.revision]);
+          const signature = d => JSON.stringify([d.version,d.revision,d.status,d.checking,d.result_at,d.scans.length,d.deleted_at,d.archived_at,d.open_issues,d.issue_count,d.pending_returns,d.runtime_settings?.revision,d.recipient_options]);
           const changed = signature(current) !== signature(next);
           current = next;
           if (!admin && next.status === 'completed') {
@@ -448,9 +463,9 @@
       if (e.status === 404 && current) {
         if (!admin) { input.disabled = true; $('check').disabled = true; $('complete').disabled = true; current.status = 'deleted'; $('report-issue').hidden=true; }
         else { current = null; dirty = false; history.replaceState(null, '', '/admin?kind=' + kind); showSection(); await list(); }
-        if (!admin) $('doc-status').textContent = 'Удалён администратором';
-        message('Документ удалён администратором. Дальнейшая работа по нему недоступна.', true);
-        $('connection').textContent = 'Документ удалён'; $('connection').dataset.state='pending'; return;
+        if (!admin) $('doc-status').textContent = e.message;
+        message(e.message, true);
+        $('connection').textContent = 'Документ недоступен'; $('connection').dataset.state='pending'; return;
       }
       if(e.status===403 && admin){$('connection').textContent='Сессия завершена — войдите снова';$('connection').dataset.state='pending';}
       else {$('connection').textContent='Синхронизация недоступна: '+e.message;$('connection').dataset.state='offline';}
@@ -782,19 +797,30 @@
     $('party-catalog-template').onclick = () => action(() => download(apiBase + '/party-catalog/template', 'INN-Name.xlsx'));
     $('party-catalog-show').onclick = () => action(async () => {
       const data = await json(apiBase + '/party-catalog');
-      $('party-catalog-report').innerHTML = `<p>Сохранено имён: ${data.rows.length}</p>`
+      $('party-catalog-report').innerHTML = `<p>Сохранено пар «ИНН — Имя»: ${data.rows.length}</p>`
         + '<div class="wh-table"><table><thead><tr><th>ИНН</th><th>Имя</th></tr></thead><tbody>'
         + data.rows.map(r => `<tr><td>${esc(r.inn)}</td><td>${esc(r.name)}</td></tr>`).join('') + '</tbody></table></div>';
     });
+    $('party-catalog-clear').onclick = () => {
+      if (!confirm('Удалить все пары «ИНН — Имя» из справочника?')) return;
+      action(async () => {
+        const data = await json(apiBase + '/party-catalog', {method:'DELETE'});
+        $('party-catalog-report').textContent = `Справочник очищен. Удалено записей: ${data.deleted}.`;
+      });
+    };
     $('party-catalog-form').onsubmit = e => { e.preventDefault(); action(async () => {
       const file = $('party-catalog-file').files[0];
       const button = $('party-catalog-form').querySelector('button');
       if (!file || button.disabled) return;
+      const replace = $('party-catalog-replace').checked;
+      if (replace && !confirm('Заменить весь справочник данными из выбранного файла?')) return;
       button.disabled = true;
       try {
         const form = new FormData(); form.set('file', file);
+        form.set('replace', String(replace));
         const data = await json(apiBase + '/party-catalog', {method:'POST', body:form});
-        $('party-catalog-report').textContent = `Справочник сохранён. Добавлено: ${data.added}. Уже было: ${data.existing}. Всего имён: ${data.total}.`;
+        $('party-catalog-report').textContent = `${replace ? 'Справочник заменён.' : 'Справочник сохранён.'} Добавлено: ${data.added}. Уже было: ${data.existing}. Всего записей: ${data.total}.`;
+        $('party-catalog-replace').checked = false;
       } finally { button.disabled = false; }
     }); };
     $('bulk-shipment-form').onsubmit = e => { e.preventDefault(); action(async () => {
@@ -806,13 +832,19 @@
       try {
         const form = new FormData(); form.set('file', file);
         const report = await json(apiBase + '/shipment-invoices', {method:'POST', body:form});
-        const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', skipped:'Пропущено', error:'Ошибка'};
+        const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', needs_recipient:'Выберите ИНН', skipped:'Пропущено', error:'Ошибка'};
         $('bulk-shipment-report').innerHTML = '<p>' + Object.entries(report.counts).map(([key, count]) => `${labels[key]}: ${count}`).join(' · ') + '</p>'
           + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody>'
-          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${r.status === 'needs_recipient' ? `<a data-recipient-doc="${esc(r.document_id)}" href="/admin?kind=shipment&amp;doc=${encodeURIComponent(r.document_id)}">${esc(r.number)}</a>` : esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
         await list();
       } finally { button.disabled = false; }
     }); };
+    $('bulk-shipment-report').onclick = e => {
+      const link = e.target.closest('[data-recipient-doc]');
+      if (!link || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      action(() => open(link.dataset.recipientDoc));
+    };
     $('import-form').onsubmit = e => { e.preventDefault(); action(async () => {
       if (!$('import-file').files[0]) return;
       const form = new FormData(); form.set('kind', kind); form.set('org_inn', $('import-org').value);
@@ -824,6 +856,15 @@
       const d = await json(apiBase + '/documents', {method:'POST',body:form});
       $('import-box').open=false; $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
       await open(d.id); message((d.import_warnings || []).join('\n') || 'Документ загружен');
+    }); };
+    $('shipment-recipient-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      const inn = $('shipment-recipient-inn').value;
+      if (!inn || !current?.recipient_pending) return;
+      const {id, version, revision} = current;
+      try {
+        await json(apiBase + '/documents/' + id + '/recipient', {method:'POST', body:{inn, version, revision}});
+      } finally { await refresh(true); }
+      message('ИНН сохранён. Накладная отправлена на склад.');
     }); };
     $('start').onclick = () => action(async () => { await json(apiBase + '/documents/' + current.id + '/start', {method:'POST'}); await refresh(); });
     $('reopen').onclick = () => { if (confirm('Возобновить документ? Итоговый состав станет доступен для изменений и потребуется повторная проверка.')) action(async () => { await json(apiBase + '/documents/' + current.id + '/reopen', {method:'POST'}); await refresh(); }); };

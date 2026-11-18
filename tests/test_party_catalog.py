@@ -1,5 +1,6 @@
 import asyncio
 import io
+import sqlite3
 
 import openpyxl
 import pytest
@@ -66,16 +67,24 @@ def test_unknown_name_does_not_partially_change_invoice(store):
     assert [d['number'] for d in store.list(admin=True)] == ['INV-2']
 
 
-def test_ambiguous_names_roll_back_entire_catalog(store):
+def test_catalog_supports_multiple_inns_per_name(store):
     setup_catalog(store)
-    before = store.party_catalog()
-    with pytest.raises(WarehouseError, match='Неоднозначное'):
-        store.save_party_catalog(read_party_catalog(catalog(
-            ('2222222222', 'Новое'), ('3333333333', 'ООО «Дубль»'), ('4444444444', 'ооо "дубль"'))))
-    assert store.party_catalog() == before
-    with pytest.raises(WarehouseError, match='уже связано'):
-        store.save_party_catalog(read_party_catalog(catalog(('2222222222', 'Новое'), ('4444444444', CLIENT_NAME))))
-    assert store.party_catalog() == before
+    rows = read_party_catalog(catalog(
+        ('3333333333', 'ООО «Дубль»'), ('4444444444', 'ооо "дубль"'),
+        ('4444444444', 'ООО «Дубль»'), ('4444444444', CLIENT_NAME)))
+    assert store.save_party_catalog(rows) == {'added': 3, 'existing': 0, 'total': 5}
+    assert store.save_party_catalog(rows) == {'added': 0, 'existing': 3, 'total': 5}
+
+
+def test_legacy_catalog_migrates_without_losing_existing_names(tmp_path):
+    db = tmp_path / 'legacy.db'
+    with sqlite3.connect(db) as c:
+        c.execute('CREATE TABLE warehouse_party_catalog (name_key TEXT PRIMARY KEY, inn TEXT NOT NULL, name TEXT NOT NULL)')
+        c.execute('INSERT INTO warehouse_party_catalog VALUES (?,?,?)', (name_key(CLIENT_NAME), CLIENT, CLIENT_NAME))
+    store = WarehouseStore(db)
+    assert store.party_catalog()['rows'] == [{'inn': CLIENT, 'name': CLIENT_NAME}]
+    store.save_party_catalog([{'inn': '2222222222', 'name': CLIENT_NAME}])
+    assert len(WarehouseStore(db).party_catalog()['rows']) == 2
 
 
 def test_aliases_additive_and_reupload_idempotent(store):
@@ -150,6 +159,7 @@ def test_catalog_endpoints_protected_and_template(store, monkeypatch):
     for suffix in ('', '/template'):
         assert client.get(path + suffix).status_code == 403
     assert client.post(path, files={'file': ('c.xlsx', catalog((CLIENT, CLIENT_NAME)))}).status_code == 403
+    assert client.delete(path).status_code == 403
     headers = {'X-Admin-Key': 'party-test'}
     response = client.get(path + '/template', headers=headers)
     assert response.status_code == 200
@@ -158,7 +168,70 @@ def test_catalog_endpoints_protected_and_template(store, monkeypatch):
     response = client.post(path, headers=headers, files={'file': ('c.xlsx', catalog((CLIENT, CLIENT_NAME)))})
     assert response.status_code == 200 and response.json()['added'] == 1
     assert client.get(path, headers=headers).json()['rows'] == [{'inn': CLIENT, 'name': CLIENT_NAME}]
-    assert client.post(path, headers=headers, files={'file': ('bad.xlsx', b'bad')}).status_code == 422
+    assert client.post(path, headers=headers, data={'replace': 'true'}, files={'file': ('bad.xlsx', b'bad')}).status_code == 422
+    assert client.get(path, headers=headers).json()['rows'] == [{'inn': CLIENT, 'name': CLIENT_NAME}]
+    response = client.post(path, headers=headers, data={'replace': 'true'},
+                           files={'file': ('fresh.xlsx', catalog((ORG, SENDER_NAME)))})
+    assert response.json() == {'added': 1, 'existing': 0, 'total': 1}
+    assert client.get(path, headers=headers).json()['rows'] == [{'inn': ORG, 'name': SENDER_NAME}]
+    assert client.delete(path, headers=headers).json() == {'deleted': 1}
+    assert client.get(path, headers=headers).json()['rows'] == []
+
+
+def test_ambiguous_recipient_waits_for_admin_and_preserves_explicit_choice(store, monkeypatch):
+    second = '2222222222'
+    setup_catalog(store)
+    store.save_party_catalog([{'inn': second, 'name': CLIENT_NAME}])
+    monkeypatch.setattr(main, 'warehouse', store)
+    monkeypatch.setattr(main.settings, 'admin_key', 'party-test')
+    client = TestClient(main.app)
+    headers = {'X-Admin-Key': 'party-test'}
+    file = invoice(named_row())
+    result = client.post('/api/admin/warehouse/shipment-invoices', headers=headers,
+                         files={'file': ('invoice.xlsx', file)}).json()
+    assert result['counts']['needs_recipient'] == 1
+    doc_id = result['results'][0]['document_id']
+    path = '/api/admin/warehouse/documents/' + doc_id
+    worker_path = '/api/warehouse/documents/' + doc_id
+    d = client.get(path, headers=headers).json()
+    assert d['status'] == 'draft' and d['recipient_inn'] == ''
+    assert d['recipient_options'] == [CLIENT, second]
+    assert client.get('/api/warehouse/documents').json()['documents'] == []
+    assert client.get(worker_path).status_code == 404
+    assert client.post(worker_path + '/scans', json={'code': code()}).status_code == 404
+    assert client.post(path + '/start', headers=headers).status_code == 409
+    assert import_bulk(store, file)['results'][0]['document_id'] == doc_id
+
+    choice = {'version': d['version'], 'revision': d['revision'], 'inn': second}
+    assert client.post(path + '/recipient', json=choice).status_code == 403
+    assert client.post(path + '/recipient', headers=headers, json={**choice, 'inn': ORG}).status_code == 409
+    store.save_party_catalog([{'inn': ORG, 'name': SENDER_NAME}, {'inn': CLIENT, 'name': CLIENT_NAME}], replace=True)
+    assert client.post(path + '/recipient', headers=headers, json=choice).status_code == 409
+    assert import_bulk(store, file)['counts']['needs_recipient'] == 1
+    store.save_party_catalog([{'inn': second, 'name': CLIENT_NAME}])
+    selected = client.post(path + '/recipient', headers=headers, json=choice).json()
+    assert selected['status'] == 'active' and selected['recipient_inn'] == second
+    assert client.get(worker_path).status_code == 200
+    assert client.post(worker_path + '/scans', json={'code': code()}).status_code == 200
+    assert import_bulk(store, file)['counts']['unchanged'] == 1
+    assert store.get(doc_id)['recipient_inn'] == second
+
+
+def test_reimport_pauses_existing_shipment_when_recipient_becomes_ambiguous(store):
+    setup_catalog(store)
+    file = invoice(named_row())
+    doc_id = import_bulk(store, file)['results'][0]['document_id']
+    store.add_scan(doc_id, scan_data(code()))
+    store.save_party_catalog([{'inn': '2222222222', 'name': CLIENT_NAME}])
+    result = import_bulk(store, file)['results'][0]
+    assert result['status'] == 'needs_recipient' and result['document_id'] == doc_id
+    assert not store.list()
+    d = store.get(doc_id)
+    assert len(d['scans']) == 1
+    store.clear_party_catalog()
+    assert store.get(doc_id)['recipient_options'] == []
+    with pytest.raises(WarehouseError, match='актуальном справочнике'):
+        store.select_shipment_recipient(doc_id, CLIENT, d['version'], d['revision'])
 
 
 @pytest.mark.parametrize('identifier', ['123456789', 123456789, '123456789012', 'BY-001234567', '001234567'])

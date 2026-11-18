@@ -31,35 +31,50 @@ class PartyCatalog:
     @staticmethod
     def init_party_catalog(c):
         c.execute('''CREATE TABLE IF NOT EXISTS warehouse_party_catalog (
-            name_key TEXT PRIMARY KEY, inn TEXT NOT NULL, name TEXT NOT NULL)''')
+            name_key TEXT NOT NULL, inn TEXT NOT NULL, name TEXT NOT NULL,
+            PRIMARY KEY (name_key, inn))''')
+        if any(row[1] == 'inn' and not row[5] for row in c.execute(
+                'PRAGMA table_info(warehouse_party_catalog)')):
+            c.execute('ALTER TABLE warehouse_party_catalog RENAME TO warehouse_party_catalog_legacy')
+            c.execute('''CREATE TABLE warehouse_party_catalog (
+                name_key TEXT NOT NULL, inn TEXT NOT NULL, name TEXT NOT NULL,
+                PRIMARY KEY (name_key, inn))''')
+            c.execute('INSERT INTO warehouse_party_catalog SELECT * FROM warehouse_party_catalog_legacy')
+            c.execute('DROP TABLE warehouse_party_catalog_legacy')
 
     def party_catalog(self):
         with self.connection() as c:
             return {'rows': [dict(r) for r in c.execute(
-                'SELECT inn,name FROM warehouse_party_catalog ORDER BY name_key')]}
+                'SELECT inn,name FROM warehouse_party_catalog ORDER BY name_key,inn')]}
 
-    def save_party_catalog(self, rows):
+    @staticmethod
+    def _party_inns(c, key):
+        return [r['inn'] for r in c.execute(
+            'SELECT inn FROM warehouse_party_catalog WHERE name_key=? ORDER BY inn', (key,))]
+
+    def clear_party_catalog(self):
+        with self.connection(True) as c:
+            return {'deleted': c.execute('DELETE FROM warehouse_party_catalog').rowcount}
+
+    def save_party_catalog(self, rows, *, replace=False):
         from warehouse_store import WarehouseError
-        # Validate the whole batch before saving; a name must never pick an arbitrary INN.
+        # Validate the whole batch before an optional replacement.
         entries = {}
         for row in rows:
             try:
                 key, inn = name_key(row['name']), inn_text(row['inn'])
             except ValueError as exc:
                 raise WarehouseError(str(exc)) from exc
-            if key in entries and entries[key]['inn'] != inn:
-                raise WarehouseError(f'Неоднозначное имя «{row["name"]}»: несколько ИНН')
-            entries[key] = {'inn': inn, 'name': row['name'].strip()}
+            entries[key, inn] = row['name'].strip()
         if not entries:
             raise WarehouseError('В справочнике нет заполненных строк')
         with self.connection(True) as c:
-            before = {r['name_key']: dict(r) for r in c.execute('SELECT * FROM warehouse_party_catalog')}
-            for key, row in entries.items():
-                if key in before and before[key]['inn'] != row['inn']:
-                    raise WarehouseError(f'Имя «{row["name"]}» уже связано с ИНН {before[key]["inn"]}; другой ИНН не сохранён')
-            for key, row in entries.items():
-                c.execute('''INSERT INTO warehouse_party_catalog VALUES (?,?,?)
-                    ON CONFLICT(name_key) DO UPDATE SET name=excluded.name''', (key, row['inn'], row['name']))
-            return {'added': sum(key not in before for key in entries),
-                    'existing': sum(key in before for key in entries),
+            if replace:
+                c.execute('DELETE FROM warehouse_party_catalog')
+            before = {(r['name_key'], r['inn']) for r in c.execute('SELECT name_key,inn FROM warehouse_party_catalog')}
+            c.executemany('''INSERT INTO warehouse_party_catalog VALUES (?,?,?)
+                ON CONFLICT(name_key,inn) DO UPDATE SET name=excluded.name''',
+                ((key, inn, name) for (key, inn), name in entries.items()))
+            return {'added': len(entries.keys() - before),
+                    'existing': len(entries.keys() & before),
                     'total': c.execute('SELECT count(*) FROM warehouse_party_catalog').fetchone()[0]}
