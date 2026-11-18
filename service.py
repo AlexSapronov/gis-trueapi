@@ -31,6 +31,12 @@ from tokens import FileTokenStore, TokenStore
 from trueapi import MarkingApiClient, TrueApiError, TrueApiClient, MAX_SEARCH_PER_PAGE
 
 
+def _record_cis_key(rec: dict[str, Any]) -> str | None:
+    """Identity of a cises/info record, matching the batch-pairing semantics."""
+    ci = rec.get("cisInfo") or {}
+    return ci.get("requestedCis") or ci.get("cis") or rec.get("requestedCis") or rec.get("cis")
+
+
 class Service:
     def __init__(self, client: MarkingApiClient, token_store: TokenStore):
         self.client = client
@@ -395,8 +401,18 @@ class Service:
             result.error_message = CATEGORY_MESSAGES[ErrorCategory.KM_NOT_FOUND]
             return result
 
-        rec = records[0]
+        # Pair the reply to THIS requested CI by identity, as the batch path
+        # already does. Trusting records[0] would let a misattributed,
+        # out-of-order or wrong-KI record turn into a false positive verdict.
+        rec = next(
+            (r for r in records if _record_cis_key(r) == api_cis), None
+        )
         result.api_checked = True
+
+        if rec is None:
+            result.error_category = ErrorCategory.KM_NOT_FOUND
+            result.error_message = CATEGORY_MESSAGES[ErrorCategory.KM_NOT_FOUND]
+            return result
 
         # запись может содержать индивидуальную ошибку по этому КИ
         if rec.get("errorMessage"):
