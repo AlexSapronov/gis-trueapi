@@ -417,9 +417,8 @@ class Service:
                 row["product_group"] = info["productGroup"]
             quantity = str(info.get("quantityInPack"))
             if re.fullmatch(r"[0-9]{1,10}", quantity) and 0 < int(quantity) <= 2147483647:
-                amount = int(quantity)
-                row.update(Amount=amount, quantityInPack=amount)
-            missing = [field for field in ("Amount", "status") if field not in row]
+                row["quantityInPack"] = int(quantity)
+            missing = [field for field in ("quantityInPack", "status") if field not in row]
             if missing:
                 row.update(resultCode="PARTIAL", message="ЧЗ не вернул корректные поля: " + ", ".join(missing))
             declaration = info.get("declaration")

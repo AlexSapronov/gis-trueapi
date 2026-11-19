@@ -24,7 +24,6 @@ Authorization: Bearer <ключ сервиса>
     <Cis>01046406383452182112345678901234567890</Cis>
     <resultCode>OK</resultCode>
     <GTIN>04640638345218</GTIN>
-    <Amount>100</Amount>
     <quantityInPack>100</quantityInPack>
     <status>INTRODUCED</status>
     <packageType>UNIT</packageType>
@@ -37,7 +36,7 @@ Authorization: Bearer <ключ сервиса>
 
 | Поле | Источник и формат |
 | --- | --- |
-| `Amount`, `quantityInPack` | Одно и то же количество из поля `quantityInPack` конкретного КИ, целое число |
+| `quantityInPack` | Количество единиц товара по конкретному КИ из `cises/info`, целое число |
 | `declarationRegNumber`, `declarationDate` | Номер и дата ДТ из доступных сведений ЧЗ. Дата в формате `YYYY-MM-DD` |
 | `status`, `statusEx` | Статус и особое состояние из ответа ЧЗ |
 | `tnVedEaes`, `country`, `GTIN` | ТН ВЭД, код страны и GTIN. Храните как строки с ведущими нулями |
@@ -51,7 +50,7 @@ Authorization: Bearer <ключ сервиса>
 
 | `resultCode` при HTTP 200 | Значение |
 | --- | --- |
-| `OK` | Получены данные по КИ, в том числе `Amount` и `status` |
+| `OK` | Получены данные по КИ, в том числе `quantityInPack` и `status` |
 | `PARTIAL` | КИ обработан, но ЧЗ не вернул корректное количество или статус. Подробности в `message` |
 | `INVALID_CIS` | Ошибка формата КИ или контрольной цифры GTIN |
 | `NOT_FOUND` | ЧЗ сообщил, что КИ не найден |
@@ -118,7 +117,6 @@ END;
 SELECT
     R.value('(@index)[1]', 'int') AS RequestIndex,
     R.value('(Cis/text())[1]', 'nvarchar(38)') AS CIS,
-    R.value('(Amount/text())[1]', 'int') AS Amount,
     R.value('(quantityInPack/text())[1]', 'int') AS quantityInPack,
     R.value('(declarationRegNumber/text())[1]', 'nvarchar(50)') AS declarationRegNumber,
     R.value('(declarationDate/text())[1]', 'date') AS declarationDate,
