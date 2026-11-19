@@ -12,6 +12,7 @@ import asyncio
 import re
 import time
 from datetime import date, datetime
+from math import ceil
 from typing import Any, Optional
 
 import httpx
@@ -30,7 +31,7 @@ from models import (
 )
 from organizations import registry
 from tokens import FileTokenStore, TokenStore
-from trueapi import MarkingApiClient, TrueApiError, TrueApiClient, MAX_SEARCH_PER_PAGE
+from trueapi import MarkingApiClient, TrueApiError, TrueApiClient, MAX_INFO_BATCH, MAX_SEARCH_PER_PAGE
 
 
 def _pair_info_records(
@@ -378,7 +379,8 @@ class Service:
         """Fetch per-code facts for the SQL integration under its fixed organization."""
         token = self._org_token(self._pick_org_inn(org_inn))
         try:
-            records = await asyncio.wait_for(self.client.info(codes, token), timeout=25)
+            timeout = 35 * ceil(len(codes) / MAX_INFO_BATCH)
+            records = await asyncio.wait_for(self.client.info(codes, token), timeout=timeout)
             paired = _pair_info_records(records, codes)
         except TrueApiError as exc:
             category = ErrorCategory.API_ERROR if exc.category == ErrorCategory.NOT_FOUND else exc.category
@@ -450,7 +452,8 @@ class Service:
         if not codes:
             return
         try:
-            records = await asyncio.wait_for(self.client.short_info(codes, token), timeout=15)
+            timeout = 20 * ceil(len(codes) / MAX_INFO_BATCH)
+            records = await asyncio.wait_for(self.client.short_info(codes, token), timeout=timeout)
             paired = _pair_info_records(records, codes, short=True)
         except (TrueApiError, TimeoutError, ValueError, httpx.HTTPError):
             for cis in codes:
@@ -468,7 +471,8 @@ class Service:
 
     async def _add_sql_articles(self, rows: dict[str, dict], codes: list[str], gtins: list[str], token: str) -> None:
         try:
-            records = await asyncio.wait_for(self.client.product_info(gtins, token), timeout=15)
+            timeout = 20 * ceil(len(gtins) / MAX_INFO_BATCH)
+            records = await asyncio.wait_for(self.client.product_info(gtins, token), timeout=timeout)
         except (TrueApiError, TimeoutError, ValueError, httpx.HTTPError):
             return
         articles: dict[str, set[str]] = {gtin: set() for gtin in gtins}

@@ -1,5 +1,7 @@
+import json
 from xml.etree import ElementTree as ET
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,7 +11,7 @@ from config import settings
 from models import ErrorCategory
 from service import Service
 from tokens import FileTokenStore
-from trueapi import TrueApiError
+from trueapi import INFO_PATH, PRODUCT_INFO_PATH, SHORT_LIST_PATH, TrueApiClient, TrueApiError
 
 GTIN = "04640638345218"
 PREFIX = "01" + GTIN + "21"
@@ -67,11 +69,15 @@ def integration(monkeypatch, tmp_path):
     return TestClient(app), service
 
 
-def post(client, codes):
+def xml_body(codes):
     root = ET.Element("Cises")
     for cis in codes:
         ET.SubElement(root, "Cis").text = cis
-    return client.post("/api/check-cis", content=ET.tostring(root), headers=HEADERS)
+    return ET.tostring(root)
+
+
+def post(client, codes):
+    return client.post("/api/check-cis", content=xml_body(codes), headers=HEADERS)
 
 
 def test_xml_returns_complete_fields_in_input_order_including_duplicates(integration):
@@ -108,6 +114,49 @@ def test_product_name_falls_back_to_true_api_name_when_article_is_unavailable(in
     assert row.find("PN") is None
 
 
+@pytest.mark.asyncio
+async def test_receipt_with_2000_cis_uses_true_api_batches_and_returns_all_rows(integration):
+    client, service = integration
+    counts = {INFO_PATH: [], SHORT_LIST_PATH: [], PRODUCT_INFO_PATH: []}
+
+    def upstream(request):
+        path = request.url.path
+        batch = json.loads(request.content)
+        if path == PRODUCT_INFO_PATH:
+            batch = batch["gtins"]
+        counts[path].append(len(batch))
+        if path == PRODUCT_INFO_PATH:
+            return httpx.Response(200, json={"results": [{"gtin": gtin, "model": "PN-" + gtin} for gtin in batch]})
+        if path == SHORT_LIST_PATH:
+            return httpx.Response(200, json=[{"result": {"requestedCis": cis, "gtin": cis[2:16],
+                "specialAttributes": {"approvementDocument": {"declarationRegNumber": DT,
+                                                              "declarationDate": "06.10.2026"}}}}
+                for cis in reversed(batch)])
+        return httpx.Response(200, json=[{"cisInfo": {"requestedCis": cis, "gtin": cis[2:16],
+            "status": "INTRODUCED", "quantityInPack": 6000}} for cis in reversed(batch)])
+
+    codes = []
+    for index in range(2000):
+        prefix = f"{4640638345000 + index:013d}"
+        weighted = sum(int(digit) * weight for digit, weight in zip(reversed(prefix), [3, 1] * 7))
+        gtin = prefix + str(-weighted % 10)
+        codes.append(f"01{gtin}21A&<{index:017d}")
+
+    body = xml_body(codes)
+    assert len(body) > 100_000
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as api_http:
+        service.client = TrueApiClient("http://true-api.test", http=api_http)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://service.test") as http:
+            response = await http.post("/api/check-cis", content=body, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert all(batches == [1000, 1000] for batches in counts.values())
+    rows = ET.fromstring(response.content).findall("Row")
+    assert [row.findtext("Cis") for row in rows] == codes
+    assert all(row.findtext("quantityInPack") == "6000" and row.findtext("declarationRegNumber") == DT
+               and row.findtext("productName") == "PN-" + cis[2:16] for row, cis in zip(rows, codes))
+
+
 def test_sql_route_checks_key_before_xml_and_rejects_dtd(integration, monkeypatch):
     client, service = integration
     url = "/api/check-cis"
@@ -115,8 +164,8 @@ def test_sql_route_checks_key_before_xml_and_rejects_dtd(integration, monkeypatc
     assert client.post(url, content=b"<Cises/>", headers={**HEADERS, "Authorization": "Bearer wrong"}).status_code == 401
     dtd = b'<!DOCTYPE Cises [<!ENTITY x SYSTEM "file:///etc/passwd">]><Cises><Cis>&x;</Cis></Cises>'
     assert client.post(url, content=dtd, headers=HEADERS).status_code == 400
-    assert client.post(url, content=b"x" * (25 * 1024), headers=HEADERS).status_code == 413
-    assert post(client, [CIS] * 101).status_code == 400
+    assert client.post(url, content=b"x" * (512 * 1024 + 1), headers=HEADERS).status_code == 413
+    assert post(client, [CIS] * 2001).status_code == 400
     monkeypatch.setattr(settings, "cis_check_key", "")
     assert post(client, [CIS]).status_code == 503
     assert service.client.info_calls == []
