@@ -25,9 +25,10 @@ Authorization: Bearer <ключ сервиса>
     <resultCode>OK</resultCode>
     <GTIN>04640638345218</GTIN>
     <Amount>100</Amount>
+    <quantityInPack>100</quantityInPack>
     <status>INTRODUCED</status>
     <packageType>UNIT</packageType>
-    <productName>Наименование из ЧЗ</productName>
+    <productName>Артикул из карточки</productName>
     <product_group>radio</product_group>
     <PN>Артикул из карточки</PN>
   </Row>
@@ -36,12 +37,13 @@ Authorization: Bearer <ключ сервиса>
 
 | Поле | Источник и формат |
 | --- | --- |
-| `Amount` | `quantityInPack` конкретного КИ, целое число |
+| `Amount`, `quantityInPack` | Одно и то же количество из поля `quantityInPack` конкретного КИ, целое число |
 | `declarationRegNumber`, `declarationDate` | Номер и дата ДТ из доступных сведений ЧЗ. Дата в формате `YYYY-MM-DD` |
 | `status`, `statusEx` | Статус и особое состояние из ответа ЧЗ |
 | `tnVedEaes`, `country`, `GTIN` | ТН ВЭД, код страны и GTIN. Храните как строки с ведущими нулями |
 | `packageType` | Тип упаковки, начиная с наиболее подробного поля, которое вернул ЧЗ |
-| `productName`, `brand`, `product_group` | Наименование, бренд и товарная группа ЧЗ |
+| `productName` | Модель или артикул из карточки по GTIN, если доступен. В остальных случаях используется наименование товара из ЧЗ |
+| `brand`, `product_group` | Бренд и товарная группа ЧЗ |
 | `PN` | Модель или артикул `model` из доступной карточки по GTIN |
 | `producerInn`, `producerName`, `ownerInn`, `ownerName` | Участники оборота из ответа ЧЗ. ИНН храните как строки |
 
@@ -117,6 +119,7 @@ SELECT
     R.value('(@index)[1]', 'int') AS RequestIndex,
     R.value('(Cis/text())[1]', 'nvarchar(38)') AS CIS,
     R.value('(Amount/text())[1]', 'int') AS Amount,
+    R.value('(quantityInPack/text())[1]', 'int') AS quantityInPack,
     R.value('(declarationRegNumber/text())[1]', 'nvarchar(50)') AS declarationRegNumber,
     R.value('(declarationDate/text())[1]', 'date') AS declarationDate,
     R.value('(status/text())[1]', 'nvarchar(60)') AS status,
