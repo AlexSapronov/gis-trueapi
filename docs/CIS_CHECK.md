@@ -1,8 +1,8 @@
 # Проверка КИ из SQL Server
 
-`POST /api/check-cis` принимает до 100 КИ РЭП в XML (от 1 до 100, до 24 КиБ). КИ состоит из 38 символов и передаётся без криптохвоста. Регистр серийного номера сохраняется.
+`POST /api/check-cis` принимает от 1 до 2 000 КИ РЭП в одном XML-запросе размером до 512 КиБ. КИ состоит из 38 символов и передаётся без криптохвоста. Регистр серийного номера сохраняется. Запросы в ЧЗ делятся на пакеты до 1 000 КИ. Сервис возвращает один XML со всеми результатами.
 
-Настройте `CIS_CHECK_KEY` и `CIS_CHECK_ORG_INN` в серверном `.env` или `EnvironmentFile` и перезапустите сервис. В `CIS_CHECK_KEY` укажите сам ключ. `CIS_CHECK_ORG_INN` должен совпадать с ИНН организации, для которой настроен токен ЧЗ. Для ключа используйте от 32 до 128 символов `A–Z`, `a–z`, `0–9`, `_`, `-`. Расчётный клиентский таймаут получения ответа составляет 60 секунд.
+Настройте `CIS_CHECK_KEY` и `CIS_CHECK_ORG_INN` в серверном `.env` или `EnvironmentFile` и перезапустите сервис. В `CIS_CHECK_KEY` укажите сам ключ. `CIS_CHECK_ORG_INN` должен совпадать с ИНН организации, для которой настроен токен ЧЗ. Для ключа используйте от 32 до 128 символов `A–Z`, `a–z`, `0–9`, `_`, `-`. Для получения ответа установите клиентский таймаут 150 секунд.
 
 ```http
 POST /api/check-cis
@@ -66,24 +66,25 @@ Authorization: Bearer <ключ сервиса>
 ```sql
 DECLARE @Url nvarchar(500) = N'http://HOST:8000/api/check-cis';
 DECLARE @AuthToken nvarchar(500) = N'Bearer <ключ>';
-DECLARE @Object int, @Hr int, @Status int;
+DECLARE @Object int, @Hr int, @Status int, @RequestedCount int;
 DECLARE @RequestBody nvarchar(max), @ResponseBody nvarchar(max), @RequestXml xml, @Result xml;
 DECLARE @ResponseTable TABLE (ResponseText nvarchar(max));
 
 SET @RequestXml = (
-    SELECT TOP (100) LTRIM(RTRIM(CIS)) AS [Cis]
+    SELECT TOP (2000) LTRIM(RTRIM(CIS)) AS [Cis]
     FROM dbo.CisQueue
     WHERE IsProcessed = 0 AND CIS IS NOT NULL
     ORDER BY CIS COLLATE Latin1_General_BIN2
     FOR XML PATH(''), ROOT('Cises'), TYPE
 );
 
-IF @RequestXml.exist('/Cises/Cis') = 0 RETURN;
+SET @RequestedCount = @RequestXml.value('count(/Cises/Cis)', 'int');
+IF @RequestedCount = 0 RETURN;
 SET @RequestBody = CONVERT(nvarchar(max), @RequestXml);
 
 EXEC @Hr = sp_OACreate 'MSXML2.ServerXMLHTTP.6.0', @Object OUTPUT;
 IF @Hr <> 0 GOTO HttpError;
-EXEC @Hr = sp_OAMethod @Object, 'setTimeouts', NULL, 5000, 5000, 15000, 60000;
+EXEC @Hr = sp_OAMethod @Object, 'setTimeouts', NULL, 5000, 5000, 15000, 150000;
 IF @Hr <> 0 GOTO HttpError;
 EXEC @Hr = sp_OAMethod @Object, 'open', NULL, 'POST', @Url, 'false';
 IF @Hr <> 0 GOTO HttpError;
@@ -108,9 +109,9 @@ BEGIN
 END;
 
 SET @Result = CONVERT(xml, @ResponseBody);
-IF @Result IS NULL OR @Result.exist('/CisCheckResult/Row') = 0
+IF @Result IS NULL OR @Result.value('count(/CisCheckResult/Row)', 'int') <> @RequestedCount
 BEGIN
-    RAISERROR(N'Сервис не вернул строки результата проверки КИ.', 16, 1);
+    RAISERROR(N'Количество строк в ответе проверки не совпадает с количеством отправленных КИ.', 16, 1);
     RETURN;
 END;
 

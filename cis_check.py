@@ -12,8 +12,9 @@ from config import settings
 from datamatrix import gtin_checksum_valid
 from models import AppError, CATEGORY_MESSAGES, ErrorCategory
 
-MAX_CODES = 100
-MAX_BODY = 24 * 1024
+MAX_CODES = 2000
+MAX_BODY_KIB = 512
+MAX_BODY = MAX_BODY_KIB * 1024
 KI_PATTERN = re.compile(r"01([0-9]{14})21[!-~]{20}")
 KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 XML_INVALID = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
@@ -66,7 +67,7 @@ def install_cis_check(app, service_getter):
         body = bytearray()
         async for chunk in request.stream():
             if len(body) + len(chunk) > MAX_BODY:
-                return error_response(413, "BODY_TOO_LARGE", "Допустимо до 24 КиБ")
+                return error_response(413, "BODY_TOO_LARGE", f"Допустимо до {MAX_BODY_KIB} КиБ")
             body.extend(chunk)
         try:
             codes = read_codes(bytes(body))
