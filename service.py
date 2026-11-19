@@ -31,6 +31,75 @@ from tokens import FileTokenStore, TokenStore
 from trueapi import MarkingApiClient, TrueApiError, TrueApiClient, MAX_SEARCH_PER_PAGE
 
 
+def _pair_info_records(
+    records: list[dict[str, Any]], requested_cises: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Pair cises/info replies to requests using every identity the API supplied.
+
+    True API may echo either the full GS1 element string or the normalized
+    GTIN+serial form. All supplied identity fields must resolve to the same
+    requested CI. Unknown, conflicting, malformed, or duplicate records fail
+    closed instead of allowing response order to influence a verdict.
+    """
+    aliases: dict[str, str] = {}
+    for cis in requested_cises:
+        variants = [cis]
+        if cis.startswith("01") and len(cis) >= 18:
+            variants.append(cis[2:16] + cis[18:])
+        for alias in variants:
+            previous = aliases.get(alias)
+            if previous is not None and previous != cis:
+                raise ValueError("Неоднозначный идентификатор КИ в запросе")
+            aliases[alias] = cis
+
+    paired: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("Некорректная запись cises/info")
+        ci = record.get("cisInfo")
+        if ci is None:
+            ci = {}
+        if not isinstance(ci, dict):
+            raise ValueError("Некорректное поле cisInfo в ответе ЧЗ")
+
+        candidates = (
+            record.get("requestedCis"),
+            record.get("cis"),
+            ci.get("requestedCis"),
+            ci.get("cis"),
+        )
+        supplied = [value for value in candidates if value not in (None, "")]
+        if not supplied or any(not isinstance(value, str) for value in supplied):
+            raise ValueError("В ответе ЧЗ отсутствует корректный идентификатор КИ")
+
+        matched: set[str] = set()
+        for identity in supplied:
+            requested = aliases.get(identity)
+            if requested is None:
+                raise ValueError("В ответе ЧЗ указан неизвестный идентификатор КИ")
+            matched.add(requested)
+        if len(matched) != 1:
+            raise ValueError("Идентификаторы КИ в ответе ЧЗ противоречат друг другу")
+
+        cis = next(iter(matched))
+        if cis in paired:
+            raise ValueError("ЧЗ вернул повторный ответ по КИ")
+        paired[cis] = record
+
+    return paired
+
+
+def _info_record_gtin_matches(record: dict[str, Any], requested_cis: str) -> bool:
+    """Reject a successful info record whose explicit GTIN contradicts its CI."""
+    ci = record.get("cisInfo") or {}
+    returned_gtin = ci.get("gtin")
+    expected_gtin = requested_cis[2:16] if requested_cis.startswith("01") else None
+    return returned_gtin is None or returned_gtin == expected_gtin
+
+
+INFO_PAIRING_ERROR = "ЧЗ вернул неоднозначные или некорректные сведения по КИ"
+
+
 class Service:
     def __init__(self, client: MarkingApiClient, token_store: TokenStore):
         self.client = client
@@ -395,14 +464,33 @@ class Service:
             result.error_message = CATEGORY_MESSAGES[ErrorCategory.KM_NOT_FOUND]
             return result
 
-        rec = records[0]
+        # Pair every returned identity field to this request. A contradictory,
+        # unknown, or duplicate reply is an API response error, never a positive
+        # marking verdict.
         result.api_checked = True
+        try:
+            by_cis = _pair_info_records(records, [api_cis])
+        except ValueError:
+            result.error_category = ErrorCategory.API_ERROR
+            result.error_message = INFO_PAIRING_ERROR
+            return result
+
+        rec = by_cis.get(api_cis)
+        if rec is None:
+            result.error_category = ErrorCategory.KM_NOT_FOUND
+            result.error_message = CATEGORY_MESSAGES[ErrorCategory.KM_NOT_FOUND]
+            return result
 
         # запись может содержать индивидуальную ошибку по этому КИ
-        if rec.get("errorMessage"):
+        if rec.get("errorMessage") or rec.get("errorCode"):
             result.error_category = self._info_error_category(rec)
-            result.error_message = rec["errorMessage"]
+            result.error_message = rec.get("errorMessage") or CATEGORY_MESSAGES[result.error_category]
             # при 422/owner — владелец недоступен, но не ошибка структуры КМ
+            return result
+
+        if not _info_record_gtin_matches(rec, api_cis):
+            result.error_category = ErrorCategory.API_ERROR
+            result.error_message = INFO_PAIRING_ERROR
             return result
 
         self._apply_cisinfo(result, rec, policy)
@@ -494,13 +582,16 @@ class Service:
         # контакт с True API состоялся
         self._mark_trueapi_success()
 
-        # сопоставляем записи с КИ по requestedCis
-        by_cis: dict[str, dict[str, Any]] = {}
-        for rec in records:
-            ci = rec.get("cisInfo") or {}
-            key = ci.get("requestedCis") or ci.get("cis")
-            if key:
-                by_cis[key] = rec
+        # сопоставляем все идентификаторы из ответа с исходными КИ.
+        try:
+            by_cis = _pair_info_records(records, cises)
+        except ValueError:
+            for idx, _ in valid:
+                sr = results[idx]
+                sr.api_checked = True
+                sr.error_category = ErrorCategory.API_ERROR
+                sr.error_message = INFO_PAIRING_ERROR
+            return results
 
         for idx, cis in valid:
             sr = results[idx]
@@ -510,9 +601,13 @@ class Service:
                 sr.error_category = ErrorCategory.KM_NOT_FOUND
                 sr.error_message = CATEGORY_MESSAGES[ErrorCategory.KM_NOT_FOUND]
                 continue
-            if rec.get("errorMessage"):
+            if rec.get("errorMessage") or rec.get("errorCode"):
                 sr.error_category = self._info_error_category(rec)
-                sr.error_message = rec["errorMessage"]
+                sr.error_message = rec.get("errorMessage") or CATEGORY_MESSAGES[sr.error_category]
+                continue
+            if not _info_record_gtin_matches(rec, cis):
+                sr.error_category = ErrorCategory.API_ERROR
+                sr.error_message = INFO_PAIRING_ERROR
                 continue
             self._apply_cisinfo(sr, rec, policy)
             self._classify_owner(sr)
