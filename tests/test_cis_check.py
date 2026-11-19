@@ -83,14 +83,29 @@ def test_xml_returns_complete_fields_in_input_order_including_duplicates(integra
     assert [row.get("index") for row in root] == ["1", "2", "3", "4", "5"]
     assert [row.findtext("resultCode") for row in root] == ["OK", "PARTIAL", "OK", "INVALID_CIS", "NOT_FOUND"]
     fields = {field.tag: field.text for field in root[0]}
-    assert fields == {"Cis": CIS, "GTIN": GTIN, "Amount": "6000", "declarationRegNumber": DT,
+    assert fields == {"Cis": CIS, "GTIN": GTIN, "quantityInPack": "6000", "declarationRegNumber": DT,
                       "declarationDate": "2026-10-06", "status": "INTRODUCED", "tnVedEaes": "8536699008",
-                      "country": "076", "packageType": "UNIT", "productName": "Компонент A&B", "brand": "Test",
+                      "country": "076", "packageType": "UNIT", "productName": "PN-1", "brand": "Test",
                       "product_group": "radio", "producerInn": "0123456789", "producerName": "Производитель",
                       "ownerInn": ORG, "ownerName": "ООО Владелец", "statusEx": "EMPTY", "PN": "PN-1",
                       "resultCode": "OK"}
-    assert root[1].find("Amount") is None
+    assert root[1].find("quantityInPack") is None
+    assert root[1].findtext("message") == "ЧЗ не вернул корректные поля: quantityInPack"
     assert root[1].findtext("declarationDate") == "2026-10-07"
+
+
+def test_product_name_falls_back_to_true_api_name_when_article_is_unavailable(integration):
+    client, service = integration
+
+    async def no_article(gtins, token):
+        return [{"gtin": GTIN}]
+
+    service.client.product_info = no_article
+    response = post(client, [CIS])
+    assert response.status_code == 200
+    row = ET.fromstring(response.content)[0]
+    assert row.findtext("productName") == "Компонент A&B"
+    assert row.find("PN") is None
 
 
 def test_sql_route_checks_key_before_xml_and_rejects_dtd(integration, monkeypatch):

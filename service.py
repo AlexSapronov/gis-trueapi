@@ -417,8 +417,8 @@ class Service:
                 row["product_group"] = info["productGroup"]
             quantity = str(info.get("quantityInPack"))
             if re.fullmatch(r"[0-9]{1,10}", quantity) and 0 < int(quantity) <= 2147483647:
-                row["Amount"] = int(quantity)
-            missing = [field for field in ("Amount", "status") if field not in row]
+                row["quantityInPack"] = int(quantity)
+            missing = [field for field in ("quantityInPack", "status") if field not in row]
             if missing:
                 row.update(resultCode="PARTIAL", message="ЧЗ не вернул корректные поля: " + ", ".join(missing))
             declaration = info.get("declaration")
@@ -479,7 +479,8 @@ class Service:
         for cis in codes:
             models = articles[rows[cis]["GTIN"]]
             if len(models) == 1:
-                rows[cis]["PN"] = next(iter(models))
+                article = next(iter(models))
+                rows[cis].update(PN=article, productName=article)
 
     async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
         """Read DT information via True API without exposing tokens or raw responses."""
