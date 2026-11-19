@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from organizations import registry
 from datamatrix import strip_ai30
 from warehouse_excel import import_xlsx, positive_integer
-from warehouse_store import WarehouseError
+import warehouse_store
 
 
 async def resolve_pns(service, gtins, org_inn):
@@ -75,8 +75,10 @@ async def shipment_results(service, doc):
     marked = [line for line in doc['lines'] if line['gtin']]
     totals = {line['gtin']: 0 for line in marked}
     details, pns = [], {}
+    warn_on_owner_mismatch = warehouse_store.shipment_owner_warning_active()
     for scan, r in zip(scans, results):
         reasons = []
+        owner_mismatch = None
         api = r.raw_api or {}
         if r.error_category or not r.api_checked:
             reasons.append(r.error_message or 'Проверка через True API не выполнена')
@@ -87,9 +89,11 @@ async def shipment_results(service, doc):
         if not r.owner_inn:
             reasons.append('Владелец не установлен')
         elif doc['strict_owner'] and r.owner_inn != doc['org_inn']:
-            reasons.append('КМ принадлежит другому юридическому лицу; замените КМ')
+            owner_mismatch = 'КМ принадлежит другому юридическому лицу'
         elif not doc['strict_owner'] and not registry.has(r.owner_inn):
-            reasons.append('КМ принадлежит сторонней организации; замените КМ')
+            owner_mismatch = 'КМ принадлежит сторонней организации'
+        if owner_mismatch and not warn_on_owner_mismatch:
+            reasons.append(owner_mismatch + '; замените КМ')
         quantity = None
         try:
             quantity = positive_integer(r.quantity_in_pack)
@@ -106,10 +110,13 @@ async def shipment_results(service, doc):
         details.append(dict(scan_id=scan['id'], cis=scan['cis'], gtin=scan['gtin'],
                             status=r.status, owner_inn=r.owner_inn, owner_name=r.owner_name,
                             quantity=quantity, errors=reasons, api=r.as_dict(include_raw_api=True)))
+        if owner_mismatch and warn_on_owner_mismatch:
+            details[-1]['owner_warning'] = owner_mismatch
     rows = [dict(gtin=l['gtin'], required=l['quantity'], actual=totals[l['gtin']],
                  remaining=l['quantity'] - totals[l['gtin']]) for l in marked]
     ok = (bool(scans) or not marked) and not any(d['errors'] for d in details) and all(r['remaining'] == 0 for r in rows)
-    return dict(ok=ok, rows=rows, codes=details, missing=[], checked_count=len(scans)), pns
+    return dict(ok=ok, rows=rows, codes=details, missing=[], checked_count=len(scans),
+                owner_mismatch_warnings=sum('owner_warning' in d for d in details)), pns
 
 
 def _receipt_full_code_error(expected_code: str, scanned_code: str, expected_quantity: int) -> str | None:

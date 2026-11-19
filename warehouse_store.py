@@ -27,6 +27,18 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def shipment_owner_warning_active():
+    # 10 December 2026, 00:00 Moscow time.
+    return datetime.now(timezone.utc) < datetime(2026, 12, 9, 21, tzinfo=timezone.utc)
+
+
+def _check_current(doc):
+    result = doc['result']
+    return (result is not None and doc['result_version'] == doc['version']
+            and (doc['status'] == 'completed' or not result.get('owner_mismatch_warnings')
+                 or shipment_owner_warning_active()))
+
+
 class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdStore, GtdExcelStore):
     def __init__(self, path):
         self.path = Path(path)
@@ -292,7 +304,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['result'] = json.loads(d['result']) if d['result'] else None
         d['runtime_settings'] = self._settings(c)
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
-        d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
+        d['check_current'] = _check_current(d)
         d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['archived_at'] and not d['checking'] and
                              d['check_current'] and d['result']['ok'])
         d.pop('check_id', None)
@@ -347,7 +359,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 d['awaiting_invoice_inn'] = self._awaiting_invoice_inn(d)
                 d.pop('recipient_choice_key', None)
                 d['result'] = json.loads(d['result']) if d['result'] else None
-                d['check_current'] = d['result'] is not None and d['result_version'] == d['version']
+                d['check_current'] = _check_current(d)
                 d.pop('check_id', None); d.pop('check_until', None)
                 result.append(d)
             return result
