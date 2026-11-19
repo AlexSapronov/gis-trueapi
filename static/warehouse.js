@@ -145,7 +145,7 @@
     const scans = current.scans.filter(s => (!query || (s.cis + ' ' + s.raw_code + ' ' + s.gtin).toLowerCase().includes(query)) && (!errorsOnly || details.get(s.id)?.errors.length));
     $('scan-total').textContent = '(' + current.scans.length + ')';
     $('scan-found').textContent = `Показано ${scans.length} из ${current.scans.length}`;
-    $('scans').innerHTML = scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>` : '<p>КМ не проверен</p>'}${!admin && current.status === 'active' && current.runtime_settings?.values.worker_delete_scans !== false ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('') || '<p>Подходящих КМ нет</p>';
+    $('scans').innerHTML = scans.map(s => { const r = details.get(s.id); return `<div class="wh-code"><b>${esc(s.gtin)}</b> · ${esc(stamp(s.scanned_at))}<br><code>${esc(s.cis)}</code>${r ? `<p>${esc(r.status || '')} ${esc(r.owner_name || r.owner_inn || '')} ${r.quantity == null ? '' : ' · ' + r.quantity + ' шт.'}</p><p class="wh-bad">${esc(r.errors.join('; '))}</p>${r.owner_warning ? `<p class="wh-stale">${esc(r.owner_warning)}</p>` : ''}` : '<p>КМ не проверен</p>'}${!admin && current.status === 'active' && current.runtime_settings?.values.worker_delete_scans !== false ? `<button class="btn" data-delete="${esc(s.id)}">Удалить КМ из документа</button>` : ''}</div>`; }).join('') || '<p>Подходящих КМ нет</p>';
   }
   async function loadIssues() {
     if (!current) return;
@@ -172,7 +172,7 @@
     selectedIssue=issue; returnRequestId=null; eventsBefore=null;
     const snap=issue.snapshot, result=snap.result, rawCodes=new Map(snap.scans.map(s=>[s.id,s.raw_code]));
     const rows=result.rows.filter(r => r.remaining !== 0).map(r => `<p>${esc(r.gtin)}: требуется ${r.required}, проверено ${r.actual}, осталось ${r.remaining}</p>`).join('');
-    const codes=result.codes.map(c => `<details class="wh-code"><summary>${c.errors.length ? 'Ошибка · ' : ''}${esc(c.cis)}</summary><p>${esc(c.owner_name || c.owner_inn || '')} ${esc(c.status || '')} · ${c.quantity ?? 'Количество неизвестно'}</p><p class="wh-bad">${esc(c.errors.join('; '))}</p><pre>${esc(rawCodes.get(c.scan_id) || '')}</pre></details>`).join('');
+    const codes=result.codes.map(c => `<details class="wh-code"><summary>${c.errors.length ? 'Ошибка · ' : ''}${esc(c.cis)}</summary><p>${esc(c.owner_name || c.owner_inn || '')} ${esc(c.status || '')} · ${c.quantity ?? 'Количество неизвестно'}</p><p class="wh-bad">${esc(c.errors.join('; '))}</p>${c.owner_warning ? `<p class="wh-stale">${esc(c.owner_warning)}</p>` : ''}<pre>${esc(rawCodes.get(c.scan_id) || '')}</pre></details>`).join('');
     const missing=renderMissingCodes(result.missing);
     $('issue-detail').innerHTML=`<h4>Проверка от ${esc(stamp(issue.result_at))} · версия ${issue.version}</h4><p>${esc(issue.message || 'Без комментария')}</p><p class="${issue.resolved_at ? 'wh-good' : 'wh-bad'}">${issue.resolved_at ? 'Разобрано: ' + esc(issue.resolution) : 'Требует внимания'}</p>${(issue.returns || []).map(r=>`<div class="wh-reply-history"><b>Передано на склад · ${esc(stamp(r.created_at))}</b><p>${esc(r.message)}</p><small>${r.acknowledged_at ? 'Склад ознакомился: '+esc(stamp(r.acknowledged_at)) : 'Ожидает ознакомления склада'}</small></div>`).join('')}${rows}${missing}<details open><summary>Коды в обращении: ${snap.scans.length}</summary>${codes}</details>`;
     $('resolve-form').hidden=false; $('resolve-issue').hidden=!!issue.resolved_at;
@@ -372,21 +372,25 @@
       $('complete').hidden = !d.can_complete;
       $('check-state').hidden = !state;
     }
+    const ownerWarnings = result?.owner_mismatch_warnings || 0;
+    if (d.check_current && !d.checking && result?.ok && ownerWarnings) {
+      state = `Количество совпадает. Расхождения по владельцу КМ: ${ownerWarnings}.`;
+    }
     $('check-state').textContent = state;
-    $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking || incompleteReceipt ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
+    $('check-state').className = 'wh-check-state ' + (!d.check_current || d.checking || incompleteReceipt || (result?.ok && ownerWarnings) ? 'wh-stale' : result?.ok ? 'wh-good' : 'wh-bad');
     $('warehouse-replies').innerHTML=(d.warehouse_replies || []).map(r=>`<section class="wh-reply"><span class="wh-eyebrow">Ответственный ответил · ${esc(stamp(r.created_at))}</span><h3>${admin?'Ответ передан на склад':'Можно продолжать работу'}</h3><p>${esc(r.message)}</p>${admin?'<small>Ожидает ознакомления склада</small>':`<button class="btn primary" data-ack-return="${esc(r.id)}">${d.status==='active'?'Продолжить работу':'Ответ прочитан'}</button>`}</section>`).join('');
     $('issue-state').textContent = d.open_issues ? '⚠ Сообщено ответственному · открытых обращений: ' + d.open_issues : (d.issue_count ? 'Обращения разобраны' : '');
     $('actual-label').textContent = d.kind === 'shipment' ? 'Собрано' : 'Принято';
     renderLines();
     renderScans();
-    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
+    $('check-errors').innerHTML = result ? (result.codes.some(c => c.errors.length) ? `<p class="wh-bad">Ошибочных КМ: ${result.codes.filter(c => c.errors.length).length}. Причины и владелец указаны в общем списке КМ ниже.</p>` : '') + (ownerWarnings ? `<p class="wh-stale">Расхождения по владельцу: ${ownerWarnings} КМ. Владельцы указаны в общем списке КМ.</p>` : '') + (result.warnings || []).map(w => `<p class="wh-stale">${esc(w)}</p>`).join('') + renderMissingCodes(result.missing) : '';
     if (!admin) {
       const errors = result?.codes.filter(c => c.errors.length).length || 0;
       const missing = result?.missing.length || 0;
       $('worker-result').hidden = !result;
       $('worker-result-label').textContent = !d.check_current ? 'Предыдущая проверка' : errors ? `Ошибочные КМ: ${errors}` : missing ? `Ещё не считано: ${missing} КМ` : 'Результат проверки';
       const resultKey = d.id + ':' + d.result_at;
-      if (workerResultSeen !== resultKey) { $('worker-result').open = !!errors; workerResultSeen = resultKey; }
+      if (workerResultSeen !== resultKey) { $('worker-result').open = !!(errors || ownerWarnings); workerResultSeen = resultKey; }
       if (errors) $('check-errors').insertAdjacentHTML('afterbegin', `<button class="btn wh-danger" data-show-errors>Показать ошибочные КМ (${errors})</button>`);
     }
     if (admin) {
@@ -552,6 +556,11 @@
     const operation = current.kind === 'receipt' ? 'приёмку' : 'сборку';
     $('complete-dialog').querySelector('h2').textContent = current.lines.some(l => l.gtin) ? 'Всё совпадает' : 'Проверка КМ не требуется';
     $('complete-description').textContent = current.lines.some(l => l.gtin) ? `Все КМ проверены, ошибок нет, количество совпадает. Завершить ${operation}?` : `В документе нет позиций с маркировкой. Количество немаркируемых товаров приложением не проверяется. Завершить ${operation}?`;
+    const ownerWarnings = current.result?.owner_mismatch_warnings;
+    if (ownerWarnings) {
+      $('complete-dialog').querySelector('h2').textContent = 'Количество совпадает';
+      $('complete-description').textContent = `Расхождения по владельцу КМ: ${ownerWarnings}. Завершить ${operation}?`;
+    }
     $('complete-confirm').textContent = `Завершить ${operation}`;
     $('complete-error').textContent = '';
     updateCompletionPrompt(); $('complete-dialog').showModal();

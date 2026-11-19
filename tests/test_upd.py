@@ -7,12 +7,16 @@ from lxml import etree as E
 from fastapi.testclient import TestClient
 
 import main
+import warehouse_store
 from config import settings
-from models import AppError
+from models import AppError, Organization
 from service import Service
 from mockclient import MockTrueApiClient
+from organizations import registry
 from tokens import FileTokenStore
 from upd_xml import inspect_xml, parse_xml, allocate, enrich_xml, money_parts
+from warehouse_excel import scan_data
+from warehouse_service import check_document
 from warehouse_store import WarehouseStore, WarehouseError
 
 GTIN = '04640638345218'
@@ -88,6 +92,39 @@ def test_same_dt_one_row_and_crypto_not_exported():
     r=parse_xml(out).find('.//СведТов')
     assert r.get('КолТов')=='3' and r.get('СтТовБезНДС')=='10.01'
     assert len(r.findall('.//КИЗ'))==2 and len(summary)==1
+
+
+@pytest.mark.asyncio
+async def test_owner_warning_shipment_reconciles_and_exports_codes(monkeypatch, tmp_path):
+    monkeypatch.setattr(warehouse_store, 'shipment_owner_warning_active', lambda: True)
+    monkeypatch.setitem(registry._orgs, ORG, Organization(inn=ORG, name='Продавец'))
+    tokens = FileTokenStore(tmp_path / 'tokens.json')
+    tokens.set(ORG, 'token')
+    service = Service(MockTrueApiClient(), tokens)
+    store = WarehouseStore(tmp_path / 'state.db')
+    shipment = store.create(dict(kind='shipment', number='T1', date='2026-11-05', org_inn=ORG,
+                                 org_name='Продавец', recipient_name='Покупатель', recipient_inn=BUYER),
+                            [dict(gtin=GTIN, pn='SCAN-PN', pn_source='manual', quantity=3)], [])
+    document_id = shipment['id']
+    store.start(document_id)
+    scan = '01' + GTIN + '21INTRODUCEDQ'
+    crypto = '\x1d91EE12\x1d92ABCDcrypto+/='
+    store.add_scan(document_id, scan_data(scan + '1' + crypto))
+    checked = await check_document(store, service, document_id)
+    assert checked['result']['owner_mismatch_warnings'] == 1
+    assert checked['result']['rows'][0]['remaining'] == 2
+    assert not checked['can_complete']
+    store.add_scan(document_id, scan_data(scan + '2' + crypto))
+    checked = await check_document(store, service, document_id)
+    assert checked['result']['owner_mismatch_warnings'] == 2
+    assert checked['can_complete']
+    completed = store.complete(document_id)
+    content = xml()
+    mapping = {'0': 'SCAN-PN'}
+    inspect_xml(content, completed, {})
+    allocated = allocate(parse_xml(content), completed, mapping)
+    output, _, _ = enrich_xml(content, completed, mapping, allocated, None)
+    assert {element.text for element in parse_xml(output).findall('.//КИЗ')} == {scan + '1', scan + '2'}
 
 
 @pytest.mark.parametrize('mapping', [{}, {'0':None}, {'0':'unknown'}, {'0':'SCAN-PN','1':None}])

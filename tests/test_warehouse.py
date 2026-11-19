@@ -2,6 +2,7 @@
 import asyncio
 import io
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import httpx
 import openpyxl
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 import main
+import warehouse_store
 from mockclient import MockTrueApiClient
 from service import Service
 from tokens import FileTokenStore
@@ -160,10 +162,12 @@ def test_only_introduced_allowed(store, svc, status, ok):
             store.complete(d['id'])
 
 
-@pytest.mark.parametrize('owner,strict,ok', [(ORG, True, True), (ORG2, True, False),
-                                          (ORG2, False, True), ('7777777777', False, False),
-                                          (None, False, False)])
-def test_owner_policy(store, svc, owner, strict, ok):
+@pytest.mark.parametrize('during_window', [False, True])
+@pytest.mark.parametrize('owner,strict,mismatch', [(ORG, True, False), (ORG2, True, True),
+                                                 (ORG2, False, False), ('7777777777', False, True),
+                                                 (None, False, False)])
+def test_owner_policy(store, svc, monkeypatch, during_window, owner, strict, mismatch):
+    monkeypatch.setattr(warehouse_store, 'shipment_owner_warning_active', lambda: during_window)
     d = document(store)
     d = store.edit(d['id'], d['version'], strict_owner=strict)
     add(store, d)
@@ -174,7 +178,43 @@ def test_owner_policy(store, svc, owner, strict, ok):
             r['cisInfo']['ownerInn'] = owner
         return records
     svc.client.info = info
-    assert asyncio.run(check_document(store, svc, d['id']))['can_complete'] is ok
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    warning = mismatch and during_window
+    ok = owner is not None and (not mismatch or during_window)
+    assert checked['can_complete'] is ok
+    assert checked['result']['owner_mismatch_warnings'] == int(warning)
+    assert checked['result']['rows'][0]['actual'] == (100 if ok else 0)
+    assert bool(checked['result']['codes'][0].get('owner_warning')) is warning
+
+
+def test_shipment_owner_warning_expires_for_unfinished_check(store, svc, monkeypatch):
+    instant = datetime(2026, 12, 9, 20, 59, 59, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz)
+
+    monkeypatch.setattr(warehouse_store, 'datetime', Clock)
+    d = document(store)
+    original = svc.client.info
+
+    async def info(cises, token):
+        records = await original(cises, token)
+        for record in records:
+            record['cisInfo']['ownerInn'] = '7777777777'
+        return records
+
+    svc.client.info = info
+    add(store, d)
+    assert asyncio.run(check_document(store, svc, d['id']))['can_complete']
+    instant = datetime(2026, 12, 9, 21, tzinfo=timezone.utc)
+    assert not store.get(d['id'])['check_current']
+    with pytest.raises(WarehouseError):
+        store.complete(d['id'])
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert checked['check_current'] and not checked['can_complete']
+    assert checked['result']['codes'][0]['errors']
 
 
 def test_alternative_token_can_resolve_owner(store, svc):
