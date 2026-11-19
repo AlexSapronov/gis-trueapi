@@ -9,7 +9,9 @@ MarkingApiClient (Protocol). Только реализация клиента р
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+from datetime import date, datetime
 from typing import Any, Optional
 
 import httpx
@@ -32,7 +34,7 @@ from trueapi import MarkingApiClient, TrueApiError, TrueApiClient, MAX_SEARCH_PE
 
 
 def _pair_info_records(
-    records: list[dict[str, Any]], requested_cises: list[str]
+    records: list[dict[str, Any]], requested_cises: list[str], *, short: bool = False
 ) -> dict[str, dict[str, Any]]:
     """Pair cises/info replies to requests using every identity the API supplied.
 
@@ -56,17 +58,23 @@ def _pair_info_records(
     for record in records:
         if not isinstance(record, dict):
             raise ValueError("Некорректная запись cises/info")
-        ci = record.get("cisInfo")
+        ci = record.get("result") if short and record.get("result") is not None else record.get("cisInfo")
         if ci is None:
             ci = {}
         if not isinstance(ci, dict):
             raise ValueError("Некорректное поле cisInfo в ответе ЧЗ")
+
+        nested = ci.get("cisInfo", {}) if short else {}
+        if not isinstance(nested, dict):
+            raise ValueError("Некорректное вложенное поле cisInfo в ответе ЧЗ")
 
         candidates = (
             record.get("requestedCis"),
             record.get("cis"),
             ci.get("requestedCis"),
             ci.get("cis"),
+            nested.get("requestedCis"),
+            nested.get("cis"),
         )
         supplied = [value for value in candidates if value not in (None, "")]
         if not supplied or any(not isinstance(value, str) for value in supplied):
@@ -98,6 +106,20 @@ def _info_record_gtin_matches(record: dict[str, Any], requested_cis: str) -> boo
 
 
 INFO_PAIRING_ERROR = "ЧЗ вернул неоднозначные или некорректные сведения по КИ"
+
+
+def _declaration_date(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    try:
+        if re.fullmatch(r"[0-9]{2}\.[0-9]{2}\.[0-9]{4}", value):
+            return datetime.strptime(value, "%d.%m.%Y").date().isoformat()
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return date.fromisoformat(value).isoformat()
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 class Service:
@@ -351,6 +373,113 @@ class Service:
         for result in found.values():
             result['message'] = result['message'].rstrip('; ') or 'Сведения получены из ЧЗ'
         return found
+
+    async def lookup_cis_for_sql(self, codes: list[str], org_inn: str) -> dict[str, dict]:
+        """Fetch per-code facts for the SQL integration under its fixed organization."""
+        token = self._org_token(self._pick_org_inn(org_inn))
+        try:
+            records = await asyncio.wait_for(self.client.info(codes, token), timeout=25)
+            paired = _pair_info_records(records, codes)
+        except TrueApiError as exc:
+            category = ErrorCategory.API_ERROR if exc.category == ErrorCategory.NOT_FOUND else exc.category
+            raise AppError(category, CATEGORY_MESSAGES.get(category, INFO_PAIRING_ERROR)) from exc
+        except TimeoutError as exc:
+            raise AppError(ErrorCategory.TIMEOUT, CATEGORY_MESSAGES[ErrorCategory.TIMEOUT]) from exc
+        except (ValueError, httpx.HTTPError) as exc:
+            raise AppError(ErrorCategory.API_ERROR, INFO_PAIRING_ERROR) from exc
+
+        rows: dict[str, dict] = {}
+        for cis in codes:
+            record = paired.get(cis)
+            if record is None or not _info_record_gtin_matches(record, cis):
+                rows[cis] = dict(resultCode="UPSTREAM_ERROR", message="Нет корректных сведений ЧЗ по КИ")
+                continue
+            if record.get("errorCode") or record.get("errorMessage"):
+                category = self._info_error_category(record)
+                code = {
+                    ErrorCategory.KM_NOT_FOUND: "NOT_FOUND",
+                    ErrorCategory.NO_PERMISSION: "FORBIDDEN",
+                }.get(category, "UPSTREAM_ERROR")
+                rows[cis] = dict(resultCode=code, message=CATEGORY_MESSAGES[category])
+                continue
+
+            info = record.get("cisInfo") or {}
+            row: dict[str, Any] = {"resultCode": "OK", "GTIN": cis[2:16]}
+            for field in ("status", "tnVedEaes", "country", "productName", "brand", "producerInn",
+                          "producerName", "ownerInn", "ownerName", "statusEx"):
+                value = info.get(field)
+                if isinstance(value, str) and value.strip():
+                    row[field] = value.strip()
+            package = info.get("extendedPackageType") or info.get("generalPackageType") or info.get("packageType")
+            if isinstance(package, str) and package:
+                row["packageType"] = package
+            if isinstance(info.get("productGroup"), str) and info["productGroup"]:
+                row["product_group"] = info["productGroup"]
+            quantity = str(info.get("quantityInPack"))
+            if re.fullmatch(r"[0-9]{1,10}", quantity) and 0 < int(quantity) <= 2147483647:
+                row["Amount"] = int(quantity)
+            missing = [field for field in ("Amount", "status") if field not in row]
+            if missing:
+                row.update(resultCode="PARTIAL", message="ЧЗ не вернул корректные поля: " + ", ".join(missing))
+            declaration = info.get("declaration")
+            if isinstance(declaration, dict):
+                self._add_sql_declaration(row, declaration.get("declarationRegNumber"), declaration.get("declarationDate"))
+            rows[cis] = row
+
+        found = [cis for cis, row in rows.items() if "GTIN" in row]
+        missing_dt = [cis for cis in found if not {"declarationRegNumber", "declarationDate"} <= rows[cis].keys()]
+        gtins = list(dict.fromkeys(rows[cis]["GTIN"] for cis in found))
+        if found:
+            await asyncio.gather(self._add_sql_declarations(rows, missing_dt, token),
+                                 self._add_sql_articles(rows, found, gtins, token))
+        return rows
+
+    @staticmethod
+    def _add_sql_declaration(row: dict, number: Any, raw_date: Any) -> None:
+        if not isinstance(number, str) or not number.strip():
+            return
+        number = number.strip()
+        if row.get("declarationRegNumber", number) != number:
+            return
+        row["declarationRegNumber"] = number
+        normalized = _declaration_date(raw_date)
+        if normalized:
+            row.setdefault("declarationDate", normalized)
+
+    async def _add_sql_declarations(self, rows: dict[str, dict], codes: list[str], token: str) -> None:
+        if not codes:
+            return
+        try:
+            records = await asyncio.wait_for(self.client.short_info(codes, token), timeout=15)
+            paired = _pair_info_records(records, codes, short=True)
+        except (TrueApiError, TimeoutError, ValueError, httpx.HTTPError):
+            for cis in codes:
+                rows[cis]["declarationWarning"] = "Дополнительная проверка ДТ недоступна"
+            return
+        for cis, record in paired.items():
+            if record.get("errorMessage") or record.get("errorCode"):
+                continue
+            try:
+                details = interpret_gtd_record(record, cis, cis[2:16])
+            except ValueError:
+                continue
+            if details.get("gtin") == cis[2:16]:
+                self._add_sql_declaration(rows[cis], details.get("declaration_number"), details.get("declaration_date"))
+
+    async def _add_sql_articles(self, rows: dict[str, dict], codes: list[str], gtins: list[str], token: str) -> None:
+        try:
+            records = await asyncio.wait_for(self.client.product_info(gtins, token), timeout=15)
+        except (TrueApiError, TimeoutError, ValueError, httpx.HTTPError):
+            return
+        articles: dict[str, set[str]] = {gtin: set() for gtin in gtins}
+        for record in records:
+            gtin, model = record.get("gtin"), record.get("model")
+            if isinstance(gtin, str) and gtin in articles and isinstance(model, str) and model.strip():
+                articles[gtin].add(model.strip())
+        for cis in codes:
+            models = articles[rows[cis]["GTIN"]]
+            if len(models) == 1:
+                rows[cis]["PN"] = next(iter(models))
 
     async def lookup_gtd(self, raw_code: str, org_inn: Optional[str] = None) -> dict[str, Any]:
         """Read DT information via True API without exposing tokens or raw responses."""
