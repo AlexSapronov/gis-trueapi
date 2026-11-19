@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from admin_auth import authorized, install_admin_sessions, valid_key
+from cis_check import install_cis_check
 from config import settings
 from models import AppError, status_ru
 from organizations import registry
@@ -138,6 +139,7 @@ svc.policy_getter = lambda: warehouse.application_settings()['values']
 install_admin_sessions(app, lambda: settings.admin_key)
 install_warehouse(app, lambda: svc, lambda: warehouse, templates)
 install_sales_shipments(app, lambda: svc, lambda: warehouse, templates)
+install_cis_check(app, lambda: svc)
 
 
 # ---- static ------------------------------------------------------------
