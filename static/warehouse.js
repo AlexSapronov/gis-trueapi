@@ -159,7 +159,7 @@
     const id=current.id, issue=selectedIssue.id;
     const data=await json(apiBase + '/documents/' + id + '/issues/' + issue + '/events' + (append && eventsBefore ? '?before=' + eventsBefore : ''));
     if (current?.id !== id || selectedIssue?.id !== issue) return;
-    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',invoice_synced:'Накладная обновлена из Excel',recipient_selected:'Выбран ИНН получателя',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
+    const labels={policy_changed:'Правила отгрузки изменены',created:'Документ создан',started:'Операция запущена',reopened:'Возобновлена',codes_appended:'КМ дозагружены',scan_added:'КМ добавлен',scan_removed:'КМ удалён',edited:'Реквизиты изменены',check_started:'Проверка запущена',checked:'Проверка завершена',completed:'Документ завершён',deleted:'Документ удалён',restored:'Документ восстановлен',archived:'Документ отправлен в архив',unarchived:'Документ возвращён из архива',issue_reported:'Обращение отправлено',issue_resolved:'Обращение разобрано',invoice_synced:'Накладная обновлена из Excel',recipient_selected:'Выбран ИНН получателя',returned_to_warehouse:'Возвращён на склад',warehouse_return_acknowledged:'Склад прочитал ответ'};
     const html=data.events.map(e => `<details class="wh-code"><summary>${esc(stamp(e.created_at))} · ${e.actor === 'admin' ? 'Администратор' : e.actor === 'sales' ? 'Менеджер ОП' : 'Склад'} · ${esc(labels[e.action] || e.action)}</summary><pre>${esc(JSON.stringify(e.details,null,2))}</pre></details>`).join('');
     if (append) $('issue-events').insertAdjacentHTML('beforeend',html); else $('issue-events').innerHTML=html;
     eventsBefore=data.next_before; $('events-more').hidden=!eventsBefore; $('events-title').hidden=false;
@@ -395,6 +395,8 @@
     }
     if (admin) {
       updEditor.setDocument(d);
+      $('append-codes-panel').hidden = !!(d.deleted_at || d.archived_at || d.receipt_source);
+      $('append-codes-form').querySelector('button').disabled = !!d.checking || dirty;
       $('start').hidden = d.status !== 'draft' || d.awaiting_invoice_inn; $('reopen').hidden = d.status !== 'completed' || !!d.archived_at;
       $('legacy-recipient-hint').hidden = !d.awaiting_invoice_inn || !!d.deleted_at || !!d.archived_at;
       $('export').hidden = d.status !== 'completed' || d.kind !== 'shipment';
@@ -816,6 +818,16 @@
       const d = await json(apiBase + '/documents', {method:'POST',body:form});
       $('import-box').open=false; $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
       await open(d.id); message((d.import_warnings || []).join('\n') || 'Документ загружен');
+    }); };
+    $('append-codes-form').onsubmit = e => { e.preventDefault(); action(async () => {
+      const file = $('append-codes-file').files[0];
+      if (!file || dirty || !current) return;
+      const form = new FormData(); form.set('file', file);
+      const d = await json(apiBase + '/documents/' + current.id + '/append-codes', {method:'POST',body:form});
+      $('append-codes-file').value = '';
+      $('append-codes-panel').open = false;
+      await refresh();
+      message('Добавлено КМ: ' + d.append_summary.added + ' · Уже в задании: ' + d.append_summary.duplicates + ' · Доп. количество: ' + d.append_summary.quantity);
     }); };
     $('start').onclick = () => action(async () => { await json(apiBase + '/documents/' + current.id + '/start', {method:'POST'}); await refresh(); });
     $('reopen').onclick = () => { if (confirm('Возобновить документ? Итоговый состав станет доступен для изменений и потребуется повторная проверка.')) action(async () => { await json(apiBase + '/documents/' + current.id + '/reopen', {method:'POST'}); await refresh(); }); };

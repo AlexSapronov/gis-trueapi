@@ -171,7 +171,7 @@ def template(kind, default_org=''):
     return make_xlsx({'Документ': header, 'Товары': [columns]})
 
 
-def import_xlsx(content, kind, org_override=None, document_number=None, document_date=None):
+def import_xlsx(content, kind, org_override=None, document_number=None, document_date=None, *, append=False, fallback_org=None):
     if kind not in ('shipment', 'receipt'):
         raise WarehouseError('Неизвестный тип документа')
     if len(content) > MAX_FILE_SIZE:
@@ -193,6 +193,7 @@ def import_xlsx(content, kind, org_override=None, document_number=None, document
             raise WarehouseError('Используйте шаблон: листы «Документ» и «Товары» или лист «DataMatrix» для приёмки')
         meta = {}
         if flat_datamatrix:
+            org_override = org_override or fallback_org
             if not document_number or not document_number.strip() or not document_date or not org_override:
                 raise WarehouseError('Для файла DataMatrix укажите номер, дату накладной и нашу организацию в форме загрузки')
             if len(document_number.strip()) > 300:
@@ -293,6 +294,8 @@ def import_xlsx(content, kind, org_override=None, document_number=None, document
                     if code['gtin'] != gtin:
                         raise ValueError('GTIN не соответствует коду маркировки')
                     if code['cis'] in seen:
+                        if append:
+                            continue
                         raise ValueError('Дубликат КМ в документе')
                     seen.add(code['cis'])
                     expected.append({**code, 'quantity': qty})
