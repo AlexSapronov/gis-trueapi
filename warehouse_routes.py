@@ -17,7 +17,7 @@ from models import AppError, ErrorCategory
 from buildinfo import get_build_id
 from config import settings
 from organizations import registry
-from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template
+from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template, import_xlsx
 from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
@@ -221,6 +221,16 @@ def install_warehouse(app, service_getter, store_getter, templates):
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
         return store_getter().get(document_id,include_deleted=True)
+
+    @admin.post('/documents/{document_id}/append-codes')
+    async def append_codes(document_id: str, file: UploadFile = File(...)):
+        store = store_getter()
+        doc = await asyncio.to_thread(store.get, document_id)
+        content = await file.read(MAX_FILE_SIZE + 1)
+        header, lines, expected = await asyncio.to_thread(
+            import_xlsx, content, 'receipt', None, doc['number'], doc['date'],
+            append=True, fallback_org=doc['org_inn'])
+        return await asyncio.to_thread(store.append_codes, document_id, header, lines, expected)
 
     @admin.patch('/documents/{document_id}')
     def edit(document_id: str, body: EditBody):

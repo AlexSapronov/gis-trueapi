@@ -196,6 +196,61 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 return {'number': header['number']}
         return self.get(document_id)
 
+    def append_codes(self, document_id, header, lines, expected):
+        """Append only new CIS, without changing scans or historical checks."""
+        with self.connection(True) as c:
+            d = self._doc(c, document_id)
+            if d['archived_at']:
+                raise WarehouseError('Сначала верните документ из архива', 409)
+            if d['check_id'] and (d['check_until'] or 0) > time.time():
+                raise WarehouseError('Идёт проверка КМ; повторите загрузку позже', 409)
+            if any(header[k] != d[k] for k in ('number', 'date', 'org_inn')):
+                raise WarehouseError('Реквизиты файла не совпадают с документом', 409)
+            if c.execute('SELECT 1 FROM warehouse_receipt_sources WHERE document_id=?',
+                         (document_id,)).fetchone():
+                raise WarehouseError('Приёмка управляется marking-bm; дополните исходную накладную', 409)
+            if any(not line['gtin'] for line in lines) or not expected:
+                raise WarehouseError('Для дозагрузки нужны только строки с КМ')
+            known = {r['cis'] for r in c.execute(
+                'SELECT cis FROM warehouse_expected WHERE document_id=?', (document_id,))}
+            if d['kind'] == 'shipment':
+                known.update(r['cis'] for r in c.execute(
+                    'SELECT cis FROM warehouse_scans WHERE document_id=?', (document_id,)))
+            pns = {line['gtin']: line['pn'] for line in lines}
+            additions = {}
+            added = 0
+            for e in expected:
+                if e['cis'] in known:
+                    continue
+                known.add(e['cis'])
+                gtin = e['gtin']
+                additions[gtin] = additions.get(gtin, 0) + e['quantity']
+                c.execute('INSERT INTO warehouse_expected VALUES (?,?,?,?,?,?)',
+                          (document_id, e['cis'], e['raw_code'], e['full_code'], gtin, e['quantity']))
+                added += 1
+            for gtin, quantity in additions.items():
+                prior = c.execute('SELECT * FROM warehouse_lines WHERE document_id=? AND gtin=?',
+                                  (document_id, gtin)).fetchone()
+                if quantity + (prior['quantity'] if prior else 0) > 2147483647:
+                    raise WarehouseError('Слишком большое количество товара')
+                if prior:
+                    if prior['pn'] and pns[gtin] and prior['pn'] != pns[gtin]:
+                        raise WarehouseError('У одного GTIN указаны разные PN')
+                    c.execute('UPDATE warehouse_lines SET quantity=quantity+? WHERE document_id=? AND gtin=?',
+                              (quantity, document_id, gtin))
+                else:
+                    c.execute('INSERT INTO warehouse_lines VALUES (?,?,?,?,?)',
+                              (document_id, gtin, pns[gtin], 'excel' if pns[gtin] else '', quantity))
+            if added:
+                if d['status'] == 'completed':
+                    self._start(c, document_id, reopen=True)
+                else:
+                    self._bump(c, document_id)
+                self._event(c, document_id, 'codes_appended',
+                            {'added': added, 'duplicates': len(expected)-added, 'quantities': additions}, actor='admin')
+            return {**self._snapshot(c, document_id), 'append_summary': {
+                'added': added, 'duplicates': len(expected)-added, 'quantity': sum(additions.values())}}
+
     def sync_shipment_invoice(self, invoice_id, header, lines):
         """One invoice per write transaction: scan/check operations serialize with sync."""
         with self.connection(True) as c:
