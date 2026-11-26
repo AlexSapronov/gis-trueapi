@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Контрагенты ЧЗ · Радиоэлектронная продукция</title>
+<link rel="stylesheet" href="/static/style.css?v={{ build_id }}">
+<link rel="stylesheet" href="/static/warehouse.css?v={{ build_id }}">
+<script src="/static/theme.js?v={{ build_id }}"></script>
+<script defer src="/static/participants.js?v={{ build_id }}"></script>
+</head>
+<body class="warehouse-page">
+<header class="wh-header">
+<div><span class="wh-eyebrow">Честный ЗНАК · True API</span><h1>Проверка контрагентов</h1></div>
+<div class="wh-header-actions"><button id="theme-btn" class="icon-btn" type="button" aria-label="Тема">☾</button></div>
+</header>
+<main class="wh-main">
+<nav class="wh-toolbar"><a class="btn" href="/admin">Вернуться в администрирование</a></nav>
+<section class="wh-card">
+<h2>Регистрация в ЧЗ и подключение РЭП</h2>
+{% if mock %}<p class="wh-bad">Тестовый режим: реальные данные ЧЗ не запрашиваются.</p>{% endif %}
+<p>Загрузите Excel (.xlsx) со столбцами «Полное наименование» и «ИНН». Программа сохранит исходные строки и добавит два столбца: «Зарегистрирован» и «Подключен РЭП».</p>
+<p class="wh-muted">До 50 000 строк и 10 МБ. Обрабатываются листы с нужными заголовками в первых 20 строках. ИНН с ведущими нулями храните как текст. Запросы выполняются без токена УКЭП.</p>
+<form id="participants-form"><fieldset id="participants-fields">
+<label>Список контрагентов <input type="file" name="file" accept=".xlsx" required></label>
+<button class="btn primary" type="submit">Проверить контрагентов</button>
+</fieldset></form>
+<p id="participants-status" role="status" aria-live="polite"></p>
+<progress id="participants-progress" hidden max="1" value="0"></progress>
+<a id="participants-download" class="btn primary" hidden>Скачать проверенный Excel</a>
+<p class="wh-muted">«Не проверено» означает отсутствие достоверного ответа ЧЗ, а не отсутствие регистрации. Заблокированный участник отмечается отдельно.</p>
+</section>
+</main>
+</body>
+</html>

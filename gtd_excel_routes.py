@@ -6,6 +6,8 @@ from urllib.parse import quote
 from fastapi import File, Form, UploadFile
 from fastapi.responses import Response
 
+from config import settings
+from participants_excel import validate_workbook, process_participants
 from km_report import read_codes, process_report
 from gtd_excel import load_book, read_rows, read_catalog, process_excel_job
 from warehouse_excel import MAX_FILE_SIZE, make_xlsx
@@ -102,3 +104,34 @@ def install_gtd_excel(app, admin, service_getter, store_getter):
         return Response(job['output'],media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(filename),
                                  'Cache-Control':'no-store'})
+
+
+    @admin.post('/participants-excel')
+    async def upload_participants(file: UploadFile = File(...)):
+        if not (file.filename or '').lower().endswith('.xlsx'):
+            raise WarehouseError('Поддерживается файл .xlsx')
+        content = await file.read(MAX_FILE_SIZE + 1)
+        await asyncio.to_thread(validate_workbook, content)
+        filename = PurePath((file.filename or 'Контрагенты.xlsx').replace('\\', '/')).name[:200]
+        store = store_getter()
+        job_id = store.gtd_excel_create(filename, content)
+        task = asyncio.create_task(process_participants(store, service_getter(), job_id, settings.is_mock))
+        tasks.add(task); task.add_done_callback(tasks.discard)
+        return store.gtd_excel_get(job_id)
+
+    @admin.get('/participants-excel/{job_id}')
+    def participants_status(job_id: str):
+        job = store_getter().gtd_excel_get(job_id)
+        if job['report'] and job['report'].get('kind') != 'participants-excel':
+            raise WarehouseError('Проверка контрагентов не найдена', 404)
+        return job
+
+    @admin.get('/participants-excel/{job_id}/download')
+    def participants_download(job_id: str):
+        job = store_getter().gtd_excel_download(job_id)
+        if (job['report'] or {}).get('kind') != 'participants-excel':
+            raise WarehouseError('Проверка контрагентов не найдена', 404)
+        filename = PurePath(job['filename']).stem + '_ЧЗ_РЭП.xlsx'
+        return Response(job['output'], media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename),
+                                 'Cache-Control': 'no-store'})
