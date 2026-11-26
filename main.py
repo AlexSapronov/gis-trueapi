@@ -142,6 +142,17 @@ install_sales_shipments(app, lambda: svc, lambda: warehouse, templates)
 install_cis_check(app, lambda: svc)
 
 
+@app.get("/admin/participants", response_class=HTMLResponse, include_in_schema=False)
+async def participants_page(request: Request):
+    if not authorized(request, settings.admin_key):
+        return RedirectResponse("/admin", status_code=303)
+    return templates.TemplateResponse(
+        request=request, name="participants.html",
+        context={"build_id": get_build_id(), "mock": settings.is_mock},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 # ---- static ------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
