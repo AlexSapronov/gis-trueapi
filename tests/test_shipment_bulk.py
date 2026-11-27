@@ -94,7 +94,7 @@ async def test_auto_split_requires_rescan_and_successful_divisionmark(store, svc
     document_id = report['results'][0]['document_id']
     original_code = code('INTRODUCEDQ400')
     updated_source = original_code + '\x1d30' + '100'
-    new_code = code('NEWQ300') + '\x1d30' + '300'
+    new_code = code('INTRODUCEDNEWQ300') + '\x1d30' + '300'
     source_cis = scan_data(updated_source)['cis']
     new_cis = scan_data(new_code)['cis']
 
@@ -163,8 +163,8 @@ def test_split_removes_active_scan_but_keeps_audit_and_is_idempotent(store):
         gtd_row(values, amount=300, declaration='D1'),
         gtd_row(values, amount=100, declaration='D2')))
     document_id = report['results'][0]['document_id']
-    scanned = store.add_scan(document_id, scan_data(code()))
-    scan_id = scanned['scans'][0]['id']
+    store.add_scan(document_id, scan_data(code()))
+    scan_id = store.get(document_id)['scans'][0]['id']
     request_id = 'gtd-split-request-1'
     remote = {'id':'remote-batch-1','state':'ordering','expected_codes':[]}
     first = store.create_split(document_id, scan_id, request_id, [300], remote)
