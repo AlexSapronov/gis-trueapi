@@ -900,6 +900,14 @@ class Service:
 
     # ---- exchange token -------------------------------------------------
 
+    async def auth_challenge(self, inn: str) -> dict[str, str]:
+        if not registry.has(inn):
+            raise AppError(ErrorCategory.NOT_FOUND, "Организация не найдена")
+        try:
+            return await self.client.auth_key()
+        except TrueApiError as e:
+            raise AppError(e.category, e.message or CATEGORY_MESSAGES.get(e.category, "Ошибка авторизации"))
+
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
         if not registry.has(inn):
             raise AppError(ErrorCategory.NOT_FOUND, "Организация не найдена")
