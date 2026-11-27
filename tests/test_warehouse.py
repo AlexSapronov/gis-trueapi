@@ -63,6 +63,19 @@ def add(store, d, raw=None):
     return store.add_scan(d['id'], scan_data(raw or code()))
 
 
+def test_trueapi_signer_queue_uses_a_one_time_lease(tmp_path):
+    store = WarehouseStore(tmp_path / 'signer.sqlite3')
+    job = store.signer_job_create(ORG, 'challenge-uuid', 'signed challenge bytes')
+    queued = store.signer_next('A' * 40)
+    assert queued['id'] == job['id'] and queued['kind'] == 'auth_true'
+    assert not queued['detached'] and queued['thumbprint'] == 'A' * 40
+    claimed = store.signer_claim_result(queued['id'], queued['lease'], queued['sha256'])
+    assert claimed['challenge_uuid'] == 'challenge-uuid'
+    with pytest.raises(WarehouseError):
+        store.signer_claim_result(queued['id'], queued['lease'], queued['sha256'])
+    assert store.signer_job_finish(queued['id'], 'done')['state'] == 'done'
+
+
 @pytest.mark.parametrize('kind', ['shipment', 'receipt'])
 def test_shared_scans_and_restart(store, svc, kind):
     d = document(store, kind)

@@ -1,7 +1,11 @@
 """Durable document state. Short SQLite transactions; no network inside locks."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 import time
 import uuid
@@ -54,11 +58,39 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
               version INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
               check_id TEXT, check_until REAL, result TEXT,
-              result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT);
+              result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT,
+              gtd_required INTEGER NOT NULL DEFAULT 0, gtd_state TEXT NOT NULL DEFAULT 'none',
+              gtd_message TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS warehouse_shipment_sources (
               org_inn TEXT NOT NULL, invoice_id TEXT NOT NULL,
               document_id TEXT NOT NULL UNIQUE REFERENCES warehouse_documents(id),
               PRIMARY KEY(org_inn, invoice_id));
+            CREATE TABLE IF NOT EXISTS warehouse_shipment_items (
+              document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              good_id TEXT NOT NULL, gtin TEXT NOT NULL, pn TEXT NOT NULL, quantity INTEGER NOT NULL,
+              PRIMARY KEY(document_id,good_id,gtin));
+            CREATE TABLE IF NOT EXISTS warehouse_gtd_rows (
+              document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              position INTEGER NOT NULL, good_id TEXT NOT NULL, gtin TEXT NOT NULL,
+              quantity INTEGER NOT NULL, declaration TEXT NOT NULL,
+              source_sheet TEXT NOT NULL, source_row INTEGER NOT NULL,
+              PRIMARY KEY(document_id,position));
+            CREATE TABLE IF NOT EXISTS warehouse_splits (
+              id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              source_scan_id TEXT NOT NULL, source_scanned_at TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL UNIQUE,
+              source_cis TEXT NOT NULL, parts TEXT NOT NULL, external_batch_id TEXT,
+              expected_codes TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL,
+              error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS warehouse_splits_doc ON warehouse_splits(document_id,state);
+            CREATE TABLE IF NOT EXISTS gis_signer_jobs (
+              id TEXT PRIMARY KEY, inn TEXT NOT NULL, challenge_uuid TEXT NOT NULL,
+              challenge_data TEXT NOT NULL, sha256 TEXT NOT NULL, state TEXT NOT NULL,
+              lease TEXT, lease_until REAL, error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS gis_signer_jobs_queue ON gis_signer_jobs(state,created_at);
+            CREATE TABLE IF NOT EXISTS gis_signer_heartbeat (
+              id INTEGER PRIMARY KEY CHECK(id=1), thumbprint TEXT NOT NULL,
+              expires TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -105,6 +137,15 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
             if 'archived_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
+            if 'gtd_required' not in columns:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN gtd_required INTEGER NOT NULL DEFAULT 0')
+            if 'gtd_state' not in columns:
+                c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_state TEXT NOT NULL DEFAULT 'none'")
+            if 'gtd_message' not in columns:
+                c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_message TEXT NOT NULL DEFAULT ''")
+            split_columns = {r[1] for r in c.execute('PRAGMA table_info(warehouse_splits)')}
+            if 'source_scanned_at' not in split_columns:
+                c.execute("ALTER TABLE warehouse_splits ADD COLUMN source_scanned_at TEXT NOT NULL DEFAULT ''")
             if 'sales_username' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN sales_username TEXT')
             c.execute('''CREATE INDEX IF NOT EXISTS warehouse_sales_tasks
@@ -150,6 +191,64 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
     def _bump(c, document_id):
         c.execute('UPDATE warehouse_documents SET version=version+1, revision=revision+1, updated_at=? WHERE id=?',
                   (now(), document_id))
+
+
+    def signer_job_create(self, inn, challenge_uuid, challenge_data):
+        job_id = uuid.uuid4().hex
+        digest = hashlib.sha256(challenge_data.encode('utf-8')).hexdigest()
+        with self.connection(True) as c:
+            c.execute('''INSERT INTO gis_signer_jobs
+                (id,inn,challenge_uuid,challenge_data,sha256,state,created_at,updated_at)
+                VALUES (?,?,?,?,?,'queued',?,?)''',
+                (job_id, inn, challenge_uuid, challenge_data, digest, now(), now()))
+        return self.signer_job_get(job_id)
+
+    def signer_job_get(self, job_id):
+        with self.connection() as c:
+            row = c.execute('''SELECT id,inn,state,error,created_at,updated_at
+                               FROM gis_signer_jobs WHERE id=?''', (job_id,)).fetchone()
+            if row is None:
+                raise WarehouseError('Задание подписи не найдено', 404)
+            return dict(row)
+
+    def signer_next(self, thumbprint):
+        with self.connection(True) as c:
+            ts = now()
+            c.execute("""UPDATE gis_signer_jobs SET state='queued',lease=NULL,lease_until=NULL,updated_at=?
+                         WHERE state='leased' AND lease_until<?""", (ts, time.time()))
+            row = c.execute("SELECT * FROM gis_signer_jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1").fetchone()
+            if row is None:
+                return None
+            lease = secrets.token_urlsafe(32)
+            c.execute("UPDATE gis_signer_jobs SET state='leased',lease=?,lease_until=?,updated_at=? WHERE id=?",
+                      (lease, time.time() + 180, ts, row['id']))
+            return dict(id=row['id'], kind='auth_true', lease=lease,
+                        payload_base64=base64.b64encode(row['challenge_data'].encode('utf-8')).decode('ascii'),
+                        sha256=row['sha256'], detached=False, thumbprint=thumbprint, inn=row['inn'])
+
+    def signer_claim_result(self, job_id, lease, digest):
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM gis_signer_jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None or row['state'] != 'leased':
+                raise WarehouseError('Задание уже обработано или отозвано', 409)
+            if (row['lease_until'] or 0) < time.time() or not hmac.compare_digest(row['lease'] or '', lease):
+                raise WarehouseError('Истёк срок задания подписи', 409)
+            if not hmac.compare_digest(row['sha256'], digest):
+                raise WarehouseError('Подписаны другие байты', 409)
+            c.execute("UPDATE gis_signer_jobs SET state='signing',lease=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                      (now(), job_id))
+            return dict(row)
+
+    def signer_job_finish(self, job_id, state, error=''):
+        with self.connection(True) as c:
+            c.execute('UPDATE gis_signer_jobs SET state=?,error=?,updated_at=? WHERE id=?',
+                      (state, error[:1000], now(), job_id))
+        return self.signer_job_get(job_id)
+
+    def signer_heartbeat(self, thumbprint, expires, status):
+        with self.connection(True) as c:
+            c.execute('INSERT OR REPLACE INTO gis_signer_heartbeat VALUES (1,?,?,?,?)',
+                      (thumbprint, expires, status, now()))
 
     def create(self, header, lines, expected, *, sales_username=None):
         document_id, ts = uuid.uuid4().hex, now()
@@ -251,7 +350,52 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             return {**self._snapshot(c, document_id), 'append_summary': {
                 'added': added, 'duplicates': len(expected)-added, 'quantity': sum(additions.values())}}
 
-    def sync_shipment_invoice(self, invoice_id, header, lines):
+    @staticmethod
+    def _replace_shipment_gtd(c, document_id, source_items=None, gtd_rows=None, gtd_state=None, gtd_message=None):
+        changed = False
+        source_changed = False
+        if source_items is not None:
+            old_rows = [tuple(r) for r in c.execute(
+                'SELECT good_id,gtin,pn,quantity FROM warehouse_shipment_items WHERE document_id=? ORDER BY good_id,gtin',
+                (document_id,))]
+            new = sorted((str(x['good_id']), str(x['gtin']), str(x['pn']), int(x['quantity']))
+                         for x in source_items)
+            source_changed = sorted((r[0], r[1], r[3]) for r in old_rows) != sorted(
+                (r[0], r[1], r[3]) for r in new)
+            if old_rows != new:
+                c.execute('DELETE FROM warehouse_shipment_items WHERE document_id=?', (document_id,))
+                c.executemany('INSERT INTO warehouse_shipment_items VALUES (?,?,?,?,?)',
+                              [(document_id, *item) for item in new])
+                changed = True
+            current = c.execute('SELECT gtd_required FROM warehouse_documents WHERE id=?', (document_id,)).fetchone()
+            if current and not current['gtd_required']:
+                c.execute("""UPDATE warehouse_documents SET gtd_required=1,gtd_state='pending',
+                             gtd_message='Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.' WHERE id=?""", (document_id,))
+                changed = True
+            elif source_changed and gtd_state is None:
+                c.execute('DELETE FROM warehouse_gtd_rows WHERE document_id=?', (document_id,))
+                c.execute("""UPDATE warehouse_documents SET gtd_required=1,gtd_state='pending',
+                             gtd_message='Состав GoodId изменился. Загрузите актуальную разбивку строк по ГТД' WHERE id=?""",
+                          (document_id,))
+                changed = True
+        if gtd_state is not None:
+            old = [tuple(r) for r in c.execute(
+                'SELECT good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
+                (document_id,))]
+            new = [(str(x['good_id']), str(x['gtin']), int(x['quantity']), str(x['declaration']),
+                    str(x.get('source_sheet') or ''), int(x.get('source_row') or 0)) for x in (gtd_rows or [])]
+            current = c.execute('SELECT gtd_required,gtd_state,gtd_message FROM warehouse_documents WHERE id=?',
+                                (document_id,)).fetchone()
+            if old != new or not current['gtd_required'] or current['gtd_state'] != gtd_state or current['gtd_message'] != (gtd_message or ''):
+                c.execute('DELETE FROM warehouse_gtd_rows WHERE document_id=?', (document_id,))
+                c.executemany('INSERT INTO warehouse_gtd_rows VALUES (?,?,?,?,?,?,?,?)',
+                              [(document_id, index, *item) for index, item in enumerate(new, 1)])
+                c.execute('UPDATE warehouse_documents SET gtd_required=1,gtd_state=?,gtd_message=? WHERE id=?',
+                          (gtd_state, gtd_message or '', document_id))
+                changed = True
+        return changed
+
+    def sync_shipment_invoice(self, invoice_id, header, lines, *, source_items=None, gtd_rows=None, gtd_state=None, gtd_message=None):
         """One invoice per write transaction: scan/check operations serialize with sync."""
         with self.connection(True) as c:
             source = c.execute('SELECT document_id FROM warehouse_shipment_sources WHERE org_inn=? AND invoice_id=?',
@@ -289,15 +433,24 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 same = (canonical(lines) == canonical(d['lines']) and d['number'] == header['number']
                         and d['recipient_inn'] == recipient_inn)
                 if same:
-                    # A display-name change is metadata; keep a completed scan/check valid.
+                    metadata_changed = self._replace_shipment_gtd(
+                        c, document_id, source_items, gtd_rows, gtd_state, gtd_message)
                     recipient_name = header.get('recipient_name')
                     if recipient_name and recipient_name != d['recipient_name']:
-                        c.execute('UPDATE warehouse_documents SET recipient_name=?,revision=revision+1 WHERE id=?',
+                        c.execute('UPDATE warehouse_documents SET recipient_name=? WHERE id=?',
                                   (recipient_name, document_id))
                     if not source:
                         c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                                   (header['org_inn'], invoice_id, document_id))
-                    return dict(status='unchanged', document_id=document_id, message='Без изменений; сканы и статус сохранены')
+                    if metadata_changed:
+                        self._bump(c, document_id)
+                        self._event(c, document_id, 'shipment_gtd_updated',
+                                    {'gtd_state': gtd_state, 'gtd_message': gtd_message}, actor='admin')
+                    current = self._snapshot(c, document_id)
+                    return dict(status='updated' if metadata_changed else 'unchanged',
+                                document_id=document_id, gtd_state=current['gtd_state'],
+                                message='Данные ГТД обновлены; требуется повторная проверка' if metadata_changed
+                                else 'Без изменений; сканы и статус сохранены')
                 if d['archived_at']:
                     raise WarehouseError('Состав архивного задания изменён; сначала верните его из архива', 409)
                 if d['checking']:
@@ -316,6 +469,10 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 else:
                     c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',
                               (uuid.uuid4().hex, document_id, line['pn'], line['quantity']))
+            self._replace_shipment_gtd(
+                c, document_id, source_items, gtd_rows,
+                gtd_state if gtd_state is not None else 'pending',
+                gtd_message if gtd_message is not None else 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.')
             if not source:
                 c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                           (header['org_inn'], invoice_id, document_id))
@@ -349,6 +506,21 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['receipt_source'] = {**json.loads(source['metadata']), 'revision': source['revision']} if source else None
         d['lines'] = [dict(r) for r in c.execute(
             'SELECT gtin,pn,pn_source,quantity FROM warehouse_lines WHERE document_id=? ORDER BY gtin', (document_id,))]
+        d['gtd_required'] = bool(d.get('gtd_required'))
+        d['gtd_rows'] = [dict(r) for r in c.execute(
+            'SELECT good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
+            (document_id,))]
+        d['shipment_items'] = [dict(r) for r in c.execute(
+            'SELECT good_id,gtin,pn,quantity FROM warehouse_shipment_items WHERE document_id=? ORDER BY good_id,gtin',
+            (document_id,))]
+        d['splits'] = []
+        for split in c.execute(
+                'SELECT id,source_scan_id,source_scanned_at,source_cis,parts,external_batch_id,expected_codes,state,error,created_at,updated_at '
+                'FROM warehouse_splits WHERE document_id=? ORDER BY created_at,id', (document_id,)):
+            item = dict(split)
+            item['parts'] = json.loads(item['parts'])
+            item['expected_codes'] = json.loads(item['expected_codes'])
+            d['splits'].append(item)
         d['lines'] += [dict(r) for r in c.execute(
             "SELECT id AS line_id,'' AS gtin,pn,'excel' AS pn_source,quantity FROM warehouse_unmarked_lines WHERE document_id=? ORDER BY rowid",
             (document_id,))]
@@ -360,8 +532,11 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['runtime_settings'] = self._settings(c)
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
         d['check_current'] = _check_current(d)
+        split_blocked = any(item['state'] != 'done' for item in d['splits'])
+        gtd_ok = (not d['gtd_required'] or
+                  (d['gtd_state'] == 'ready' and d['result'] and (d['result'].get('gtd') or {}).get('ok')))
         d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['archived_at'] and not d['checking'] and
-                             d['check_current'] and d['result']['ok'])
+                             d['check_current'] and d['result']['ok'] and gtd_ok and not split_blocked)
         d.pop('check_id', None)
         d.pop('check_until', None)
         return d
@@ -488,6 +663,69 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 self._bump(c, document_id)
                 self._event(c, document_id, 'scan_removed', dict(prior))
         return self.get(document_id)
+
+    @staticmethod
+    def _split_state(value):
+        return {'creating':'ordering','ordering':'ordering','ready_to_rescan':'ready_to_rescan',
+                'reporting':'reporting','done':'done','failed':'failed'}.get(value, 'unknown')
+
+    def create_split(self, document_id, scan_id, request_id, parts, external):
+        with self.connection(True) as c:
+            self._active(self._doc(c, document_id))
+            existing = c.execute('SELECT * FROM warehouse_splits WHERE request_id=?', (request_id,)).fetchone()
+            if existing:
+                return dict(existing)
+            prior = c.execute('SELECT * FROM warehouse_scans WHERE document_id=? AND id=?',
+                              (document_id, scan_id)).fetchone()
+            if prior is None:
+                raise WarehouseError('Исходный скан уже изменён. Обновите задание и повторите проверку.', 409)
+            split_id = uuid.uuid4().hex
+            expected = external.get('expected_codes') or []
+            state = self._split_state(external.get('state'))
+            c.execute('DELETE FROM warehouse_scans WHERE document_id=? AND id=?', (document_id, scan_id))
+            c.execute('''INSERT INTO warehouse_splits
+                (id,document_id,source_scan_id,source_scanned_at,request_id,source_cis,parts,external_batch_id,
+                 expected_codes,state,error,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (split_id, document_id, scan_id, prior['scanned_at'], request_id, prior['cis'],
+                 json.dumps(parts), external.get('id'),
+                 json.dumps(expected, ensure_ascii=False), state, external.get('error') or '',
+                 now(), now()))
+            self._bump(c, document_id)
+            self._event(c, document_id, 'scan_removed_for_gtd_split',
+                        {'scan':dict(prior), 'split_id':split_id, 'parts':parts,
+                         'external_batch_id':external.get('id'), 'state':state})
+        return self.get(document_id)
+
+    def update_split(self, document_id, split_id, external):
+        state = self._split_state(external.get('state'))
+        expected = external.get('expected_codes') or []
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM warehouse_splits WHERE document_id=? AND id=?',
+                            (document_id, split_id)).fetchone()
+            if row is None:
+                raise WarehouseError('Операция разделения не найдена', 404)
+            before = (row['state'], row['expected_codes'], row['error'])
+            after = (state, json.dumps(expected, ensure_ascii=False), external.get('error') or '')
+            c.execute('''UPDATE warehouse_splits SET state=?,expected_codes=?,error=?,
+                         external_batch_id=COALESCE(?,external_batch_id),updated_at=? WHERE id=?''',
+                      (state, after[1], after[2], external.get('id'), now(), split_id))
+            if before != after:
+                self._event(c, document_id, 'gtd_split_state',
+                            {'split_id':split_id, 'before':before[0], 'after':state,
+                             'error':after[2]})
+        return self.get(document_id)
+
+    def split_record(self, document_id, split_id):
+        with self.connection() as c:
+            row = c.execute('SELECT * FROM warehouse_splits WHERE document_id=? AND id=?',
+                            (document_id, split_id)).fetchone()
+            if row is None:
+                raise WarehouseError('Операция разделения не найдена', 404)
+            result = dict(row)
+            result['parts'] = json.loads(result['parts'])
+            result['expected_codes'] = json.loads(result['expected_codes'])
+            return result
 
     def edit(self, document_id, version, strict_owner=None, pns=None, quantities=None, revision=None):
         with self.connection(True) as c:

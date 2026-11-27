@@ -13,13 +13,15 @@
     const savedSort = localStorage.getItem(sortKey);
     if ([...$('document-sort').options].some(o => o.value === savedSort)) $('document-sort').value = savedSort;
   } catch (_) { /* Preferences are optional on restricted TSD browsers. */ }
-  let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
+  const requestedSection = new URLSearchParams(location.search).get('section');
+  let section = admin && ['token','settings','gtd','gtd-excel'].includes(requestedSection) ? requestedSection : 'documents';
   if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd') section = 'gtd';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd-excel') section = 'gtd-excel';
   let returnRequestId = null;
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null, archiveTarget = null;
+  let signerConfigured = false;
   let gtdBusy = false;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshPromise = null, queueError = false;
@@ -234,6 +236,11 @@
     authenticated = true; $('admin-key').value = '';
     $('login').hidden = true; $('workspace').hidden = false;
     defaultReceiptOrg = config.receipt_default_org;
+    signerConfigured = !!config.signer_configured;
+    $('token-signer-start').disabled = !signerConfigured;
+    $('token-signer-state').textContent = signerConfigured
+      ? 'Подключение подписанта настроено. Запрос будет ждать подписи от запущенного Windows-агента.'
+      : 'Общий подписант не настроен на сервере. Нужны GIS_SIGNER_TOKEN и GIS_SIGNER_THUMBPRINT.';
     const options = config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
     setupFilterOrgs(config.organizations); loadFilters();
     $('import-org').innerHTML = '<option value="">Из файла</option>' + options;
@@ -371,6 +378,54 @@
       $('doc-status').textContent = `Дата: ${d.date} · ${$('doc-status').textContent}`;
       $('complete').hidden = !d.can_complete;
       $('check-state').hidden = !state;
+      const gtd = result?.gtd;
+      const activeSplits = (d.splits || []).filter(item => item.state !== 'done');
+      if (d.kind === 'shipment' && d.gtd_required) {
+        if (d.gtd_state !== 'ready') state = d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.';
+        else if (gtd?.message) state = gtd.message;
+        if (activeSplits.length) {
+          const split = activeSplits[0];
+          state = split.state === 'ordering' ? 'КМ ' + split.source_cis.slice(-8) + ' отправлен на автоматическое разделение. Ожидайте выпуска новых КМ.'
+            : split.state === 'ready_to_rescan' ? 'Разделение подготовлено. Распечатайте все этикетки из PDF, замените исходную и отсканируйте все КМ в порядке списка: сначала новые, затем исходный с обновлённым количеством.'
+            : split.state === 'reporting' ? 'Этикетки заменены и повторно отсканированы. Ожидаем подтверждения DIVISIONMARK в Честном ЗНАКе. Через несколько секунд нажмите «Проверить» ещё раз. Упаковка заблокирована.'
+            : split.state === 'failed' ? 'Автоматическое разделение остановлено: ' + (split.error || 'требуется разбор ответственным').slice(0, 400)
+            : 'Состояние автоматического разделения уточняется. Упаковку пока не начинать.';
+        }
+        $('check-state').hidden = !state;
+      }
+      const splitPanel = $('split-panel');
+      if (splitPanel) {
+        const splitCards = (d.splits || []).map(split => {
+          const labelsReady = ['ready_to_rescan','reporting','done'].includes(split.state);
+          const expected = (split.expected_codes || []).map(code =>
+            '<li>' + (code.role === 'source' ? 'Исходный КМ с обновлённым количеством' : 'Новый КМ') +
+            ': <strong>' + esc(code.quantity) + ' шт.</strong> · КИ …' + esc(String(code.cis).slice(-8)) + '</li>').join('');
+          const stateLabel = ({ordering:'Заказ новых КМ',ready_to_rescan:'Ожидает повторного сканирования',reporting:'Ожидает DIVISIONMARK',done:'DIVISIONMARK подтверждён',failed:'Требуется разбор'})[split.state] || 'Состояние уточняется';
+          const link = labelsReady ? '<p><a class="btn primary" href="/api/warehouse/documents/' + esc(d.id) + '/splits/' + esc(split.id) + '/labels.pdf">Скачать PDF · ' + (split.expected_codes || []).length + ' шт.</a></p>' : '';
+          return '<section class="wh-split-item" data-state="' + esc(split.state) + '"><h3>' + esc(stateLabel) + '</h3><p>Исходный КИ: …' + esc(String(split.source_cis).slice(-8)) + '</p>' +
+            (expected ? '<ul>' + expected + '</ul>' : '') + link +
+            (split.error ? '<p class="wh-bad">' + esc(split.error) + '</p>' : '') + '</section>';
+        }).join('');
+        const gtdMessage = d.kind === 'shipment' && d.gtd_required
+          ? '<p class="wh-split-gtd">' + esc(activeSplits.length ? state : (gtd?.message || d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.')) + '</p>' : '';
+        splitPanel.innerHTML = gtdMessage + splitCards;
+        splitPanel.hidden = !gtdMessage && !splitCards;
+      }
+    }
+    if (admin && d.kind === 'shipment' && d.gtd_required) {
+      const gtd = result?.gtd;
+      const activeSplit = (d.splits || []).find(item => item.state !== 'done');
+      $('doc-status').textContent += ' · ГТД: ' + (d.gtd_state === 'ready' ? 'данные загружены' : 'ожидаются / требуют исправления');
+      if (d.gtd_state !== 'ready') state = d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.';
+      else if (gtd?.message) state = gtd.message;
+      if (activeSplit) {
+        state = activeSplit.state === 'ordering' ? 'Автоматическое разделение КМ …' + activeSplit.source_cis.slice(-8) + ': заказ новых кодов'
+          : activeSplit.state === 'ready_to_rescan' ? 'Разделение готово: ожидается повторное сканирование всех этикеток.'
+          : activeSplit.state === 'reporting' ? 'Ожидается подтверждение DIVISIONMARK в Честном ЗНАКе. Нажмите «Проверить» повторно через несколько секунд.'
+          : activeSplit.state === 'failed' ? 'Разделение остановлено: ' + (activeSplit.error || 'требуется разбор')
+          : 'Состояние разделения уточняется.';
+      }
+      $('check-state').textContent = state;
     }
     const ownerWarnings = result?.owner_mismatch_warnings || 0;
     if (d.check_current && !d.checking && result?.ok && ownerWarnings) {
@@ -715,6 +770,41 @@
       showSection(); await settingsEditor.load();
     });
     $('token-org').onchange = () => action(tokenStatus);
+    $('token-signer-start').onclick = () => action(async () => {
+      if (!signerConfigured) throw new Error('Общий Windows-подписант не настроен на сервере.');
+      const inn = $('token-org').value;
+      if (!inn) throw new Error('Выберите организацию.');
+      $('token-signer-start').disabled = true;
+      $('token-signer-state').textContent = 'Запрашиваем challenge у True API…';
+      try {
+        const job = await json(apiBase + '/signer/auth', {method:'POST', body:{inn}});
+        $('token-signer-state').textContent = 'Challenge получен. Ожидаем подпись на компьютере с УКЭП…';
+        let finished = false;
+        for (let attempt = 0; attempt < 90; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const currentJob = await json(apiBase + '/signer/jobs/' + job.id);
+          if (currentJob.state === 'done') {
+            $('token-signer-state').textContent = currentJob.message || 'Токен True API обновлён.';
+            $('token-signer-state').className = 'wh-good';
+            await tokenStatus();
+            finished = true;
+            break;
+          }
+          if (currentJob.state === 'failed') {
+            $('token-signer-state').textContent = currentJob.error || 'Не удалось обновить токен. Запросите новый challenge.';
+            $('token-signer-state').className = 'wh-bad';
+            finished = true;
+            break;
+          }
+          $('token-signer-state').textContent = currentJob.state === 'signing'
+            ? 'Подпись получена. Выполняем авторизацию в True API…'
+            : 'Ожидаем подпись Windows-подписанта…';
+        }
+        if (!finished) $('token-signer-state').textContent = 'Задание осталось в очереди. Проверьте работу подписанта и обновите страницу позже.';
+      } finally {
+        $('token-signer-start').disabled = !signerConfigured;
+      }
+    });
     $('token-form').onsubmit = e => { e.preventDefault(); action(async () => {
       $('token-submit').disabled = true; $('token-result').textContent = 'Обновление…';
       try {
@@ -799,11 +889,15 @@
       button.disabled = true;
       try {
         const form = new FormData(); form.set('file', file);
+        const gtdFile = $('bulk-gtd-file').files[0];
+        if (gtdFile) form.set('gtd_file', gtdFile);
         const report = await json(apiBase + '/shipment-invoices', {method:'POST', body:form});
         const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', skipped:'Пропущено', error:'Ошибка'};
+        const gtdLabels = {ready:'Готово',pending:'Ожидает данных',invalid:'Ошибка данных',none:'Не требуется'};
         $('bulk-shipment-report').innerHTML = '<p>' + Object.entries(report.counts).map(([key, count]) => `${labels[key]}: ${count}`).join(' · ') + '</p>'
-          + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody>'
-          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+          + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>ГТД</th><th>Пояснение</th></tr></thead><tbody>'
+          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(gtdLabels[r.gtd_state] || r.gtd_state || '—')}</td><td>${esc(r.gtd_message || r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+        $('bulk-shipment-file').value = ''; $('bulk-gtd-file').value = '';
         await list();
       } finally { button.disabled = false; }
     }); };
@@ -816,7 +910,7 @@
       }
       form.set('file', $('import-file').files[0]);
       const d = await json(apiBase + '/documents', {method:'POST',body:form});
-      $('import-box').open=false; $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
+      $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
       await open(d.id); message((d.import_warnings || []).join('\n') || 'Документ загружен');
     }); };
     $('append-codes-form').onsubmit = e => { e.preventDefault(); action(async () => {

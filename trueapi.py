@@ -78,6 +78,10 @@ class MarkingApiClient(Protocol):
         """Криптографическая проверка КМ."""
         ...
 
+    async def auth_key(self) -> dict[str, str]:
+        """Получить challenge для подписи True API."""
+        ...
+
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
         """Обмен UUID+SIGNATURE на bearer-токен. Возвращает токен."""
         ...
@@ -177,6 +181,16 @@ class TrueApiClient:
         )
 
     # ---- auth -----------------------------------------------------------
+
+    async def auth_key(self) -> dict[str, str]:
+        resp = await self._get_json(AUTH_KEY_PATH)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict) and isinstance(data.get('uuid'), str) and isinstance(data.get('data'), str):
+                if data['uuid'] and data['data']:
+                    return {'uuid': data['uuid'], 'data': data['data']}
+            raise TrueApiError(ErrorCategory.API_ERROR, 'ЧЗ вернул некорректный запрос авторизации', 200)
+        self._raise_http(resp)
 
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
         """signature — подписанные УКЭП данные (base64) из refresh_trueapi_token.ps1.

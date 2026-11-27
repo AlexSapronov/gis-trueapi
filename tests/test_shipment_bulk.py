@@ -36,8 +36,179 @@ def flarp_excel(*rows, recipient_name='Получатель из Фларпа'):
     ]]})
 
 
+def gtd_row(values, amount=None, declaration=None):
+    invoice, good, pn, quantity, number, gtin, flag, org, recipient = values
+    return [number or f'INV-{invoice}', good, quantity if amount is None else amount,
+            declaration or f'DECL-{invoice}-{good}', org, recipient]
+
+
+def gtd_book(*rows):
+    return make_xlsx({'ГТД': [['Number', 'GoodId', 'Amount', 'Declaration', 'FromINN', 'ToINN'], *rows]})
+
+
 def upload(store, *rows):
-    return import_bulk(store, excel(*rows))
+    return import_bulk(store, excel(*rows), gtd_book(*(gtd_row(item) for item in rows)))
+
+
+def test_bulk_task_waits_for_gtd_when_optional_file_is_not_uploaded(store, svc):
+    result = import_bulk(store, excel(row()))['results'][0]
+    d = store.get(result['document_id'])
+    assert d['gtd_required'] and d['gtd_state'] == 'pending'
+    store.add_scan(d['id'], scan_data(code()))
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert not checked['can_complete']
+    assert checked['result']['gtd']['state'] == 'pending'
+    assert 'Груз пока не упаковывать' in checked['result']['gtd']['message']
+    with pytest.raises(WarehouseError):
+        store.complete(d['id'])
+
+
+def test_gtd_workbook_quantity_must_match_bulk_goodid(store):
+    report = import_bulk(store, excel(row(quantity=100)), gtd_book(gtd_row(row(quantity=100), amount=99)))
+    d = store.get(report['results'][0]['document_id'])
+    assert d['gtd_state'] == 'invalid'
+    assert '99 шт.' in d['gtd_message'] and '100 шт.' in d['gtd_message']
+
+
+def test_gtd_fifo_identifies_a_code_crossing_two_declaration_rows():
+    from warehouse_service import reconcile_gtd_fifo
+    doc = {'gtd_required': True, 'gtd_state': 'ready', 'gtd_rows': [
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ]}
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'scan-1','cis':'CI-1','gtin':GTIN,'quantity':400,'errors':[]},
+    ])
+    assert not result['ok'] and len(result['split_required']) == 1
+    assert result['split_required'][0]['parts'] == [300]
+    assert result['split_required'][0]['remaining_quantity'] == 100
+    assert result['split_required'][0]['declarations'] == ['D1','D2']
+
+
+@pytest.mark.asyncio
+async def test_auto_split_requires_rescan_and_successful_divisionmark(store, svc):
+    values = row(quantity=400)
+    report = import_bulk(store, excel(values), gtd_book(
+        gtd_row(values, amount=300, declaration='D1'),
+        gtd_row(values, amount=100, declaration='D2')))
+    document_id = report['results'][0]['document_id']
+    original_code = code('INTRODUCEDQ400')
+    updated_source = original_code + '\x1d30' + '100'
+    new_code = code('INTRODUCEDNEWQ300') + '\x1d30' + '300'
+    source_cis = scan_data(updated_source)['cis']
+    new_cis = scan_data(new_code)['cis']
+
+    class SplitClient:
+        enabled = True
+        confirmed = False
+        async def create(self, code_value, parts, request_id):
+            assert parts == [300]
+            return {'id':'batch-1','state':'ordering','expected_codes':[]}
+        async def status(self, batch_id):
+            if self.confirmed:
+                state = 'done'
+            else:
+                state = 'ready_to_rescan'
+            return {'id':batch_id,'state':state,'error':None,
+                    'expected_codes':[
+                        {'cis':new_cis,'quantity':300,'role':'new'},
+                        {'cis':source_cis,'quantity':100,'role':'source'}]}
+        async def confirm(self, batch_id, scanned_cis):
+            assert set(scanned_cis) == {source_cis,new_cis}
+            self.confirmed = True
+            return {'id':batch_id,'state':'reporting','error':None,
+                    'expected_codes':[
+                        {'cis':new_cis,'quantity':300,'role':'new'},
+                        {'cis':source_cis,'quantity':100,'role':'source'}]}
+        async def labels(self, batch_id):
+            return b'%PDF-test'
+
+    split = SplitClient()
+    svc.km_split_client = split
+    original_info = svc.client.info
+    async def info(cises, token):
+        results = await original_info(cises, token)
+        if split.confirmed:
+            for index, item in enumerate(results):
+                item['cisInfo']['quantityInPack'] = 100 if index == 0 else 300
+        return results
+    svc.client.info = info
+
+    store.add_scan(document_id, scan_data(original_code))
+    started = await check_document(store, svc, document_id)
+    assert not started['can_complete']
+    assert started['scans'] == []
+    assert started['splits'][0]['state'] == 'ordering'
+
+    store.add_scan(document_id, scan_data(updated_source))
+    store.add_scan(document_id, scan_data(new_code))
+    awaiting = await check_document(store, svc, document_id)
+    assert split.confirmed, awaiting['splits'][0]
+    assert awaiting['splits'][0]['state'] == 'reporting'
+    assert awaiting['result']['gtd']['ok'], awaiting['result']['gtd']
+    assert not awaiting['can_complete']
+
+    completed = await check_document(store, svc, document_id)
+    assert completed['splits'][0]['state'] == 'done'
+    assert completed['result']['gtd']['ok']
+    assert completed['can_complete']
+
+
+def test_split_removes_active_scan_but_keeps_audit_and_is_idempotent(store):
+    values = row(quantity=400)
+    report = import_bulk(store, excel(values), gtd_book(
+        gtd_row(values, amount=300, declaration='D1'),
+        gtd_row(values, amount=100, declaration='D2')))
+    document_id = report['results'][0]['document_id']
+    store.add_scan(document_id, scan_data(code()))
+    scan_id = store.get(document_id)['scans'][0]['id']
+    request_id = 'gtd-split-request-1'
+    remote = {'id':'remote-batch-1','state':'ordering','expected_codes':[]}
+    first = store.create_split(document_id, scan_id, request_id, [300], remote)
+    assert not first['scans']
+    assert first['splits'][0]['state'] == 'ordering'
+    assert first['splits'][0]['source_cis']
+    store.create_split(document_id, scan_id, request_id, [300], remote)
+    assert len(store.get(document_id)['splits']) == 1
+    with store.connection() as c:
+        events = [row['action'] for row in c.execute(
+            'SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id', (document_id,))]
+    assert events.count('scan_removed_for_gtd_split') == 1
+
+
+def test_gtd_fifo_uses_original_scan_position_and_split_part_order():
+    from warehouse_service import reconcile_gtd_fifo
+    source = {'cis':'SOURCE-CIS','quantity':100,'role':'source'}
+    new = {'cis':'NEW-CIS','quantity':300,'role':'new'}
+    doc = {'gtd_required':True,'gtd_state':'ready','gtd_rows':[
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ],'splits':[{'source_scanned_at':'2026-11-27T08:00:00+00:00',
+                 'created_at':'2026-11-27T08:02:00+00:00',
+                 'expected_codes':[new,source]}]}
+    # The retained/source label was scanned first by the operator, but FIFO
+    # placement follows the original scan's position and the generated part order.
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'source','cis':'SOURCE-CIS','gtin':GTIN,'quantity':100,'errors':[],
+         'scanned_at':'2026-11-27T08:03:00+00:00'},
+        {'scan_id':'new','cis':'NEW-CIS','gtin':GTIN,'quantity':300,'errors':[],
+         'scanned_at':'2026-11-27T08:04:00+00:00'},
+    ])
+    assert result['ok'] and not result['split_required']
+
+
+def test_gtd_fifo_accepts_codes_aligned_to_declaration_boundaries():
+    from warehouse_service import reconcile_gtd_fifo
+    doc = {'gtd_required': True, 'gtd_state': 'ready', 'gtd_rows': [
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ]}
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'scan-1','cis':'CI-1','gtin':GTIN,'quantity':300,'errors':[]},
+        {'scan_id':'scan-2','cis':'CI-2','gtin':GTIN,'quantity':100,'errors':[]},
+    ])
+    assert result['ok'] and not result['split_required']
+    assert result['message'] == 'ГТД распределены по физическим КМ. Можно паковать.'
 
 
 def test_repeat_completed_is_unchanged_and_restart(store, svc):
@@ -127,7 +298,7 @@ def test_existing_manual_adopted_and_ambiguous_rejected(store):
     header = dict(kind='shipment', number='INV-1', date='2026-01-01', org_inn=ORG, org_name='Org', recipient_inn='1234567890')
     lines = [dict(gtin=GTIN, pn='PN', pn_source='excel', quantity=100)]
     d = store.create(header, lines, [])
-    assert upload(store, row())['results'][0]['status'] == 'unchanged'
+    assert upload(store, row())['results'][0]['status'] == 'updated'
     assert store.get(d['id'])['date'] == '2026-01-01'
     header['number'] = 'INV-2'
     store.create(header, lines, [])

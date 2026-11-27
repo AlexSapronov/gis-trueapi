@@ -21,6 +21,7 @@ from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template,
 from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
+from km_split_client import KmSplitError
 from shipment_bulk import import_bulk
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
@@ -31,6 +32,9 @@ class ScanBody(BaseModel):
 
 class GtdBody(ScanBody):
     org_inn: str = Field(min_length=10, max_length=12)
+
+class SignerAuthBody(BaseModel):
+    inn: str = Field(min_length=10, max_length=12)
 
 
 class UpdMapping(BaseModel):
@@ -145,6 +149,23 @@ def install_warehouse(app, service_getter, store_getter, templates):
         visible(document_id)
         return store_getter().delete_scan(document_id, scan_id)
 
+    @router.get('/api/warehouse/documents/{document_id}/splits/{split_id}/labels.pdf')
+    async def split_labels(document_id: str, split_id: str):
+        visible(document_id)
+        split = store_getter().split_record(document_id, split_id)
+        if split['state'] not in ('ready_to_rescan', 'reporting', 'done') or not split['external_batch_id']:
+            raise WarehouseError('Этикетки ещё не готовы', 409)
+        client = getattr(service_getter(), 'km_split_client', None)
+        if not client or not client.enabled:
+            raise WarehouseError('Сервис автоматического разделения недоступен', 503)
+        try:
+            pdf = await client.labels(split['external_batch_id'])
+        except KmSplitError as exc:
+            raise WarehouseError(str(exc), 502) from exc
+        return Response(pdf, media_type='application/pdf', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + quote('КМ_после_разделения.pdf'),
+            'Cache-Control': 'no-store'})
+
     @router.post('/api/warehouse/documents/{document_id}/check')
     async def check(document_id: str):
         visible(document_id)
@@ -176,6 +197,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
         return {'organizations': [{'inn': o.inn, 'name': o.name} for o in registry.all()],
                 'receipt_default_org': runtime['values']['receipt_default_org'],
                 'runtime': runtime,
+                'signer_configured': bool(settings.signer_token and settings.signer_thumbprint),
+                'km_split_configured': bool(settings.km_split_url and settings.km_split_internal_token),
                 'defaults': defaults(), 'schema': ApplicationSettings.model_json_schema(),
                 'history': store_getter().settings_history()}
 
@@ -194,6 +217,20 @@ def install_warehouse(app, service_getter, store_getter, templates):
             }
             # An upstream HTTP 401/403 is not an expired administrator session.
             raise WarehouseError(exc.message, 422 if client_error else 502) from exc
+
+    @admin.post('/signer/auth')
+    async def start_signer_auth(body: SignerAuthBody):
+        if not settings.signer_token or not settings.signer_thumbprint:
+            raise WarehouseError('Общий Windows-подписант не настроен. Задайте GIS_SIGNER_TOKEN и GIS_SIGNER_THUMBPRINT.', 409)
+        try:
+            challenge = await service_getter().auth_challenge(body.inn)
+        except AppError as exc:
+            raise WarehouseError(exc.message, 502) from exc
+        return store_getter().signer_job_create(body.inn, challenge['uuid'], challenge['data'])
+
+    @admin.get('/signer/jobs/{job_id}')
+    def signer_job(job_id: str):
+        return store_getter().signer_job_get(job_id)
 
     @admin.get('/documents')
     def admin_documents(filters: Annotated[AdminFilters, Query()]):
@@ -214,9 +251,15 @@ def install_warehouse(app, service_getter, store_getter, templates):
             kind, org_inn, document_number, document_date)
 
     @admin.post('/shipment-invoices')
-    async def import_shipment_invoices(file: UploadFile = File(...)):
+    async def import_shipment_invoices(file: UploadFile = File(...),
+                                       gtd_file: UploadFile | None = File(None)):
         content = await file.read(MAX_FILE_SIZE + 1)
-        return await asyncio.to_thread(import_bulk, store_getter(), content)
+        gtd_content = None
+        if gtd_file is not None:
+            if not (gtd_file.filename or '').lower().endswith('.xlsx'):
+                raise WarehouseError('Файл разбивки ГТД должен иметь формат .xlsx')
+            gtd_content = await gtd_file.read(MAX_FILE_SIZE + 1)
+        return await asyncio.to_thread(import_bulk, store_getter(), content, gtd_content)
 
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
