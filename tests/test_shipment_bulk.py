@@ -147,7 +147,7 @@ async def test_auto_split_requires_rescan_and_successful_divisionmark(store, svc
     store.add_scan(document_id, scan_data(updated_source))
     store.add_scan(document_id, scan_data(new_code))
     awaiting = await check_document(store, svc, document_id)
-    assert awaiting['result']['gtd']['ok']
+    assert awaiting['result']['gtd']['ok'], awaiting['result']['gtd']
     assert awaiting['splits'][0]['state'] == 'reporting'
     assert not awaiting['can_complete']
 
