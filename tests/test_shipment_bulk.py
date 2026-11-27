@@ -36,8 +36,67 @@ def flarp_excel(*rows, recipient_name='Получатель из Фларпа'):
     ]]})
 
 
+def gtd_row(values, amount=None, declaration=None):
+    invoice, good, pn, quantity, number, gtin, flag, org, recipient = values
+    return [number or f'INV-{invoice}', good, quantity if amount is None else amount,
+            declaration or f'DECL-{invoice}-{good}', org, recipient]
+
+
+def gtd_book(*rows):
+    return make_xlsx({'ГТД': [['Number', 'GoodId', 'Amount', 'Declaration', 'FromINN', 'ToINN'], *rows]})
+
+
 def upload(store, *rows):
-    return import_bulk(store, excel(*rows))
+    return import_bulk(store, excel(*rows), gtd_book(*(gtd_row(item) for item in rows)))
+
+
+def test_bulk_task_waits_for_gtd_when_optional_file_is_not_uploaded(store, svc):
+    result = import_bulk(store, excel(row()))['results'][0]
+    d = store.get(result['document_id'])
+    assert d['gtd_required'] and d['gtd_state'] == 'pending'
+    store.add_scan(d['id'], scan_data(code()))
+    checked = asyncio.run(check_document(store, svc, d['id']))
+    assert not checked['can_complete']
+    assert checked['result']['gtd']['state'] == 'pending'
+    assert 'Груз пока не упаковывать' in checked['result']['gtd']['message']
+    with pytest.raises(WarehouseError):
+        store.complete(d['id'])
+
+
+def test_gtd_workbook_quantity_must_match_bulk_goodid(store):
+    report = import_bulk(store, excel(row(quantity=100)), gtd_book(gtd_row(row(quantity=100), amount=99)))
+    d = store.get(report['results'][0]['document_id'])
+    assert d['gtd_state'] == 'invalid'
+    assert '99 шт.' in d['gtd_message'] and '100 шт.' in d['gtd_message']
+
+
+def test_gtd_fifo_identifies_a_code_crossing_two_declaration_rows():
+    from warehouse_service import reconcile_gtd_fifo
+    doc = {'gtd_required': True, 'gtd_state': 'ready', 'gtd_rows': [
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ]}
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'scan-1','cis':'CI-1','gtin':GTIN,'quantity':400,'errors':[]},
+    ])
+    assert not result['ok'] and len(result['split_required']) == 1
+    assert result['split_required'][0]['parts'] == [300]
+    assert result['split_required'][0]['remaining_quantity'] == 100
+    assert result['split_required'][0]['declarations'] == ['D1','D2']
+
+
+def test_gtd_fifo_accepts_codes_aligned_to_declaration_boundaries():
+    from warehouse_service import reconcile_gtd_fifo
+    doc = {'gtd_required': True, 'gtd_state': 'ready', 'gtd_rows': [
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ]}
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'scan-1','cis':'CI-1','gtin':GTIN,'quantity':300,'errors':[]},
+        {'scan_id':'scan-2','cis':'CI-2','gtin':GTIN,'quantity':100,'errors':[]},
+    ])
+    assert result['ok'] and not result['split_required']
+    assert result['message'] == 'ГТД распределены по физическим КМ. Можно паковать.'
 
 
 def test_repeat_completed_is_unchanged_and_restart(store, svc):
@@ -127,7 +186,7 @@ def test_existing_manual_adopted_and_ambiguous_rejected(store):
     header = dict(kind='shipment', number='INV-1', date='2026-01-01', org_inn=ORG, org_name='Org', recipient_inn='1234567890')
     lines = [dict(gtin=GTIN, pn='PN', pn_source='excel', quantity=100)]
     d = store.create(header, lines, [])
-    assert upload(store, row())['results'][0]['status'] == 'unchanged'
+    assert upload(store, row())['results'][0]['status'] == 'updated'
     assert store.get(d['id'])['date'] == '2026-01-01'
     header['number'] = 'INV-2'
     store.create(header, lines, [])
