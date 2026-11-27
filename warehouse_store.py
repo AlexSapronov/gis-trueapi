@@ -438,7 +438,6 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                     if recipient_name and recipient_name != d['recipient_name']:
                         c.execute('UPDATE warehouse_documents SET recipient_name=? WHERE id=?',
                                   (recipient_name, document_id))
-                        metadata_changed = True
                     if not source:
                         c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                                   (header['org_inn'], invoice_id, document_id))
