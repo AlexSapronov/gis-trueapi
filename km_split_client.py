@@ -24,7 +24,7 @@ class KmSplitClient:
     def _headers(self):
         if not self.enabled:
             raise KmSplitError('Автоматическое разделение не настроено: задайте KM_SPLIT_URL и KM_SPLIT_INTERNAL_TOKEN')
-        return {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json'}
+        return {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json', 'X-Requested-With': 'km-split'}
 
     async def _request(self, method, path, body=None):
         try:
@@ -65,7 +65,7 @@ class KmSplitClient:
         try:
             response = await self._http.get(
                 self.base_url + '/api/internal/splits/' + batch_id + '/labels.pdf',
-                headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/pdf'})
+                headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/pdf', 'X-Requested-With': 'km-split'})
         except httpx.HTTPError as exc:
             raise KmSplitError('Не удалось получить PDF этикеток из km-split') from exc
         if response.status_code >= 400:
