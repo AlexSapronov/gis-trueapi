@@ -99,10 +99,12 @@ def test_split_removes_active_scan_but_keeps_audit_and_is_idempotent(store):
     assert not first['scans']
     assert first['splits'][0]['state'] == 'ordering'
     assert first['splits'][0]['source_cis']
-    again = store.create_split(document_id, scan_id, request_id, [300], remote)
-    assert len(again['splits']) == 1
-    events = store.events(document_id)
-    assert sum(event['action'] == 'scan_removed_for_gtd_split' for event in events) == 1
+    store.create_split(document_id, scan_id, request_id, [300], remote)
+    assert len(store.get(document_id)['splits']) == 1
+    with store.connection() as c:
+        events = [row['action'] for row in c.execute(
+            'SELECT action FROM warehouse_events WHERE document_id=? ORDER BY id', (document_id,))]
+    assert events.count('scan_removed_for_gtd_split') == 1
 
 
 def test_gtd_fifo_uses_original_scan_position_and_split_part_order():
