@@ -94,7 +94,7 @@ def reconcile_gtd_fifo(doc, details):
                         row_remaining = target_rows[row_index]['quantity']
             if left > 0:
                 extra.append(dict(gtin=gtin, scan_id=scan['scan_id'], quantity=left))
-            if len(chunks) > 1:
+            if left == 0 and len(chunks) > 1:
                 split_required.append(dict(
                     scan_id=scan['scan_id'], cis=scan['cis'], gtin=gtin,
                     original_quantity=quantity, parts=chunks[:-1],
