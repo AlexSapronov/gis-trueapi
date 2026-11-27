@@ -81,9 +81,11 @@ def parse_gtd_file(content: bytes) -> list[dict]:
 
 def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
     """Match by invoice Number + GoodId; optional INNs narrow duplicate invoice numbers."""
-    source = defaultdict(list)
+    all_source = defaultdict(list)
     for item in group['lines']:
-        source[item['good_id']].append(item)
+        all_source[item['good_id']].append(item)
+    source = {good_id: items for good_id, items in all_source.items()
+              if any(item['gtin'] for item in items)}
     candidates = []
     for row in rows:
         if row['number'] != group['number']:
@@ -92,7 +94,8 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
             continue
         if row['to_inn'] and row['to_inn'] != group['recipient_inn']:
             continue
-        candidates.append(row)
+        if row['good_id'] in all_source:
+            candidates.append(row)
     if not candidates:
         return dict(state='pending', rows=[],
                     message='Ожидается загрузка разбивки строк по ГТД для этой накладной')
@@ -122,7 +125,7 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
             matched.append(dict(good_id=good_id, gtin=gtin, quantity=row['quantity'],
                                 declaration=row['declaration'], source_sheet=row['source_sheet'],
                                 source_row=row['source_row']))
-    extra = set(by_good) - set(source)
+    extra = set(by_good) - set(all_source)
     if extra:
         return dict(state='invalid', rows=[],
                     message='В файле ГТД есть лишние GoodId: ' + ', '.join(sorted(extra)[:10]))
