@@ -125,9 +125,11 @@ def parse_bulk(content):
 def import_bulk(store, content, gtd_content=None):
     groups = parse_bulk(content)
     gtd_rows = parse_gtd_file(gtd_content) if gtd_content else None
-    number_counts = {}
+    number_counts, party_counts = {}, {}
     for group in groups:
         number_counts[group['number']] = number_counts.get(group['number'], 0) + 1
+        party = (group['number'], group['org_inn'], group['recipient_inn'])
+        party_counts[party] = party_counts.get(party, 0) + 1
     report = []
     for group in groups:
         base = dict(invoice_id=group['invoice_id'], number=group['number'])
@@ -161,7 +163,8 @@ def import_bulk(store, content, gtd_content=None):
             if gtd_rows is None:
                 gtd = dict(state=None, rows=None, message=None)
             else:
-                gtd = match_gtd_rows(group, gtd_rows, ambiguous_number=number_counts[group['number']] > 1)
+                gtd = match_gtd_rows(group, gtd_rows, ambiguous_number=number_counts[group['number']] > 1,
+                                     ambiguous_party=party_counts[(group['number'], group['org_inn'], group['recipient_inn'])] > 1)
             source_items = []
             source_map = {}
             for item in group['lines']:
