@@ -239,7 +239,7 @@
     signerConfigured = !!config.signer_configured;
     $('token-signer-start').disabled = !signerConfigured;
     $('token-signer-state').textContent = signerConfigured
-      ? 'Подписант готов к работе. Запрос подписи будет отправлен в очередь.'
+      ? 'Подключение подписанта настроено. Запрос будет ждать подписи от запущенного Windows-агента.'
       : 'Общий подписант не настроен на сервере. Нужны GIS_SIGNER_TOKEN и GIS_SIGNER_THUMBPRINT.';
     const options = config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
     setupFilterOrgs(config.organizations); loadFilters();
