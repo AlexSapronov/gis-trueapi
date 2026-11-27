@@ -379,7 +379,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 changed = True
         if gtd_state is not None:
             old = [tuple(r) for r in c.execute(
-                'SELECT position,good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
+                'SELECT good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
                 (document_id,))]
             new = [(str(x['good_id']), str(x['gtin']), int(x['quantity']), str(x['declaration']),
                     str(x.get('source_sheet') or ''), int(x.get('source_row') or 0)) for x in (gtd_rows or [])]
