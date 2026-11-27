@@ -13,7 +13,8 @@
     const savedSort = localStorage.getItem(sortKey);
     if ([...$('document-sort').options].some(o => o.value === savedSort)) $('document-sort').value = savedSort;
   } catch (_) { /* Preferences are optional on restricted TSD browsers. */ }
-  let section = admin && (new URLSearchParams(location.search).get('section') === 'token' || !new URLSearchParams(location.search).has('kind')) ? 'token' : 'documents';
+  const requestedSection = new URLSearchParams(location.search).get('section');
+  let section = admin && ['token','settings','gtd','gtd-excel'].includes(requestedSection) ? requestedSection : 'documents';
   if (admin && new URLSearchParams(location.search).get('section') === 'settings') section = 'settings';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd') section = 'gtd';
   if (admin && new URLSearchParams(location.search).get('section') === 'gtd-excel') section = 'gtd-excel';
@@ -799,11 +800,14 @@
       button.disabled = true;
       try {
         const form = new FormData(); form.set('file', file);
+        const gtdFile = $('bulk-gtd-file').files[0];
+        if (gtdFile) form.set('gtd_file', gtdFile);
         const report = await json(apiBase + '/shipment-invoices', {method:'POST', body:form});
         const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', skipped:'Пропущено', error:'Ошибка'};
         $('bulk-shipment-report').innerHTML = '<p>' + Object.entries(report.counts).map(([key, count]) => `${labels[key]}: ${count}`).join(' · ') + '</p>'
           + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody>'
           + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+        $('bulk-shipment-file').value = ''; $('bulk-gtd-file').value = '';
         await list();
       } finally { button.disabled = false; }
     }); };
@@ -816,7 +820,7 @@
       }
       form.set('file', $('import-file').files[0]);
       const d = await json(apiBase + '/documents', {method:'POST',body:form});
-      $('import-box').open=false; $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
+      $('import-file').value=''; $('import-number').value=''; $('import-date').value='';
       await open(d.id); message((d.import_warnings || []).join('\n') || 'Документ загружен');
     }); };
     $('append-codes-form').onsubmit = e => { e.preventDefault(); action(async () => {
