@@ -79,7 +79,7 @@ def parse_gtd_file(content: bytes) -> list[dict]:
         book.close()
 
 
-def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
+def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False, ambiguous_party=False):
     """Match by invoice Number + GoodId; optional INNs narrow duplicate invoice numbers."""
     all_source = defaultdict(list)
     for item in group['lines']:
@@ -98,6 +98,9 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
     if not candidates:
         return dict(state='pending', rows=[],
                     message='Ожидайте загрузки данных по ГТД. Груз пока не упаковывать. Для этой накладной пока нет строк в файле.')
+    if ambiguous_party:
+        return dict(state='invalid', rows=[],
+                    message='В массовой загрузке есть несколько накладных с одинаковыми Number и ИНН сторон; сопоставление ГТД неоднозначно')
     if ambiguous_number and not all(r['from_inn'] == group['org_inn'] and r['to_inn'] == group['recipient_inn'] for r in candidates):
         return dict(state='invalid', rows=[],
                     message='Номер накладной встречается в массовой загрузке несколько раз; для точного сопоставления добавьте FromINN и ToINN в файл ГТД')
