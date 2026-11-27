@@ -148,6 +148,23 @@ def install_warehouse(app, service_getter, store_getter, templates):
         visible(document_id)
         return store_getter().delete_scan(document_id, scan_id)
 
+    @router.get('/api/warehouse/documents/{document_id}/splits/{split_id}/labels.pdf')
+    async def split_labels(document_id: str, split_id: str):
+        visible(document_id)
+        split = store_getter().split_record(document_id, split_id)
+        if split['state'] not in ('ready_to_rescan', 'reporting', 'done') or not split['external_batch_id']:
+            raise WarehouseError('Этикетки ещё не готовы', 409)
+        client = getattr(service_getter(), 'km_split_client', None)
+        if not client or not client.enabled:
+            raise WarehouseError('Сервис автоматического разделения недоступен', 503)
+        try:
+            pdf = await client.labels(split['external_batch_id'])
+        except KmSplitError as exc:
+            raise WarehouseError(str(exc), 502) from exc
+        return Response(pdf, media_type='application/pdf', headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''" + quote('КМ_после_разделения.pdf'),
+            'Cache-Control': 'no-store'})
+
     @router.post('/api/warehouse/documents/{document_id}/check')
     async def check(document_id: str):
         visible(document_id)
