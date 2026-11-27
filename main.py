@@ -249,15 +249,6 @@ async def index(request: Request):
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-)
-    signature: str = Field(min_length=1, max_length=1024 * 1024)
-    thumbprint: str = Field(min_length=40, max_length=64)
-
-
-class SignerHeartbeat(BaseModel):
-    thumbprint: str = Field(min_length=40, max_length=64)
-    expires: str = Field(min_length=1, max_length=80)
-    status: str = Field(max_length=120)
 
 
 @app.on_event("startup")
