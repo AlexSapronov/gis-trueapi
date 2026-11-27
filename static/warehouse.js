@@ -21,6 +21,7 @@
   let returnRequestId = null;
   let listSerial = 0, loadingFilters = false, filterTimer, reportSnapshot = null, selectedIssue = null, eventsBefore = null;
   let tokenOrganizations = [], defaultReceiptOrg = '', deletion = null, archiveTarget = null;
+  let signerConfigured = false;
   let gtdBusy = false;
   let kind = new URLSearchParams(location.search).get('kind') === 'receipt' ? 'receipt' : 'shipment';
   let current = null, busy = 0, flushing = false, queue = [], dirty = false, refreshPromise = null, queueError = false;
@@ -235,6 +236,11 @@
     authenticated = true; $('admin-key').value = '';
     $('login').hidden = true; $('workspace').hidden = false;
     defaultReceiptOrg = config.receipt_default_org;
+    signerConfigured = !!config.signer_configured;
+    $('token-signer-start').disabled = !signerConfigured;
+    $('token-signer-state').textContent = signerConfigured
+      ? 'Подписант готов к работе. Запрос подписи будет отправлен в очередь.'
+      : 'Общий подписант не настроен на сервере. Нужны GIS_SIGNER_TOKEN и GIS_SIGNER_THUMBPRINT.';
     const options = config.organizations.map(o => `<option value="${esc(o.inn)}">${esc(o.name)} · ${esc(o.inn)}</option>`).join('');
     setupFilterOrgs(config.organizations); loadFilters();
     $('import-org').innerHTML = '<option value="">Из файла</option>' + options;
@@ -716,6 +722,41 @@
       showSection(); await settingsEditor.load();
     });
     $('token-org').onchange = () => action(tokenStatus);
+    $('token-signer-start').onclick = () => action(async () => {
+      if (!signerConfigured) throw new Error('Общий Windows-подписант не настроен на сервере.');
+      const inn = $('token-org').value;
+      if (!inn) throw new Error('Выберите организацию.');
+      $('token-signer-start').disabled = true;
+      $('token-signer-state').textContent = 'Запрашиваем challenge у True API…';
+      try {
+        const job = await json(apiBase + '/signer/auth', {method:'POST', body:{inn}});
+        $('token-signer-state').textContent = 'Challenge получен. Ожидаем подпись на компьютере с УКЭП…';
+        let finished = false;
+        for (let attempt = 0; attempt < 90; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const currentJob = await json(apiBase + '/signer/jobs/' + job.id);
+          if (currentJob.state === 'done') {
+            $('token-signer-state').textContent = currentJob.message || 'Токен True API обновлён.';
+            $('token-signer-state').className = 'wh-good';
+            await tokenStatus();
+            finished = true;
+            break;
+          }
+          if (currentJob.state === 'failed') {
+            $('token-signer-state').textContent = currentJob.error || 'Не удалось обновить токен. Запросите новый challenge.';
+            $('token-signer-state').className = 'wh-bad';
+            finished = true;
+            break;
+          }
+          $('token-signer-state').textContent = currentJob.state === 'signing'
+            ? 'Подпись получена. Выполняем авторизацию в True API…'
+            : 'Ожидаем подпись Windows-подписанта…';
+        }
+        if (!finished) $('token-signer-state').textContent = 'Задание осталось в очереди. Проверьте работу подписанта и обновите страницу позже.';
+      } finally {
+        $('token-signer-start').disabled = !signerConfigured;
+      }
+    });
     $('token-form').onsubmit = e => { e.preventDefault(); action(async () => {
       $('token-submit').disabled = true; $('token-result').textContent = 'Обновление…';
       try {
