@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import re
 from typing import Any
 
@@ -145,6 +147,9 @@ class MockTrueApiClient:
 
     async def check(self, cises: list[str], token: str) -> dict[str, Any]:
         return {"result": True, "quantity": len(cises)}
+
+    async def auth_key(self) -> dict[str, str]:
+        return {'uuid': str(uuid4()), 'data': 'MOCK-TRUEAPI-AUTH-CHALLENGE'}
 
     async def exchange_token(self, inn: str, uuid: str, signature: str) -> str:
         if not uuid or not signature:
