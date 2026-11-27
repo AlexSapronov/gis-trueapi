@@ -378,6 +378,38 @@
       $('doc-status').textContent = `Дата: ${d.date} · ${$('doc-status').textContent}`;
       $('complete').hidden = !d.can_complete;
       $('check-state').hidden = !state;
+      const gtd = result?.gtd;
+      const activeSplits = (d.splits || []).filter(item => item.state !== 'done');
+      if (d.kind === 'shipment' && d.gtd_required) {
+        if (d.gtd_state !== 'ready') state = d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.';
+        else if (gtd?.message) state = gtd.message;
+        if (activeSplits.length) {
+          const split = activeSplits[0];
+          state = split.state === 'ordering' ? 'КМ ' + split.source_cis.slice(-8) + ' отправлен на автоматическое разделение. Ожидайте выпуска новых КМ.'
+            : split.state === 'ready_to_rescan' ? 'Разделение подготовлено. Распечатайте обе этикетки, замените старую и отсканируйте исходный КМ с новым количеством и каждый новый КМ.'
+            : split.state === 'reporting' ? 'Этикетки заменены и повторно отсканированы. Ожидаем подтверждения DIVISIONMARK в Честном ЗНАКе. Упаковка заблокирована.'
+            : split.state === 'failed' ? 'Автоматическое разделение остановлено: ' + (split.error || 'требуется разбор ответственным').slice(0, 400)
+            : 'Состояние автоматического разделения уточняется. Упаковку пока не начинать.';
+        }
+      }
+      const splitPanel = $('split-panel');
+      if (splitPanel) {
+        const splitCards = (d.splits || []).map(split => {
+          const labelsReady = ['ready_to_rescan','reporting','done'].includes(split.state);
+          const expected = (split.expected_codes || []).map(code =>
+            '<li>' + (code.role === 'source' ? 'Исходный КМ с обновлённым количеством' : 'Новый КМ') +
+            ': <strong>' + esc(code.quantity) + ' шт.</strong> · КИ …' + esc(String(code.cis).slice(-8)) + '</li>').join('');
+          const stateLabel = ({ordering:'Заказ новых КМ',ready_to_rescan:'Ожидает повторного сканирования',reporting:'Ожидает DIVISIONMARK',done:'DIVISIONMARK подтверждён',failed:'Требуется разбор'})[split.state] || 'Состояние уточняется';
+          const link = labelsReady ? '<p><a class="btn primary" href="/api/warehouse/documents/' + esc(d.id) + '/splits/' + esc(split.id) + '/labels.pdf">Скачать PDF · ' + (split.expected_codes || []).length + ' этикетки</a></p>' : '';
+          return '<section class="wh-split-item" data-state="' + esc(split.state) + '"><h3>' + esc(stateLabel) + '</h3><p>Исходный КИ: …' + esc(String(split.source_cis).slice(-8)) + '</p>' +
+            (expected ? '<ul>' + expected + '</ul>' : '') + link +
+            (split.error ? '<p class="wh-bad">' + esc(split.error) + '</p>' : '') + '</section>';
+        }).join('');
+        const gtdMessage = d.kind === 'shipment' && d.gtd_required
+          ? '<p class="wh-split-gtd">' + esc(gtd?.message || d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.') + '</p>' : '';
+        splitPanel.innerHTML = gtdMessage + splitCards;
+        splitPanel.hidden = !gtdMessage && !splitCards;
+      }
     }
     const ownerWarnings = result?.owner_mismatch_warnings || 0;
     if (d.check_current && !d.checking && result?.ok && ownerWarnings) {
