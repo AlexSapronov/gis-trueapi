@@ -391,6 +391,7 @@
             : split.state === 'failed' ? 'Автоматическое разделение остановлено: ' + (split.error || 'требуется разбор ответственным').slice(0, 400)
             : 'Состояние автоматического разделения уточняется. Упаковку пока не начинать.';
         }
+        $('check-state').hidden = !state;
       }
       const splitPanel = $('split-panel');
       if (splitPanel) {
