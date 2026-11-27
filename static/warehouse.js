@@ -412,6 +412,21 @@
         splitPanel.hidden = !gtdMessage && !splitCards;
       }
     }
+    if (admin && d.kind === 'shipment' && d.gtd_required) {
+      const gtd = result?.gtd;
+      const activeSplit = (d.splits || []).find(item => item.state !== 'done');
+      $('doc-status').textContent += ' · ГТД: ' + (d.gtd_state === 'ready' ? 'данные загружены' : 'ожидаются / требуют исправления');
+      if (d.gtd_state !== 'ready') state = d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.';
+      else if (gtd?.message) state = gtd.message;
+      if (activeSplit) {
+        state = activeSplit.state === 'ordering' ? 'Автоматическое разделение КМ …' + activeSplit.source_cis.slice(-8) + ': заказ новых кодов'
+          : activeSplit.state === 'ready_to_rescan' ? 'Разделение готово: ожидается повторное сканирование всех этикеток.'
+          : activeSplit.state === 'reporting' ? 'Ожидается подтверждение DIVISIONMARK в Честном ЗНАКе.'
+          : activeSplit.state === 'failed' ? 'Разделение остановлено: ' + (activeSplit.error || 'требуется разбор')
+          : 'Состояние разделения уточняется.';
+      }
+      $('check-state').textContent = state;
+    }
     const ownerWarnings = result?.owner_mismatch_warnings || 0;
     if (d.check_current && !d.checking && result?.ok && ownerWarnings) {
       state = `Количество совпадает. Расхождения по владельцу КМ: ${ownerWarnings}.`;
