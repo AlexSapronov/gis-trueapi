@@ -54,11 +54,30 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
               version INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
               check_id TEXT, check_until REAL, result TEXT,
-              result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT);
+              result_version INTEGER, result_at TEXT, deleted_at TEXT, archived_at TEXT,
+              gtd_required INTEGER NOT NULL DEFAULT 0, gtd_state TEXT NOT NULL DEFAULT 'none',
+              gtd_message TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS warehouse_shipment_sources (
               org_inn TEXT NOT NULL, invoice_id TEXT NOT NULL,
               document_id TEXT NOT NULL UNIQUE REFERENCES warehouse_documents(id),
               PRIMARY KEY(org_inn, invoice_id));
+            CREATE TABLE IF NOT EXISTS warehouse_shipment_items (
+              document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              good_id TEXT NOT NULL, gtin TEXT NOT NULL, pn TEXT NOT NULL, quantity INTEGER NOT NULL,
+              PRIMARY KEY(document_id,good_id,gtin));
+            CREATE TABLE IF NOT EXISTS warehouse_gtd_rows (
+              document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              position INTEGER NOT NULL, good_id TEXT NOT NULL, gtin TEXT NOT NULL,
+              quantity INTEGER NOT NULL, declaration TEXT NOT NULL,
+              source_sheet TEXT NOT NULL, source_row INTEGER NOT NULL,
+              PRIMARY KEY(document_id,position));
+            CREATE TABLE IF NOT EXISTS warehouse_splits (
+              id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
+              source_scan_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
+              source_cis TEXT NOT NULL, parts TEXT NOT NULL, external_batch_id TEXT,
+              expected_codes TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL,
+              error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS warehouse_splits_doc ON warehouse_splits(document_id,state);
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -105,6 +124,12 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN deleted_at TEXT')
             if 'archived_at' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN archived_at TEXT')
+            if 'gtd_required' not in columns:
+                c.execute('ALTER TABLE warehouse_documents ADD COLUMN gtd_required INTEGER NOT NULL DEFAULT 0')
+            if 'gtd_state' not in columns:
+                c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_state TEXT NOT NULL DEFAULT 'none'")
+            if 'gtd_message' not in columns:
+                c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_message TEXT NOT NULL DEFAULT ''")
             if 'sales_username' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN sales_username TEXT')
             c.execute('''CREATE INDEX IF NOT EXISTS warehouse_sales_tasks
@@ -251,7 +276,38 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             return {**self._snapshot(c, document_id), 'append_summary': {
                 'added': added, 'duplicates': len(expected)-added, 'quantity': sum(additions.values())}}
 
-    def sync_shipment_invoice(self, invoice_id, header, lines):
+    @staticmethod
+    def _replace_shipment_gtd(c, document_id, source_items=None, gtd_rows=None, gtd_state=None, gtd_message=None):
+        changed = False
+        if source_items is not None:
+            old = [tuple(r) for r in c.execute(
+                'SELECT good_id,gtin,pn,quantity FROM warehouse_shipment_items WHERE document_id=? ORDER BY good_id,gtin',
+                (document_id,))]
+            new = sorted((str(x['good_id']), str(x['gtin']), str(x['pn']), int(x['quantity']))
+                         for x in source_items)
+            if old != new:
+                c.execute('DELETE FROM warehouse_shipment_items WHERE document_id=?', (document_id,))
+                c.executemany('INSERT INTO warehouse_shipment_items VALUES (?,?,?,?,?)',
+                              [(document_id, *item) for item in new])
+                changed = True
+        if gtd_state is not None:
+            old = [tuple(r) for r in c.execute(
+                'SELECT good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
+                (document_id,))]
+            new = [(str(x['good_id']), str(x['gtin']), int(x['quantity']), str(x['declaration']),
+                    str(x.get('source_sheet') or ''), int(x.get('source_row') or 0)) for x in (gtd_rows or [])]
+            current = c.execute('SELECT gtd_required,gtd_state,gtd_message FROM warehouse_documents WHERE id=?',
+                                (document_id,)).fetchone()
+            if old != new or not current['gtd_required'] or current['gtd_state'] != gtd_state or current['gtd_message'] != (gtd_message or ''):
+                c.execute('DELETE FROM warehouse_gtd_rows WHERE document_id=?', (document_id,))
+                c.executemany('INSERT INTO warehouse_gtd_rows VALUES (?,?,?,?,?,?,?,?)',
+                              [(document_id, index, *item) for index, item in enumerate(new, 1)])
+                c.execute('UPDATE warehouse_documents SET gtd_required=1,gtd_state=?,gtd_message=? WHERE id=?',
+                          (gtd_state, gtd_message or '', document_id))
+                changed = True
+        return changed
+
+    def sync_shipment_invoice(self, invoice_id, header, lines, *, source_items=None, gtd_rows=None, gtd_state=None, gtd_message=None):
         """One invoice per write transaction: scan/check operations serialize with sync."""
         with self.connection(True) as c:
             source = c.execute('SELECT document_id FROM warehouse_shipment_sources WHERE org_inn=? AND invoice_id=?',
@@ -289,15 +345,25 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 same = (canonical(lines) == canonical(d['lines']) and d['number'] == header['number']
                         and d['recipient_inn'] == recipient_inn)
                 if same:
-                    # A display-name change is metadata; keep a completed scan/check valid.
+                    metadata_changed = self._replace_shipment_gtd(
+                        c, document_id, source_items, gtd_rows, gtd_state, gtd_message)
                     recipient_name = header.get('recipient_name')
                     if recipient_name and recipient_name != d['recipient_name']:
-                        c.execute('UPDATE warehouse_documents SET recipient_name=?,revision=revision+1 WHERE id=?',
+                        c.execute('UPDATE warehouse_documents SET recipient_name=? WHERE id=?',
                                   (recipient_name, document_id))
+                        metadata_changed = True
                     if not source:
                         c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                                   (header['org_inn'], invoice_id, document_id))
-                    return dict(status='unchanged', document_id=document_id, message='Без изменений; сканы и статус сохранены')
+                    if metadata_changed:
+                        self._bump(c, document_id)
+                        self._event(c, document_id, 'shipment_gtd_updated',
+                                    {'gtd_state': gtd_state, 'gtd_message': gtd_message}, actor='admin')
+                    current = self._snapshot(c, document_id)
+                    return dict(status='updated' if metadata_changed else 'unchanged',
+                                document_id=document_id, gtd_state=current['gtd_state'],
+                                message='Данные ГТД обновлены; требуется повторная проверка' if metadata_changed
+                                else 'Без изменений; сканы и статус сохранены')
                 if d['archived_at']:
                     raise WarehouseError('Состав архивного задания изменён; сначала верните его из архива', 409)
                 if d['checking']:
@@ -316,6 +382,10 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 else:
                     c.execute('INSERT INTO warehouse_unmarked_lines VALUES (?,?,?,?)',
                               (uuid.uuid4().hex, document_id, line['pn'], line['quantity']))
+            self._replace_shipment_gtd(
+                c, document_id, source_items, gtd_rows,
+                gtd_state if gtd_state is not None else 'pending',
+                gtd_message if gtd_message is not None else 'Ожидается загрузка разбивки строк по ГТД')
             if not source:
                 c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                           (header['org_inn'], invoice_id, document_id))
@@ -349,6 +419,15 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['receipt_source'] = {**json.loads(source['metadata']), 'revision': source['revision']} if source else None
         d['lines'] = [dict(r) for r in c.execute(
             'SELECT gtin,pn,pn_source,quantity FROM warehouse_lines WHERE document_id=? ORDER BY gtin', (document_id,))]
+        d['gtd_required'] = bool(d.get('gtd_required'))
+        d['gtd_rows'] = [dict(r) for r in c.execute(
+            'SELECT good_id,gtin,quantity,declaration,source_sheet,source_row FROM warehouse_gtd_rows WHERE document_id=? ORDER BY position',
+            (document_id,))]
+        d['shipment_items'] = [dict(r) for r in c.execute(
+            'SELECT good_id,gtin,pn,quantity FROM warehouse_shipment_items WHERE document_id=? ORDER BY good_id,gtin',
+            (document_id,))]
+        d['splits'] = [dict(r) for r in c.execute(
+            'SELECT * FROM warehouse_splits WHERE document_id=? ORDER BY created_at,id', (document_id,))]
         d['lines'] += [dict(r) for r in c.execute(
             "SELECT id AS line_id,'' AS gtin,pn,'excel' AS pn_source,quantity FROM warehouse_unmarked_lines WHERE document_id=? ORDER BY rowid",
             (document_id,))]
@@ -360,8 +439,11 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['runtime_settings'] = self._settings(c)
         d['checking'] = bool(d['check_id'] and (d['check_until'] or 0) > time.time())
         d['check_current'] = _check_current(d)
+        split_blocked = any(item['state'] != 'done' for item in d['splits'])
+        gtd_ok = (not d['gtd_required'] or
+                  (d['gtd_state'] == 'ready' and d['result'] and (d['result'].get('gtd') or {}).get('ok')))
         d['can_complete'] = (d['status'] == 'active' and not d['deleted_at'] and not d['archived_at'] and not d['checking'] and
-                             d['check_current'] and d['result']['ok'])
+                             d['check_current'] and d['result']['ok'] and gtd_ok and not split_blocked)
         d.pop('check_id', None)
         d.pop('check_until', None)
         return d
