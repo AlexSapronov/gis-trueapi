@@ -21,6 +21,7 @@ from warehouse_excel import MAX_FILE_SIZE, export_shipment, scan_data, template,
 from warehouse_labels import missing_receipt_pdf
 from warehouse_service import check_document, import_document
 from warehouse_store import WarehouseError
+from km_split_client import KmSplitError
 from shipment_bulk import import_bulk
 from upd_xml import MAX_XML_SIZE, inspect_xml, parse_xml, allocate, enrich_xml, review_plan, check_document as check_upd_document
 
