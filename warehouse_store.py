@@ -431,8 +431,14 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
         d['shipment_items'] = [dict(r) for r in c.execute(
             'SELECT good_id,gtin,pn,quantity FROM warehouse_shipment_items WHERE document_id=? ORDER BY good_id,gtin',
             (document_id,))]
-        d['splits'] = [dict(r) for r in c.execute(
-            'SELECT * FROM warehouse_splits WHERE document_id=? ORDER BY created_at,id', (document_id,))]
+        d['splits'] = []
+        for split in c.execute(
+                'SELECT id,source_scan_id,source_cis,parts,external_batch_id,expected_codes,state,error,created_at,updated_at '
+                'FROM warehouse_splits WHERE document_id=? ORDER BY created_at,id', (document_id,)):
+            item = dict(split)
+            item['parts'] = json.loads(item['parts'])
+            item['expected_codes'] = json.loads(item['expected_codes'])
+            d['splits'].append(item)
         d['lines'] += [dict(r) for r in c.execute(
             "SELECT id AS line_id,'' AS gtin,pn,'excel' AS pn_source,quantity FROM warehouse_unmarked_lines WHERE document_id=? ORDER BY rowid",
             (document_id,))]
@@ -575,6 +581,69 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 self._bump(c, document_id)
                 self._event(c, document_id, 'scan_removed', dict(prior))
         return self.get(document_id)
+
+    @staticmethod
+    def _split_state(value):
+        return {'creating':'ordering','ordering':'ordering','ready_to_rescan':'ready_to_rescan',
+                'reporting':'reporting','done':'done','failed':'failed'}.get(value, 'unknown')
+
+    def create_split(self, document_id, scan_id, request_id, parts, external):
+        with self.connection(True) as c:
+            self._active(self._doc(c, document_id))
+            existing = c.execute('SELECT * FROM warehouse_splits WHERE request_id=?', (request_id,)).fetchone()
+            if existing:
+                return dict(existing)
+            prior = c.execute('SELECT * FROM warehouse_scans WHERE document_id=? AND id=?',
+                              (document_id, scan_id)).fetchone()
+            if prior is None:
+                raise WarehouseError('Исходный скан уже изменён. Обновите задание и повторите проверку.', 409)
+            split_id = uuid.uuid4().hex
+            expected = external.get('expected_codes') or []
+            state = self._split_state(external.get('state'))
+            c.execute('DELETE FROM warehouse_scans WHERE document_id=? AND id=?', (document_id, scan_id))
+            c.execute('''INSERT INTO warehouse_splits
+                (id,document_id,source_scan_id,request_id,source_cis,parts,external_batch_id,
+                 expected_codes,state,error,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (split_id, document_id, scan_id, request_id, prior['cis'],
+                 json.dumps(parts), external.get('id'),
+                 json.dumps(expected, ensure_ascii=False), state, external.get('error') or '',
+                 now(), now()))
+            self._bump(c, document_id)
+            self._event(c, document_id, 'scan_removed_for_gtd_split',
+                        {'scan':dict(prior), 'split_id':split_id, 'parts':parts,
+                         'external_batch_id':external.get('id'), 'state':state})
+        return self.get(document_id)
+
+    def update_split(self, document_id, split_id, external):
+        state = self._split_state(external.get('state'))
+        expected = external.get('expected_codes') or []
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM warehouse_splits WHERE document_id=? AND id=?',
+                            (document_id, split_id)).fetchone()
+            if row is None:
+                raise WarehouseError('Операция разделения не найдена', 404)
+            before = (row['state'], row['expected_codes'], row['error'])
+            after = (state, json.dumps(expected, ensure_ascii=False), external.get('error') or '')
+            c.execute('''UPDATE warehouse_splits SET state=?,expected_codes=?,error=?,
+                         external_batch_id=COALESCE(?,external_batch_id),updated_at=? WHERE id=?''',
+                      (state, after[1], after[2], external.get('id'), now(), split_id))
+            if before != after:
+                self._event(c, document_id, 'gtd_split_state',
+                            {'split_id':split_id, 'before':before[0], 'after':state,
+                             'error':after[2]})
+        return self.get(document_id)
+
+    def split_record(self, document_id, split_id):
+        with self.connection() as c:
+            row = c.execute('SELECT * FROM warehouse_splits WHERE document_id=? AND id=?',
+                            (document_id, split_id)).fetchone()
+            if row is None:
+                raise WarehouseError('Операция разделения не найдена', 404)
+            result = dict(row)
+            result['parts'] = json.loads(result['parts'])
+            result['expected_codes'] = json.loads(result['expected_codes'])
+            return result
 
     def edit(self, document_id, version, strict_owner=None, pns=None, quantities=None, revision=None):
         with self.connection(True) as c:
