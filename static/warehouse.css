@@ -347,3 +347,25 @@ body[data-admin="true"] #document .wh-table { margin-bottom:16px; }
   body[data-admin="true"] #document > .wh-toolbar { padding:8px; }
 }
 
+/* FIFO GTD and automatic split status */
+.wh-split-panel {
+  margin:14px 0 18px;
+  padding:16px 18px;
+  border:1px solid var(--border);
+  border-left:4px solid var(--warning, #b7791f);
+  border-radius:10px;
+  background:var(--surface-2);
+}
+.wh-split-panel[hidden] { display:none; }
+.wh-split-gtd { margin:0 0 8px; font-weight:700; }
+.wh-split-item { padding:12px 0; border-top:1px solid var(--border); }
+.wh-split-item:first-child { border-top:0; padding-top:0; }
+.wh-split-item:last-child { padding-bottom:0; }
+.wh-split-item h3 { margin:0 0 7px; font-size:15px; }
+.wh-split-item p { margin:6px 0; }
+.wh-split-item ul { margin:8px 0 12px; padding-left:20px; }
+.wh-split-item li { margin:5px 0; }
+.wh-split-item[data-state="done"] { border-left:3px solid var(--success, #238636); padding-left:12px; }
+.wh-split-item[data-state="failed"] { border-left:3px solid var(--danger, #c33); padding-left:12px; }
+#token-signer-state { margin:10px 0; }
+
