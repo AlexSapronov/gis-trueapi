@@ -386,7 +386,7 @@
         if (activeSplits.length) {
           const split = activeSplits[0];
           state = split.state === 'ordering' ? 'КМ ' + split.source_cis.slice(-8) + ' отправлен на автоматическое разделение. Ожидайте выпуска новых КМ.'
-            : split.state === 'ready_to_rescan' ? 'Разделение подготовлено. Распечатайте обе этикетки, замените старую и отсканируйте исходный КМ с новым количеством и каждый новый КМ.'
+            : split.state === 'ready_to_rescan' ? 'Разделение подготовлено. Распечатайте все этикетки из PDF, замените исходную и отсканируйте все КМ в порядке списка: сначала новые, затем исходный с обновлённым количеством.'
             : split.state === 'reporting' ? 'Этикетки заменены и повторно отсканированы. Ожидаем подтверждения DIVISIONMARK в Честном ЗНАКе. Упаковка заблокирована.'
             : split.state === 'failed' ? 'Автоматическое разделение остановлено: ' + (split.error || 'требуется разбор ответственным').slice(0, 400)
             : 'Состояние автоматического разделения уточняется. Упаковку пока не начинать.';
@@ -400,7 +400,7 @@
             '<li>' + (code.role === 'source' ? 'Исходный КМ с обновлённым количеством' : 'Новый КМ') +
             ': <strong>' + esc(code.quantity) + ' шт.</strong> · КИ …' + esc(String(code.cis).slice(-8)) + '</li>').join('');
           const stateLabel = ({ordering:'Заказ новых КМ',ready_to_rescan:'Ожидает повторного сканирования',reporting:'Ожидает DIVISIONMARK',done:'DIVISIONMARK подтверждён',failed:'Требуется разбор'})[split.state] || 'Состояние уточняется';
-          const link = labelsReady ? '<p><a class="btn primary" href="/api/warehouse/documents/' + esc(d.id) + '/splits/' + esc(split.id) + '/labels.pdf">Скачать PDF · ' + (split.expected_codes || []).length + ' этикетки</a></p>' : '';
+          const link = labelsReady ? '<p><a class="btn primary" href="/api/warehouse/documents/' + esc(d.id) + '/splits/' + esc(split.id) + '/labels.pdf">Скачать PDF · ' + (split.expected_codes || []).length + ' шт.</a></p>' : '';
           return '<section class="wh-split-item" data-state="' + esc(split.state) + '"><h3>' + esc(stateLabel) + '</h3><p>Исходный КИ: …' + esc(String(split.source_cis).slice(-8)) + '</p>' +
             (expected ? '<ul>' + expected + '</ul>' : '') + link +
             (split.error ? '<p class="wh-bad">' + esc(split.error) + '</p>' : '') + '</section>';
