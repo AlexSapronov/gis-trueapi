@@ -369,7 +369,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             current = c.execute('SELECT gtd_required FROM warehouse_documents WHERE id=?', (document_id,)).fetchone()
             if current and not current['gtd_required']:
                 c.execute("""UPDATE warehouse_documents SET gtd_required=1,gtd_state='pending',
-                             gtd_message='Ожидается загрузка разбивки строк по ГТД' WHERE id=?""", (document_id,))
+                             gtd_message='Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.' WHERE id=?""", (document_id,))
                 changed = True
             elif source_changed and gtd_state is None:
                 c.execute('DELETE FROM warehouse_gtd_rows WHERE document_id=?', (document_id,))
@@ -472,7 +472,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             self._replace_shipment_gtd(
                 c, document_id, source_items, gtd_rows,
                 gtd_state if gtd_state is not None else 'pending',
-                gtd_message if gtd_message is not None else 'Ожидается загрузка разбивки строк по ГТД')
+                gtd_message if gtd_message is not None else 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.')
             if not source:
                 c.execute('INSERT INTO warehouse_shipment_sources VALUES (?,?,?)',
                           (header['org_inn'], invoice_id, document_id))
