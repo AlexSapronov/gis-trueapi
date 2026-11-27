@@ -77,7 +77,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
               PRIMARY KEY(document_id,position));
             CREATE TABLE IF NOT EXISTS warehouse_splits (
               id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
-              source_scan_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
+              source_scan_id TEXT NOT NULL, source_scanned_at TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL UNIQUE,
               source_cis TEXT NOT NULL, parts TEXT NOT NULL, external_batch_id TEXT,
               expected_codes TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL,
               error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -143,6 +143,9 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
                 c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_state TEXT NOT NULL DEFAULT 'none'")
             if 'gtd_message' not in columns:
                 c.execute("ALTER TABLE warehouse_documents ADD COLUMN gtd_message TEXT NOT NULL DEFAULT ''")
+            split_columns = {r[1] for r in c.execute('PRAGMA table_info(warehouse_splits)')}
+            if 'source_scanned_at' not in split_columns:
+                c.execute("ALTER TABLE warehouse_splits ADD COLUMN source_scanned_at TEXT NOT NULL DEFAULT ''")
             if 'sales_username' not in columns:
                 c.execute('ALTER TABLE warehouse_documents ADD COLUMN sales_username TEXT')
             c.execute('''CREATE INDEX IF NOT EXISTS warehouse_sales_tasks
@@ -512,7 +515,7 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             (document_id,))]
         d['splits'] = []
         for split in c.execute(
-                'SELECT id,source_scan_id,source_cis,parts,external_batch_id,expected_codes,state,error,created_at,updated_at '
+                'SELECT id,source_scan_id,source_scanned_at,source_cis,parts,external_batch_id,expected_codes,state,error,created_at,updated_at '
                 'FROM warehouse_splits WHERE document_id=? ORDER BY created_at,id', (document_id,)):
             item = dict(split)
             item['parts'] = json.loads(item['parts'])
@@ -681,10 +684,10 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
             state = self._split_state(external.get('state'))
             c.execute('DELETE FROM warehouse_scans WHERE document_id=? AND id=?', (document_id, scan_id))
             c.execute('''INSERT INTO warehouse_splits
-                (id,document_id,source_scan_id,request_id,source_cis,parts,external_batch_id,
+                (id,document_id,source_scan_id,source_scanned_at,request_id,source_cis,parts,external_batch_id,
                  expected_codes,state,error,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (split_id, document_id, scan_id, request_id, prior['cis'],
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (split_id, document_id, scan_id, prior['scanned_at'], request_id, prior['cis'],
                  json.dumps(parts), external.get('id'),
                  json.dumps(expected, ensure_ascii=False), state, external.get('error') or '',
                  now(), now()))
