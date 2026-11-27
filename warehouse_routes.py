@@ -214,9 +214,15 @@ def install_warehouse(app, service_getter, store_getter, templates):
             kind, org_inn, document_number, document_date)
 
     @admin.post('/shipment-invoices')
-    async def import_shipment_invoices(file: UploadFile = File(...)):
+    async def import_shipment_invoices(file: UploadFile = File(...),
+                                       gtd_file: UploadFile | None = File(None)):
         content = await file.read(MAX_FILE_SIZE + 1)
-        return await asyncio.to_thread(import_bulk, store_getter(), content)
+        gtd_content = None
+        if gtd_file is not None:
+            if not (gtd_file.filename or '').lower().endswith('.xlsx'):
+                raise WarehouseError('Файл разбивки ГТД должен иметь формат .xlsx')
+            gtd_content = await gtd_file.read(MAX_FILE_SIZE + 1)
+        return await asyncio.to_thread(import_bulk, store_getter(), content, gtd_content)
 
     @admin.get('/documents/{document_id}')
     def admin_document(document_id: str):
