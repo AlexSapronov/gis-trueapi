@@ -175,7 +175,10 @@ def import_bulk(store, content, gtd_content=None):
                 group['invoice_id'], header, list(merged.values()),
                 source_items=source_items, gtd_rows=gtd['rows'],
                 gtd_state=gtd['state'], gtd_message=gtd['message'])
-            report.append({**base, **result, 'gtd_state': gtd['state'], 'gtd_message': gtd['message']})
+            current = store.get(result['document_id']) if result.get('document_id') else None
+            report.append({**base, **result,
+                           'gtd_state': current['gtd_state'] if current else gtd['state'],
+                           'gtd_message': current['gtd_message'] if current else gtd['message']})
         except WarehouseError as exc:
             report.append({**base, 'status': 'error', 'message': exc.message})
     return dict(results=report, counts={key: sum(r['status'] == key for r in report)
