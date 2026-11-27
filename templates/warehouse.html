@@ -49,16 +49,26 @@
 <details class="wh-settings"><summary>История изменений (последние 50)</summary><div id="settings-history"></div></details>
 </section>
 <section id="token-panel" class="wh-card" hidden>
+<span class="wh-eyebrow">Авторизация · Общий Windows-подписант</span>
 <h2>Токен True API</h2>
-<p>Запустите «Обновить токен ЧЗ.cmd» на компьютере с УКЭП и вставьте свежие UUID и SIGNATURE.</p>
-<form id="token-form">
+<p>Запустите общий Windows-подписант один раз. Он обслуживает Marking-BM, GIS True API и KM Split одним сертификатом.</p>
 <label>Организация <select id="token-org" required></select></label>
 <p id="token-meta"></p>
+<div class="wh-toolbar">
+<button class="btn primary" id="token-signer-start" type="button">Получить challenge и обновить токен</button>
+</div>
+<p id="token-signer-state" role="status" aria-live="polite"></p>
+<details class="wh-settings">
+<summary>Ручное обновление (резервный способ)</summary>
+<p class="wh-muted">Используйте только если общий Windows-подписант временно недоступен.</p>
+<form id="token-form">
 <label>UUID <input id="token-uuid" type="text" autocomplete="off" required></label>
 <label>SIGNATURE <textarea id="token-signature" rows="6" autocomplete="off" required></textarea></label>
 <button class="btn primary" id="token-submit">Обновить токен</button>
 <button class="btn" type="reset">Очистить</button>
-</form><p id="token-result" role="status" aria-live="polite"></p>
+</form>
+</details>
+<p id="token-result" role="status" aria-live="polite"></p>
 </section>
 <section id="gtd-panel" class="wh-card" hidden>
 <span class="wh-eyebrow">True API · Сведения по КИ</span>
