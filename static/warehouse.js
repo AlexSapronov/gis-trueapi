@@ -387,7 +387,7 @@
           const split = activeSplits[0];
           state = split.state === 'ordering' ? 'КМ ' + split.source_cis.slice(-8) + ' отправлен на автоматическое разделение. Ожидайте выпуска новых КМ.'
             : split.state === 'ready_to_rescan' ? 'Разделение подготовлено. Распечатайте все этикетки из PDF, замените исходную и отсканируйте все КМ в порядке списка: сначала новые, затем исходный с обновлённым количеством.'
-            : split.state === 'reporting' ? 'Этикетки заменены и повторно отсканированы. Ожидаем подтверждения DIVISIONMARK в Честном ЗНАКе. Упаковка заблокирована.'
+            : split.state === 'reporting' ? 'Этикетки заменены и повторно отсканированы. Ожидаем подтверждения DIVISIONMARK в Честном ЗНАКе. Через несколько секунд нажмите «Проверить» ещё раз. Упаковка заблокирована.'
             : split.state === 'failed' ? 'Автоматическое разделение остановлено: ' + (split.error || 'требуется разбор ответственным').slice(0, 400)
             : 'Состояние автоматического разделения уточняется. Упаковку пока не начинать.';
         }
@@ -407,7 +407,7 @@
             (split.error ? '<p class="wh-bad">' + esc(split.error) + '</p>' : '') + '</section>';
         }).join('');
         const gtdMessage = d.kind === 'shipment' && d.gtd_required
-          ? '<p class="wh-split-gtd">' + esc(gtd?.message || d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.') + '</p>' : '';
+          ? '<p class="wh-split-gtd">' + esc(activeSplits.length ? state : (gtd?.message || d.gtd_message || 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.')) + '</p>' : '';
         splitPanel.innerHTML = gtdMessage + splitCards;
         splitPanel.hidden = !gtdMessage && !splitCards;
       }
@@ -421,7 +421,7 @@
       if (activeSplit) {
         state = activeSplit.state === 'ordering' ? 'Автоматическое разделение КМ …' + activeSplit.source_cis.slice(-8) + ': заказ новых кодов'
           : activeSplit.state === 'ready_to_rescan' ? 'Разделение готово: ожидается повторное сканирование всех этикеток.'
-          : activeSplit.state === 'reporting' ? 'Ожидается подтверждение DIVISIONMARK в Честном ЗНАКе.'
+          : activeSplit.state === 'reporting' ? 'Ожидается подтверждение DIVISIONMARK в Честном ЗНАКе. Нажмите «Проверить» повторно через несколько секунд.'
           : activeSplit.state === 'failed' ? 'Разделение остановлено: ' + (activeSplit.error || 'требуется разбор')
           : 'Состояние разделения уточняется.';
       }
