@@ -44,7 +44,16 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 class SignerResult(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     lease: str = Field(min_length=1, max_length=128)
-    sha256: str = Field(pattern=r'^[a-f0-9]{64}
+    sha256: str = Field(min_length=64, max_length=64)
+    signature: str = Field(min_length=1, max_length=1024 * 1024)
+    thumbprint: str = Field(min_length=40, max_length=64)
+
+
+class SignerHeartbeat(BaseModel):
+    thumbprint: str = Field(min_length=40, max_length=64)
+    expires: str = Field(min_length=1, max_length=80)
+    status: str = Field(max_length=120)
+
 
 @app.on_event("startup")
 async def startup() -> None:
