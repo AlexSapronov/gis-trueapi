@@ -56,6 +56,69 @@ async def import_document(store, service, content, kind, org_inn=None,
     return {**document, 'import_warnings': warnings}
 
 
+def reconcile_gtd_fifo(doc, details):
+    if not doc.get('gtd_required'):
+        return None
+    state = doc.get('gtd_state') or 'pending'
+    if state != 'ready' or not doc.get('gtd_rows'):
+        return dict(ok=False, state=state,
+                    message=doc.get('gtd_message') or 'Ожидайте загрузки данных по ГТД. Груз пока не упаковывать.',
+                    split_required=[], missing=[], extra=[])
+    rows_by_gtin = {}
+    for row in doc['gtd_rows']:
+        rows_by_gtin.setdefault(row['gtin'], []).append(row)
+    scans_by_gtin = {}
+    for detail in details:
+        scans_by_gtin.setdefault(detail['gtin'], []).append(detail)
+    split_required, missing, extra = [], [], []
+    has_invalid_scan = any(detail.get('errors') for detail in details)
+    for gtin, target_rows in rows_by_gtin.items():
+        target_rows = sorted(target_rows, key=lambda row: row.get('position', row.get('source_row', 0)))
+        row_index, row_remaining = 0, target_rows[0]['quantity']
+        for scan in scans_by_gtin.get(gtin, []):
+            quantity = scan.get('quantity')
+            if scan.get('errors') or type(quantity) is not int or quantity <= 0:
+                has_invalid_scan = True
+                continue
+            left = quantity
+            chunks, declarations = [], []
+            while left > 0 and row_index < len(target_rows):
+                take = min(left, row_remaining)
+                chunks.append(take)
+                declarations.append(target_rows[row_index]['declaration'])
+                left -= take
+                row_remaining -= take
+                if row_remaining == 0:
+                    row_index += 1
+                    if row_index < len(target_rows):
+                        row_remaining = target_rows[row_index]['quantity']
+            if left > 0:
+                extra.append(dict(gtin=gtin, scan_id=scan['scan_id'], quantity=left))
+            if len(chunks) > 1:
+                split_required.append(dict(
+                    scan_id=scan['scan_id'], cis=scan['cis'], gtin=gtin,
+                    original_quantity=quantity, parts=chunks[:-1],
+                    remaining_quantity=chunks[-1], declarations=declarations))
+        if row_index < len(target_rows):
+            remaining = row_remaining + sum(row['quantity'] for row in target_rows[row_index + 1:])
+            missing.append(dict(gtin=gtin, quantity=remaining))
+    for gtin in scans_by_gtin:
+        if gtin not in rows_by_gtin:
+            extra.append(dict(gtin=gtin, quantity=sum(
+                detail.get('quantity') or 0 for detail in scans_by_gtin[gtin])))
+    ok = not split_required and not missing and not extra and not has_invalid_scan
+    if split_required:
+        message = 'Необходимо разделить КМ для соответствия строкам ГТД. Упаковку пока не начинать.'
+    elif missing or extra:
+        message = 'Количество по строкам ГТД не совпадает со сканами. Проверьте состав отгрузки.'
+    elif has_invalid_scan:
+        message = 'Есть КМ с ошибками проверки. Исправьте их перед упаковкой.'
+    else:
+        message = 'ГТД распределены по физическим КМ. Можно паковать.'
+    return dict(ok=ok, state='ready' if ok else 'mismatch', message=message,
+                split_required=split_required, missing=missing, extra=extra)
+
+
 async def shipment_results(service, doc):
     policy = doc.get('runtime_settings', {}).get('values', {})
     allowed = policy.get('shipment_statuses', ['INTRODUCED'])
@@ -114,9 +177,11 @@ async def shipment_results(service, doc):
             details[-1]['owner_warning'] = owner_mismatch
     rows = [dict(gtin=l['gtin'], required=l['quantity'], actual=totals[l['gtin']],
                  remaining=l['quantity'] - totals[l['gtin']]) for l in marked]
-    ok = (bool(scans) or not marked) and not any(d['errors'] for d in details) and all(r['remaining'] == 0 for r in rows)
+    gtd = reconcile_gtd_fifo(doc, details)
+    ok = ((bool(scans) or not marked) and not any(d['errors'] for d in details)
+          and all(r['remaining'] == 0 for r in rows) and (gtd is None or gtd['ok']))
     return dict(ok=ok, rows=rows, codes=details, missing=[], checked_count=len(scans),
-                owner_mismatch_warnings=sum('owner_warning' in d for d in details)), pns
+                owner_mismatch_warnings=sum('owner_warning' in d for d in details), gtd=gtd), pns
 
 
 def _receipt_full_code_error(expected_code: str, scanned_code: str, expected_quantity: int) -> str | None:
