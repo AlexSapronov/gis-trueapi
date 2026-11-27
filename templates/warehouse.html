@@ -10,14 +10,37 @@
 <body class="warehouse-page" data-admin="{{ 'true' if admin else 'false' }}" data-build="{{ build_id }}">
 <header class="wh-header"><div><span class="wh-eyebrow">Честный ЗНАК · Склад</span><h1>{% if admin %}Администрирование{% else %}Складские операции{% endif %}</h1>
 <span id="connection" role="status">Подключение…</span></div><div class="wh-header-actions"><span id="busy-state" hidden>Выполняется…</span>{% if not admin %}<button id="list-refresh" class="icon-btn" type="button" title="Обновить" aria-label="Обновить">↻</button>{% endif %}<button id="theme-btn" class="icon-btn" type="button" aria-label="Тема">☾</button></div></header>
-{% include '_mode_nav.html' %}
+{% if not admin %}{% include '_mode_nav.html' %}{% endif %}
 <main class="wh-main">
 <p id="notice" role="status" aria-live="polite"></p>
 {% if admin %}
 <form id="login" class="wh-card wh-login"><span class="wh-eyebrow">Административный доступ</span><h2>Вход в админку</h2><p class="wh-muted">Один вход для токенов, приёмки и отгрузки.</p><label>Ключ администратора <input id="admin-key" type="password" autocomplete="current-password" required></label><button class="btn primary">Войти</button></form>
 {% endif %}
 <div id="workspace" {% if admin %}hidden{% endif %}>
-<nav class="wh-toolbar wh-tabs" aria-label="Рабочие разделы" {% if not admin %}hidden{% endif %}>{% if admin %}<button class="btn" id="token-tab">Токен</button><button class="btn" id="gtd-tab">Проверить ГТД</button><button class="btn" id="gtd-excel-tab">ГТД в Excel</button><a class="btn" href="/admin/participants">Контрагенты ЧЗ</a>{% endif %}<button class="btn" data-kind="receipt">Приёмка</button><button class="btn" data-kind="shipment">Отгрузка</button>{% if admin %}<button class="btn" id="settings-tab">Настройки</button>{% endif %}<span class="wh-nav-spacer"></span>{% if admin %}<button id="list-refresh" class="btn">Обновить</button><button id="logout" class="btn">Выйти</button>{% endif %}</nav>
+{% if admin %}
+<nav class="admin-nav" aria-label="Разделы администрирования">
+  <div class="admin-nav-group">
+    <span class="admin-nav-label">Склад</span>
+    <button class="btn" data-kind="shipment" type="button">Отгрузка</button>
+    <button class="btn" data-kind="receipt" type="button">Приёмка</button>
+  </div>
+  <div class="admin-nav-group">
+    <span class="admin-nav-label">Инструменты</span>
+    <button class="btn" id="token-tab" type="button">Токен</button>
+    <button class="btn" id="gtd-tab" type="button">Проверить ГТД</button>
+    <button class="btn" id="gtd-excel-tab" type="button">ГТД в Excel</button>
+    <a class="btn" href="/admin/participants">Контрагенты ЧЗ</a>
+  </div>
+  <div class="admin-nav-group admin-nav-shortcuts">
+    <button class="btn" id="settings-tab" type="button">Настройки</button>
+    <a class="btn" href="/">Сверка КМ</a>
+  </div>
+  <div class="admin-nav-actions">
+    <button id="list-refresh" class="btn" type="button">Обновить</button>
+    <button id="logout" class="btn" type="button">Выйти</button>
+  </div>
+</nav>
+{% endif %}
 {% if admin %}
 <section id="application-settings" class="wh-card" hidden>
 <span class="wh-eyebrow">Управление приложением</span><h2>Настройки</h2><p id="settings-meta" class="wh-muted"></p>
@@ -59,31 +82,55 @@
 <section id="gtd-excel-panel" class="wh-card" hidden>
 <h2>Перезаполнить ГТД в Excel</h2>
 <p>Загрузите выгрузку с Number, FromINN, GoodName, Amount и Declaration. GoodId связывается с GTIN по справочнику; при отсутствии связи используется PN. Строки каждого номера БП сравниваются с полным составом одной завершённой складской отгрузки: ИНН отправителя → получателя, GTIN и суммарное количество. Номера и даты БП и склада могут отличаться. ГТД запрашиваются по этим КМ.</p>
-<details class="wh-settings"><summary>Справочник GoodID → GTIN</summary><p>Файл .xlsx с двумя столбцами GoodID и GTIN, заголовки в первой строке. Повторная загрузка обновляет перечисленные связи; остальные сохраняются. GTIN из 13 цифр дополняется ведущим нулём.</p>
+<div class="wh-tool-section">
+<h3>Справочник GoodID → GTIN</h3>
+<p>Файл .xlsx с двумя столбцами GoodID и GTIN, заголовки в первой строке. Повторная загрузка обновляет перечисленные связи; остальные сохраняются. GTIN из 13 цифр дополняется ведущим нулём.</p>
 <button id="gtd-catalog-template" class="btn" type="button">Скачать шаблон справочника</button>
-<form id="gtd-catalog-form"><fieldset id="gtd-catalog-fields"><label>Справочник <input id="gtd-catalog-file" type="file" accept=".xlsx" required></label><button class="btn" type="submit">Загрузить связи</button></fieldset></form><p id="gtd-catalog-result" role="status"></p></details>
+<form id="gtd-catalog-form"><fieldset id="gtd-catalog-fields"><label>Справочник <input id="gtd-catalog-file" type="file" accept=".xlsx" required></label><button class="btn" type="submit">Загрузить связи</button></fieldset></form><p id="gtd-catalog-result" role="status"></p>
+</div>
 <form id="gtd-excel-form"><fieldset id="gtd-excel-fields"><label>Excel для проверки ГТД <input id="gtd-excel-file" type="file" accept=".xlsx" required></label><button id="gtd-excel-submit" class="btn primary" type="submit">Проверить и заполнить ГТД</button></fieldset></form>
 <p class="wh-muted">Выгрузка сохраняет исходные листы и столбцы. Изменённые строки выделяются жёлтым, пояснения добавляются на отдельный лист «Проверка ГТД». Если нужны новые границы строк по целым КМ, простые строки пересобираются с сохранением количества и итоговой стоимости. Неподтверждённые группы остаются без изменений. Номер из ЧЗ может не содержать номер товара после последнего слеша — этот суффикс не переносится из старой декларации.</p>
 <p id="gtd-excel-status" role="status" aria-live="polite"></p><button id="gtd-excel-download" class="btn primary" type="button" hidden>Скачать проверенный Excel</button>
 <label><input id="gtd-excel-only-changed" type="checkbox"> Только изменённые строки</label>
 <div class="wh-table"><table><thead><tr><th>Лист / строка</th><th>Накладная / PN</th><th>Исходная ГТД</th><th>ГТД из ЧЗ</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody id="gtd-excel-rows"></tbody></table></div>
 </section>
-<details class="wh-card" id="import-box"><summary>Создать документ из Excel</summary>
-<p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
-<p id="import-unmarked-hint">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
-<details id="bulk-shipment-box"><summary>Массовые задания на отгрузку из списка накладных</summary>
-<p>Загрузите обновлённую выгрузку Фларпа с колонками «ИНН отправителя» и «ИНН получателя». Получатель отображается по одноимённому столбцу. Отправитель должен быть нашей организацией. Повторная загрузка находит задание по ИНН отправителя и InvoiceId.</p>
-<p>«Да» требует GTIN. «Нет» и «??» считаются товаром без маркировки. Новые накладные только с такими товарами пропускаются. Повторная загрузка сохраняет сканы. Изменённые задания возвращаются на проверку, лишние КМ остаются видны. Отсутствие накладной в файле не удаляет задание.</p>
-<form id="bulk-shipment-form"><label>Список накладных Excel <input id="bulk-shipment-file" type="file" accept=".xlsx" required></label><button class="btn primary">Создать / обновить задания на отгрузку</button></form>
-<div id="bulk-shipment-report" role="status" aria-live="polite"></div>
-</details>
-<button type="button" id="template" class="btn">Скачать шаблон</button>
-<form id="import-form"><label>Наша организация <select id="import-org"><option value="">Из файла</option></select></label>
-<div id="import-datamatrix-meta" hidden><p class="wh-muted">Для однолистного файла DataMatrix без реквизитов укажите номер и дату накладной здесь и выберите организацию. Для стандартных шаблонов поля не нужны.</p>
-<label>Номер накладной <input id="import-number" type="text" maxlength="300" autocomplete="off" placeholder="Для файла DataMatrix"></label>
-<label>Дата накладной <input id="import-date" type="date"></label></div>
-<label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label><button class="btn primary">Загрузить документ</button></form>
-</details>
+<section id="import-box" class="wh-admin-import" aria-label="Загрузка документов">
+  <div class="wh-section-heading wh-import-heading">
+    <div><span class="wh-eyebrow">Работа с документами</span><h2>Загрузка документов</h2></div>
+    <p class="wh-muted">Создайте одну складскую задачу или загрузите сразу список отгрузок.</p>
+  </div>
+  <div class="wh-import-grid">
+    <section id="bulk-shipment-box" class="wh-import-card">
+      <span class="wh-eyebrow">Массовая загрузка</span>
+      <h3>Задания на отгрузку</h3>
+      <p>Загрузите выгрузку Фларпа с колонками «ИНН отправителя» и «ИНН получателя». Повторная загрузка находит задание по ИНН отправителя и InvoiceId, сохраняет сканы и обновляет изменившийся состав.</p>
+      <form id="bulk-shipment-form">
+        <label>Список накладных Excel <input id="bulk-shipment-file" type="file" accept=".xlsx" required></label>
+        <label>Разбивка строк по ГТД <span class="wh-optional">необязательно</span><input id="bulk-gtd-file" type="file" accept=".xlsx"></label>
+        <p class="wh-muted">Дополнительный файл содержит уже разделённые строки по декларациям. Он используется для контроля FIFO и распределения физических КМ по строкам отгрузки.</p>
+        <button class="btn primary" type="submit">Создать / обновить задания</button>
+      </form>
+      <div id="bulk-shipment-report" role="status" aria-live="polite"></div>
+    </section>
+    <section class="wh-import-card">
+      <span class="wh-eyebrow">Разовая загрузка</span>
+      <h3>Создать один документ</h3>
+      <p id="import-format-hint">Заполните листы «Документ» и «Товары» стандартного шаблона.</p>
+      <p id="import-unmarked-hint" class="wh-muted">Позиции без маркировки показываются справочно и не проверяются по КМ.</p>
+      <button type="button" id="template" class="btn">Скачать шаблон</button>
+      <form id="import-form">
+        <label>Наша организация <select id="import-org"><option value="">Из файла</option></select></label>
+        <div id="import-datamatrix-meta" hidden>
+          <p class="wh-muted">Для однолистного файла DataMatrix без реквизитов укажите номер и дату накладной здесь и выберите организацию. Для стандартных шаблонов поля не нужны.</p>
+          <label>Номер накладной <input id="import-number" type="text" maxlength="300" autocomplete="off" placeholder="Для файла DataMatrix"></label>
+          <label>Дата накладной <input id="import-date" type="date"></label>
+        </div>
+        <label>Документ Excel <input id="import-file" type="file" accept=".xlsx" required></label>
+        <button class="btn primary" type="submit">Загрузить документ</button>
+      </form>
+    </section>
+  </div>
+</section>
 {% endif %}
 <div id="list-heading" class="wh-section-heading"><div><span class="wh-eyebrow">Документы</span><h2 id="list-title">Отгрузки</h2></div>
 <div class="wh-view-switch" role="group" aria-label="Вид документов">
@@ -158,7 +205,7 @@
 <details id="scan-details" class="wh-disclosure"><summary>Список КМ <span id="scan-total"></span></summary><div class="wh-toolbar"><label>Поиск КМ / GTIN <input id="scan-query" type="search" autocomplete="off"></label><label><input id="scan-errors-only" type="checkbox"> Только ошибки</label><span id="scan-found"></span></div><div id="scans"></div></details>
 {% if not admin %}<details id="document-meta" class="wh-disclosure"><summary>О документе</summary><p><span id="doc-badge" class="wh-badge"></span></p><p id="doc-parties" class="wh-muted"></p><p id="doc-status" class="wh-muted"></p></details>{% endif %}
 {% if admin %}
-<section id="issues-panel" class="wh-card" hidden><h3>Обращения склада</h3><button id="issues-refresh" class="btn">Обновить обращения</button><div id="issues-list"></div><div id="issue-detail"></div><form id="resolve-form" hidden><label>Результат разбора / комментарий складу <textarea id="issue-resolution" rows="3" maxlength="2000" required></textarea></label><div class="wh-toolbar"><button class="btn" type="submit" id="resolve-issue">Закрыть обращение</button><button class="btn primary" type="button" id="return-warehouse">Вернуть на склад</button><button class="btn" type="reset">Очистить</button></div><p id="return-hint" class="wh-muted"></p></form><h4 id="events-title" hidden>Действия по документу</h4><div id="issue-events"></div><button id="events-more" class="btn" hidden>Показать более ранние действия</button></section>
+<section id="issues-panel" class="wh-issues-panel" hidden><h3>Обращения склада</h3><button id="issues-refresh" class="btn">Обновить обращения</button><div id="issues-list"></div><div id="issue-detail"></div><form id="resolve-form" hidden><label>Результат разбора / комментарий складу <textarea id="issue-resolution" rows="3" maxlength="2000" required></textarea></label><div class="wh-toolbar"><button class="btn" type="submit" id="resolve-issue">Закрыть обращение</button><button class="btn primary" type="button" id="return-warehouse">Вернуть на склад</button><button class="btn" type="reset">Очистить</button></div><p id="return-hint" class="wh-muted"></p></form><h4 id="events-title" hidden>Действия по документу</h4><div id="issue-events"></div><button id="events-more" class="btn" hidden>Показать более ранние действия</button></section>
 {% endif %}
 </section>
 </div>
