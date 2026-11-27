@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 from organizations import registry
 from datamatrix import strip_ai30
 from warehouse_excel import import_xlsx, positive_integer
 import warehouse_store
+from km_split_client import KmSplitError
 
 
 async def resolve_pns(service, gtins, org_inn):
@@ -229,13 +231,93 @@ def receipt_results(doc):
                 rows=rows, codes=details, missing=missing, checked_count=len(doc['scans']), accepted_count=len(accepted))
 
 
+async def refresh_gtd_splits(store, service, doc):
+    client = getattr(service, 'km_split_client', None)
+    if not client or not client.enabled:
+        return doc
+    for split in doc.get('splits', []):
+        if split['state'] in ('done', 'failed') or not split.get('external_batch_id'):
+            continue
+        try:
+            remote = await client.status(split['external_batch_id'])
+            store.update_split(doc['id'], split['id'], remote)
+            doc = store.get(doc['id'])
+            if remote.get('state') == 'ready_to_rescan':
+                expected = remote.get('expected_codes') or []
+                expected_cis = {item['cis'] for item in expected}
+                scanned = {item['cis']: item for item in doc['scans'] if item['cis'] in expected_cis}
+                if (expected_cis and set(scanned) == expected_cis
+                        and all(scanned[cis]['has_crypto'] for cis in expected_cis)):
+                    try:
+                        remote = await client.confirm(split['external_batch_id'], list(expected_cis))
+                        store.update_split(doc['id'], split['id'], remote)
+                        doc = store.get(doc['id'])
+                    except KmSplitError as exc:
+                        # The POST may have reached km-split. Poll its idempotent batch status
+                        # before attempting confirmation again on the next check.
+                        store.update_split(doc['id'], split['id'],
+                                           {'state':'ready_to_rescan',
+                                            'expected_codes':expected,
+                                            'error':'Не удалось получить подтверждение отправки DIVISIONMARK: ' + str(exc)})
+                        doc = store.get(doc['id'])
+        except KmSplitError as exc:
+            store.update_split(doc['id'], split['id'],
+                               {'state':split['state'], 'expected_codes':split.get('expected_codes') or [],
+                                'error':'Не удалось обновить состояние разделения: ' + str(exc)})
+            doc = store.get(doc['id'])
+    return doc
+
+
+async def start_gtd_splits(store, service, doc, result):
+    client = getattr(service, 'km_split_client', None)
+    plans = (result.get('gtd') or {}).get('split_required') or []
+    if not plans:
+        return result, doc
+    if not client or not client.enabled:
+        result['ok'] = False
+        result['gtd']['state'] = 'blocked'
+        result['gtd']['message'] = ('Найдены КМ, которые нужно разделить для соответствия ГТД, '
+                                    'но автоматическое разделение не настроено. Упаковка запрещена.')
+        return result, doc
+    scans = {scan['id']: scan for scan in doc['scans']}
+    started = []
+    for plan in plans:
+        scan = scans.get(plan['scan_id'])
+        if not scan:
+            continue
+        request_id = str(uuid5(NAMESPACE_URL,
+                               f"gis-trueapi:{doc['id']}:{scan['id']}:{','.join(map(str, plan['parts']))}"))
+        try:
+            remote = await client.create(scan['raw_code'], plan['parts'], request_id)
+            local = store.create_split(doc['id'], scan['id'], request_id, plan['parts'], remote)
+            started.extend(item['id'] for item in local.get('splits', [])
+                           if item.get('request_id') == request_id)
+        except KmSplitError as exc:
+            result['ok'] = False
+            result['gtd']['state'] = 'blocked'
+            result['gtd']['message'] = ('Не удалось запустить автоматическое разделение КМ. '
+                                        'Исходный скан сохранён; повторная отправка использует тот же идентификатор. '
+                                        + str(exc))
+            return result, doc
+    result['ok'] = False
+    result['gtd']['state'] = 'splitting'
+    result['gtd']['message'] = ('Программа запустила автоматическое разделение КМ. '
+                                'Ожидайте выпуска новых кодов. Упаковку пока не начинать.')
+    result['gtd']['split_started'] = True
+    return result, store.get(doc['id'])
+
+
 async def check_document(store, service, document_id):
     check_id, doc = store.begin_check(document_id)
+    check_version = doc['version']
     policy = doc['runtime_settings']['values']
     try:
         async with asyncio.timeout(policy['check_timeout_seconds']):
             if doc['kind'] == 'shipment':
+                doc = await refresh_gtd_splits(store, service, doc)
                 result, pns = await shipment_results(service, doc)
+                if (result.get('gtd') or {}).get('split_required'):
+                    result, doc = await start_gtd_splits(store, service, doc, result)
                 missing = [l['gtin'] for l in doc['lines'] if l['gtin'] and not l['pn'] and l['gtin'] not in pns]
                 resolved, warnings = await resolve_pns(service, missing, doc['org_inn']) if missing and policy['auto_pn'] else ({}, [])
                 if policy['auto_pn']:
@@ -246,7 +328,7 @@ async def check_document(store, service, document_id):
             result['checked_at'] = datetime.now(timezone.utc).isoformat()
             result['policy'] = {'settings_revision': doc['runtime_settings']['revision'],
                                 'shipment_statuses': policy['shipment_statuses'], 'strict_owner': bool(doc['strict_owner'])}
-            return store.finish_check(document_id, check_id, doc['version'], result)
+            return store.finish_check(document_id, check_id, check_version, result)
     except BaseException:
         store.cancel_check(document_id, check_id)
         raise
