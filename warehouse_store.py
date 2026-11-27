@@ -1,7 +1,11 @@
 """Durable document state. Short SQLite transactions; no network inside locks."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 import time
 import uuid
@@ -78,6 +82,15 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
               expected_codes TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL,
               error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS warehouse_splits_doc ON warehouse_splits(document_id,state);
+            CREATE TABLE IF NOT EXISTS gis_signer_jobs (
+              id TEXT PRIMARY KEY, inn TEXT NOT NULL, challenge_uuid TEXT NOT NULL,
+              challenge_data TEXT NOT NULL, sha256 TEXT NOT NULL, state TEXT NOT NULL,
+              lease TEXT, lease_until REAL, error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS gis_signer_jobs_queue ON gis_signer_jobs(state,created_at);
+            CREATE TABLE IF NOT EXISTS gis_signer_heartbeat (
+              id INTEGER PRIMARY KEY CHECK(id=1), thumbprint TEXT NOT NULL,
+              expires TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS warehouse_lines (
               document_id TEXT NOT NULL REFERENCES warehouse_documents(id),
               gtin TEXT NOT NULL, pn TEXT NOT NULL, pn_source TEXT NOT NULL,
@@ -175,6 +188,64 @@ class WarehouseStore(ReceiptBridgeStore, WarehouseIssues, RuntimeSettings, UpdSt
     def _bump(c, document_id):
         c.execute('UPDATE warehouse_documents SET version=version+1, revision=revision+1, updated_at=? WHERE id=?',
                   (now(), document_id))
+
+
+    def signer_job_create(self, inn, challenge_uuid, challenge_data):
+        job_id = uuid.uuid4().hex
+        digest = hashlib.sha256(challenge_data.encode('utf-8')).hexdigest()
+        with self.connection(True) as c:
+            c.execute('''INSERT INTO gis_signer_jobs
+                (id,inn,challenge_uuid,challenge_data,sha256,state,created_at,updated_at)
+                VALUES (?,?,?,?,?,'queued',?,?)''',
+                (job_id, inn, challenge_uuid, challenge_data, digest, now(), now()))
+        return self.signer_job_get(job_id)
+
+    def signer_job_get(self, job_id):
+        with self.connection() as c:
+            row = c.execute('''SELECT id,inn,state,error,created_at,updated_at
+                               FROM gis_signer_jobs WHERE id=?''', (job_id,)).fetchone()
+            if row is None:
+                raise WarehouseError('Задание подписи не найдено', 404)
+            return dict(row)
+
+    def signer_next(self, thumbprint):
+        with self.connection(True) as c:
+            ts = now()
+            c.execute("""UPDATE gis_signer_jobs SET state='queued',lease=NULL,lease_until=NULL,updated_at=?
+                         WHERE state='leased' AND lease_until<?""", (ts, time.time()))
+            row = c.execute("SELECT * FROM gis_signer_jobs WHERE state='queued' ORDER BY created_at,id LIMIT 1").fetchone()
+            if row is None:
+                return None
+            lease = secrets.token_urlsafe(32)
+            c.execute("UPDATE gis_signer_jobs SET state='leased',lease=?,lease_until=?,updated_at=? WHERE id=?",
+                      (lease, time.time() + 180, ts, row['id']))
+            return dict(id=row['id'], kind='auth_true', lease=lease,
+                        payload_base64=base64.b64encode(row['challenge_data'].encode('utf-8')).decode('ascii'),
+                        sha256=row['sha256'], detached=False, thumbprint=thumbprint, inn=row['inn'])
+
+    def signer_claim_result(self, job_id, lease, digest):
+        with self.connection(True) as c:
+            row = c.execute('SELECT * FROM gis_signer_jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None or row['state'] != 'leased':
+                raise WarehouseError('Задание уже обработано или отозвано', 409)
+            if (row['lease_until'] or 0) < time.time() or not hmac.compare_digest(row['lease'] or '', lease):
+                raise WarehouseError('Истёк срок задания подписи', 409)
+            if not hmac.compare_digest(row['sha256'], digest):
+                raise WarehouseError('Подписаны другие байты', 409)
+            c.execute("UPDATE gis_signer_jobs SET state='signing',lease=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                      (now(), job_id))
+            return dict(row)
+
+    def signer_job_finish(self, job_id, state, error=''):
+        with self.connection(True) as c:
+            c.execute('UPDATE gis_signer_jobs SET state=?,error=?,updated_at=? WHERE id=?',
+                      (state, error[:1000], now(), job_id))
+        return self.signer_job_get(job_id)
+
+    def signer_heartbeat(self, thumbprint, expires, status):
+        with self.connection(True) as c:
+            c.execute('INSERT OR REPLACE INTO gis_signer_heartbeat VALUES (1,?,?,?,?)',
+                      (thumbprint, expires, status, now()))
 
     def create(self, header, lines, expected, *, sales_username=None):
         document_id, ts = uuid.uuid4().hex, now()
