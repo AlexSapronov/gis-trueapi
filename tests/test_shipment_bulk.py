@@ -85,6 +85,78 @@ def test_gtd_fifo_identifies_a_code_crossing_two_declaration_rows():
     assert result['split_required'][0]['declarations'] == ['D1','D2']
 
 
+@pytest.mark.asyncio
+async def test_auto_split_requires_rescan_and_successful_divisionmark(store, svc):
+    values = row(quantity=400)
+    report = import_bulk(store, excel(values), gtd_book(
+        gtd_row(values, amount=300, declaration='D1'),
+        gtd_row(values, amount=100, declaration='D2')))
+    document_id = report['results'][0]['document_id']
+    original_code = code('INTRODUCEDQ400')
+    updated_source = original_code + '\x1d30' + '100'
+    new_code = code('NEWQ300') + '\x1d30' + '300'
+    source_cis = scan_data(updated_source)['cis']
+    new_cis = scan_data(new_code)['cis']
+
+    class SplitClient:
+        enabled = True
+        confirmed = False
+        async def create(self, code_value, parts, request_id):
+            assert parts == [300]
+            return {'id':'batch-1','state':'ordering','expected_codes':[]}
+        async def status(self, batch_id):
+            if self.confirmed:
+                state = 'done'
+            else:
+                state = 'ready_to_rescan'
+            return {'id':batch_id,'state':state,'error':None,
+                    'expected_codes':[
+                        {'cis':new_cis,'quantity':300,'role':'new'},
+                        {'cis':source_cis,'quantity':100,'role':'source'}]}
+        async def confirm(self, batch_id, scanned_cis):
+            assert set(scanned_cis) == {source_cis,new_cis}
+            self.confirmed = True
+            return {'id':batch_id,'state':'reporting','error':None,
+                    'expected_codes':[
+                        {'cis':new_cis,'quantity':300,'role':'new'},
+                        {'cis':source_cis,'quantity':100,'role':'source'}]}
+        async def labels(self, batch_id):
+            return b'%PDF-test'
+
+    split = SplitClient()
+    svc.km_split_client = split
+    original_info = svc.client.info
+    async def info(cises, token):
+        results = await original_info(cises, token)
+        for item in results:
+            cis = (item.get('cisInfo') or {}).get('cis')
+            if split.confirmed:
+                if cis == source_cis:
+                    item['cisInfo']['quantityInPack'] = 100
+                elif cis == new_cis:
+                    item['cisInfo']['quantityInPack'] = 300
+        return results
+    svc.client.info = info
+
+    store.add_scan(document_id, scan_data(original_code))
+    started = await check_document(store, svc, document_id)
+    assert not started['can_complete']
+    assert started['scans'] == []
+    assert started['splits'][0]['state'] == 'ordering'
+
+    store.add_scan(document_id, scan_data(updated_source))
+    store.add_scan(document_id, scan_data(new_code))
+    awaiting = await check_document(store, svc, document_id)
+    assert awaiting['result']['gtd']['ok']
+    assert awaiting['splits'][0]['state'] == 'reporting'
+    assert not awaiting['can_complete']
+
+    completed = await check_document(store, svc, document_id)
+    assert completed['splits'][0]['state'] == 'done'
+    assert completed['result']['gtd']['ok']
+    assert completed['can_complete']
+
+
 def test_split_removes_active_scan_but_keeps_audit_and_is_idempotent(store):
     values = row(quantity=400)
     report = import_bulk(store, excel(values), gtd_book(
