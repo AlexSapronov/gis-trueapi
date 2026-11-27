@@ -101,9 +101,13 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False, amb
     if ambiguous_party:
         return dict(state='invalid', rows=[],
                     message='В массовой загрузке есть несколько накладных с одинаковыми Number и ИНН сторон; сопоставление ГТД неоднозначно')
-    if ambiguous_number and not all(r['from_inn'] == group['org_inn'] and r['to_inn'] == group['recipient_inn'] for r in candidates):
+    file_parties = {(r['from_inn'], r['to_inn']) for r in rows if r['number'] == group['number']}
+    ambiguous_file_number = len(file_parties) > 1
+    if (ambiguous_number or ambiguous_file_number) and not all(
+            r['from_inn'] == group['org_inn'] and r['to_inn'] == group['recipient_inn']
+            for r in candidates):
         return dict(state='invalid', rows=[],
-                    message='Номер накладной встречается в массовой загрузке несколько раз; для точного сопоставления добавьте FromINN и ToINN в файл ГТД')
+                    message='Номер накладной встречается у нескольких отправителей или получателей; заполните FromINN и ToINN в файле ГТД')
     by_good = defaultdict(list)
     for row in candidates:
         by_good[row['good_id']].append(row)
