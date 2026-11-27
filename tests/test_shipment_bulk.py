@@ -85,6 +85,27 @@ def test_gtd_fifo_identifies_a_code_crossing_two_declaration_rows():
     assert result['split_required'][0]['declarations'] == ['D1','D2']
 
 
+def test_gtd_fifo_uses_original_scan_position_and_split_part_order():
+    from warehouse_service import reconcile_gtd_fifo
+    source = {'cis':'SOURCE-CIS','quantity':100,'role':'source'}
+    new = {'cis':'NEW-CIS','quantity':300,'role':'new'}
+    doc = {'gtd_required':True,'gtd_state':'ready','gtd_rows':[
+        {'position':1,'gtin':GTIN,'quantity':300,'declaration':'D1'},
+        {'position':2,'gtin':GTIN,'quantity':100,'declaration':'D2'},
+    ],'splits':[{'source_scanned_at':'2026-11-27T08:00:00+00:00',
+                 'created_at':'2026-11-27T08:02:00+00:00',
+                 'expected_codes':[new,source]}]}
+    # The retained/source label was scanned first by the operator, but FIFO
+    # placement follows the original scan's position and the generated part order.
+    result = reconcile_gtd_fifo(doc, [
+        {'scan_id':'source','cis':'SOURCE-CIS','gtin':GTIN,'quantity':100,'errors':[],
+         'scanned_at':'2026-11-27T08:03:00+00:00'},
+        {'scan_id':'new','cis':'NEW-CIS','gtin':GTIN,'quantity':300,'errors':[],
+         'scanned_at':'2026-11-27T08:04:00+00:00'},
+    ])
+    assert result['ok'] and not result['split_required']
+
+
 def test_gtd_fifo_accepts_codes_aligned_to_declaration_boundaries():
     from warehouse_service import reconcile_gtd_fifo
     doc = {'gtd_required': True, 'gtd_state': 'ready', 'gtd_rows': [
