@@ -85,6 +85,26 @@ def test_gtd_fifo_identifies_a_code_crossing_two_declaration_rows():
     assert result['split_required'][0]['declarations'] == ['D1','D2']
 
 
+def test_split_removes_active_scan_but_keeps_audit_and_is_idempotent(store):
+    values = row(quantity=400)
+    report = import_bulk(store, excel(values), gtd_book(
+        gtd_row(values, amount=300, declaration='D1'),
+        gtd_row(values, amount=100, declaration='D2')))
+    document_id = report['results'][0]['document_id']
+    scanned = store.add_scan(document_id, scan_data(code()))
+    scan_id = scanned['scans'][0]['id']
+    request_id = 'gtd-split-request-1'
+    remote = {'id':'remote-batch-1','state':'ordering','expected_codes':[]}
+    first = store.create_split(document_id, scan_id, request_id, [300], remote)
+    assert not first['scans']
+    assert first['splits'][0]['state'] == 'ordering'
+    assert first['splits'][0]['source_cis']
+    again = store.create_split(document_id, scan_id, request_id, [300], remote)
+    assert len(again['splits']) == 1
+    events = store.events(document_id)
+    assert sum(event['action'] == 'scan_removed_for_gtd_split' for event in events) == 1
+
+
 def test_gtd_fifo_uses_original_scan_position_and_split_part_order():
     from warehouse_service import reconcile_gtd_fifo
     source = {'cis':'SOURCE-CIS','quantity':100,'role':'source'}
