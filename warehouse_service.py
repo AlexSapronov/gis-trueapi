@@ -70,8 +70,16 @@ def reconcile_gtd_fifo(doc, details):
     for row in doc['gtd_rows']:
         rows_by_gtin.setdefault(row['gtin'], []).append(row)
     scans_by_gtin = {}
+    split_order = {}
+    for split in doc.get('splits', []):
+        for index, item in enumerate(split.get('expected_codes') or []):
+            split_order[item['cis']] = (split.get('source_scanned_at') or split.get('created_at') or '',
+                                        split.get('created_at') or '', index)
     for detail in details:
         scans_by_gtin.setdefault(detail['gtin'], []).append(detail)
+    for values in scans_by_gtin.values():
+        values.sort(key=lambda item: split_order.get(
+            item['cis'], (item.get('scanned_at') or '', '', -1)))
     split_required, missing, extra = [], [], []
     has_invalid_scan = any(detail.get('errors') for detail in details)
     for gtin, target_rows in rows_by_gtin.items():
@@ -173,8 +181,9 @@ async def shipment_results(service, doc):
         if isinstance(api.get('model'), str) and api['model'].strip():
             pns[scan['gtin']] = api['model'].strip()
         details.append(dict(scan_id=scan['id'], cis=scan['cis'], gtin=scan['gtin'],
-                            status=r.status, owner_inn=r.owner_inn, owner_name=r.owner_name,
-                            quantity=quantity, errors=reasons, api=r.as_dict(include_raw_api=True)))
+                            scanned_at=scan['scanned_at'], status=r.status, owner_inn=r.owner_inn,
+                            owner_name=r.owner_name, quantity=quantity, errors=reasons,
+                            api=r.as_dict(include_raw_api=True)))
         if owner_mismatch and warn_on_owner_mismatch:
             details[-1]['owner_warning'] = owner_mismatch
     rows = [dict(gtin=l['gtin'], required=l['quantity'], actual=totals[l['gtin']],
