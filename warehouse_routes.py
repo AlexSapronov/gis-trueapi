@@ -32,6 +32,9 @@ class ScanBody(BaseModel):
 class GtdBody(ScanBody):
     org_inn: str = Field(min_length=10, max_length=12)
 
+class SignerAuthBody(BaseModel):
+    inn: str = Field(min_length=10, max_length=12)
+
 
 class UpdMapping(BaseModel):
     withdrawal_reason: Literal['', '1', '2', '3', '4'] | None = None
@@ -176,6 +179,8 @@ def install_warehouse(app, service_getter, store_getter, templates):
         return {'organizations': [{'inn': o.inn, 'name': o.name} for o in registry.all()],
                 'receipt_default_org': runtime['values']['receipt_default_org'],
                 'runtime': runtime,
+                'signer_configured': bool(settings.signer_token and settings.signer_thumbprint),
+                'km_split_configured': bool(settings.km_split_url and settings.km_split_internal_token),
                 'defaults': defaults(), 'schema': ApplicationSettings.model_json_schema(),
                 'history': store_getter().settings_history()}
 
@@ -194,6 +199,20 @@ def install_warehouse(app, service_getter, store_getter, templates):
             }
             # An upstream HTTP 401/403 is not an expired administrator session.
             raise WarehouseError(exc.message, 422 if client_error else 502) from exc
+
+    @admin.post('/signer/auth')
+    async def start_signer_auth(body: SignerAuthBody):
+        if not settings.signer_token or not settings.signer_thumbprint:
+            raise WarehouseError('Общий Windows-подписант не настроен. Задайте GIS_SIGNER_TOKEN и GIS_SIGNER_THUMBPRINT.', 409)
+        try:
+            challenge = await service_getter().auth_challenge(body.inn)
+        except AppError as exc:
+            raise WarehouseError(exc.message, 502) from exc
+        return store_getter().signer_job_create(body.inn, challenge['uuid'], challenge['data'])
+
+    @admin.get('/signer/jobs/{job_id}')
+    def signer_job(job_id: str):
+        return store_getter().signer_job_get(job_id)
 
     @admin.get('/documents')
     def admin_documents(filters: Annotated[AdminFilters, Query()]):
