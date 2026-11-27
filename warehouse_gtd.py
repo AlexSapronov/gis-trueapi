@@ -99,7 +99,7 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
     if not candidates:
         return dict(state='pending', rows=[],
                     message='Ожидается загрузка разбивки строк по ГТД для этой накладной')
-    if ambiguous_number and not any(r['from_inn'] or r['to_inn'] for r in candidates):
+    if ambiguous_number and not all(r['from_inn'] == group['org_inn'] and r['to_inn'] == group['recipient_inn'] for r in candidates):
         return dict(state='invalid', rows=[],
                     message='Номер накладной встречается в массовой загрузке несколько раз; для точного сопоставления добавьте FromINN и ToINN в файл ГТД')
     by_good = defaultdict(list)
