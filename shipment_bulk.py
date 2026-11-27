@@ -11,6 +11,7 @@ import openpyxl
 from organizations import registry
 from warehouse_excel import MAX_FILE_SIZE, MAX_ROWS, positive_integer, shipment_gtin_cell
 from warehouse_store import WarehouseError
+from warehouse_gtd import parse_gtd_file, match_gtd_rows
 
 BASE_COLUMNS = ('InvoiceId', 'GoodId', 'Наименование', 'Количество шт.',
             'Номер накладной', 'GTIN', 'Требуется маркировка')
@@ -121,8 +122,12 @@ def parse_bulk(content):
         book.close()
 
 
-def import_bulk(store, content):
+def import_bulk(store, content, gtd_content=None):
     groups = parse_bulk(content)
+    gtd_rows = parse_gtd_file(gtd_content) if gtd_content else None
+    number_counts = {}
+    for group in groups:
+        number_counts[group['number']] = number_counts.get(group['number'], 0) + 1
     report = []
     for group in groups:
         base = dict(invoice_id=group['invoice_id'], number=group['number'])
@@ -153,8 +158,25 @@ def import_bulk(store, content):
                       org_inn=org.inn, org_name=org.name, recipient_inn=group['recipient_inn'],
                       recipient_name=group['recipient_name'])
         try:
-            result = store.sync_shipment_invoice(group['invoice_id'], header, list(merged.values()))
-            report.append({**base, **result})
+            if gtd_rows is None:
+                gtd = dict(state='pending', rows=[],
+                           message='Ожидается загрузка разбивки строк по ГТД')
+            else:
+                gtd = match_gtd_rows(group, gtd_rows, ambiguous_number=number_counts[group['number']] > 1)
+            source_items = []
+            source_map = {}
+            for item in group['lines']:
+                key = (item['good_id'], item['gtin'])
+                if key not in source_map:
+                    source_map[key] = dict(good_id=item['good_id'], gtin=item['gtin'],
+                                           pn=item['pn'], quantity=0)
+                    source_items.append(source_map[key])
+                source_map[key]['quantity'] += item['quantity']
+            result = store.sync_shipment_invoice(
+                group['invoice_id'], header, list(merged.values()),
+                source_items=source_items, gtd_rows=gtd['rows'],
+                gtd_state=gtd['state'], gtd_message=gtd['message'])
+            report.append({**base, **result, 'gtd_state': gtd['state'], 'gtd_message': gtd['message']})
         except WarehouseError as exc:
             report.append({**base, 'status': 'error', 'message': exc.message})
     return dict(results=report, counts={key: sum(r['status'] == key for r in report)
