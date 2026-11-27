@@ -878,9 +878,10 @@
         if (gtdFile) form.set('gtd_file', gtdFile);
         const report = await json(apiBase + '/shipment-invoices', {method:'POST', body:form});
         const labels = {created:'Создано', updated:'Обновлено', unchanged:'Без изменений', skipped:'Пропущено', error:'Ошибка'};
+        const gtdLabels = {ready:'Готово',pending:'Ожидает данных',invalid:'Ошибка данных',none:'Не требуется'};
         $('bulk-shipment-report').innerHTML = '<p>' + Object.entries(report.counts).map(([key, count]) => `${labels[key]}: ${count}`).join(' · ') + '</p>'
-          + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>Пояснение</th></tr></thead><tbody>'
-          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(r.message)}</td></tr>`).join('') + '</tbody></table></div>';
+          + '<div class="wh-table"><table><thead><tr><th>InvoiceId</th><th>Накладная</th><th>Результат</th><th>ГТД</th><th>Пояснение</th></tr></thead><tbody>'
+          + report.results.map(r => `<tr><td>${esc(r.invoice_id)}</td><td>${esc(r.number)}</td><td>${esc(labels[r.status])}</td><td>${esc(gtdLabels[r.gtd_state] || r.gtd_state || '—')}</td><td>${esc(r.gtd_message || r.message)}</td></tr>`).join('') + '</tbody></table></div>';
         $('bulk-shipment-file').value = ''; $('bulk-gtd-file').value = '';
         await list();
       } finally { button.disabled = false; }
