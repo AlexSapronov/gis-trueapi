@@ -92,8 +92,7 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
             continue
         if row['to_inn'] and row['to_inn'] != group['recipient_inn']:
             continue
-        if row['good_id'] in source:
-            candidates.append(row)
+        candidates.append(row)
     if not candidates:
         return dict(state='pending', rows=[],
                     message='Ожидается загрузка разбивки строк по ГТД для этой накладной')
