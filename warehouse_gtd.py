@@ -69,8 +69,8 @@ def parse_gtd_file(content: bytes) -> list[dict]:
                     to_inn = identifier(cells['ToINN'].value, 'ToINN') if cells.get('ToINN') and cells['ToINN'].value is not None else ''
                     result.append(dict(number=invoice_number, good_id=good_id, quantity=amount,
                                         declaration=declaration, from_inn=from_inn, to_inn=to_inn,
-                                        source_sheet=sheet.title, source_row=number))
-                except ValueError as exc:
+                                        source_sheet=sheet.title, source_row=number, position=len(result) + 1))
+                except (ValueError, WarehouseError) as exc:
                     raise WarehouseError(f'Разбивка ГТД, лист «{sheet.title}», строка {number}: {exc}') from exc
         if not result:
             raise WarehouseError('Не найдены столбцы Number, GoodId, Amount и Declaration')
@@ -124,10 +124,10 @@ def match_gtd_rows(group: dict, rows: list[dict], *, ambiguous_number=False):
         for row in selected:
             matched.append(dict(good_id=good_id, gtin=gtin, quantity=row['quantity'],
                                 declaration=row['declaration'], source_sheet=row['source_sheet'],
-                                source_row=row['source_row']))
+                                source_row=row['source_row'], position=row['position']))
     extra = set(by_good) - set(all_source)
     if extra:
         return dict(state='invalid', rows=[],
                     message='В файле ГТД есть лишние GoodId: ' + ', '.join(sorted(extra)[:10]))
-    matched.sort(key=lambda item: (item['source_sheet'], item['source_row']))
+    matched.sort(key=lambda item: item['position'])
     return dict(state='ready', rows=matched, message='Разбивка ГТД загружена; ожидается сверка сканов')
