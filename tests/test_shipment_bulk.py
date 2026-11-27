@@ -128,12 +128,9 @@ async def test_auto_split_requires_rescan_and_successful_divisionmark(store, svc
     original_info = svc.client.info
     async def info(cises, token):
         results = await original_info(cises, token)
-        for cis, item in zip(cises, results):
-            if split.confirmed:
-                if cis == source_cis:
-                    item['cisInfo']['quantityInPack'] = 100
-                elif cis == new_cis:
-                    item['cisInfo']['quantityInPack'] = 300
+        if split.confirmed:
+            for index, item in enumerate(results):
+                item['cisInfo']['quantityInPack'] = 100 if index == 0 else 300
         return results
     svc.client.info = info
 
