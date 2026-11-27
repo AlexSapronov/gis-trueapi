@@ -10,11 +10,11 @@
 </head>
 <body class="warehouse-page">
 <header class="wh-header">
-<div><span class="wh-eyebrow">Честный ЗНАК · True API</span><h1>Проверка контрагентов</h1></div>
+<div><span class="wh-eyebrow">Честный ЗНАК · Администрирование</span><h1>Проверка контрагентов</h1></div>
 <div class="wh-header-actions"><button id="theme-btn" class="icon-btn" type="button" aria-label="Тема">☾</button></div>
 </header>
 <main class="wh-main">
-<nav class="wh-toolbar"><a class="btn" href="/admin">Вернуться в администрирование</a></nav>
+<nav class="admin-subnav" aria-label="Навигация администратора"><a class="btn" href="/admin">← К администрированию</a><a class="btn" href="/">Сверка КМ</a></nav>
 <section class="wh-card">
 <h2>Регистрация в ЧЗ и подключение РЭП</h2>
 {% if mock %}<p class="wh-bad">Тестовый режим: реальные данные ЧЗ не запрашиваются.</p>{% endif %}
