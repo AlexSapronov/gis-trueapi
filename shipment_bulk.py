@@ -159,8 +159,7 @@ def import_bulk(store, content, gtd_content=None):
                       recipient_name=group['recipient_name'])
         try:
             if gtd_rows is None:
-                gtd = dict(state='pending', rows=[],
-                           message='Ожидается загрузка разбивки строк по ГТД')
+                gtd = dict(state=None, rows=None, message=None)
             else:
                 gtd = match_gtd_rows(group, gtd_rows, ambiguous_number=number_counts[group['number']] > 1)
             source_items = []
